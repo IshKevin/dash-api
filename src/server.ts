@@ -20,10 +20,20 @@ dotenv.config();
 const app: Application = express();
 
 // Middleware
-app.use(cors({
-  origin: env.CORS_ORIGIN,
-  credentials: true
-}));
+// Configure CORS based on environment settings
+if (env.CORS_PUBLIC) {
+  // Public CORS - allow requests from any origin
+  app.use(cors({
+    origin: '*', // Allow requests from any origin
+    credentials: false // Disable credentials for public API
+  }));
+} else {
+  // Restricted CORS - allow requests only from specified origin
+  app.use(cors({
+    origin: env.CORS_ORIGIN,
+    credentials: true
+  }));
+}
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -83,6 +93,13 @@ const startServer = async (): Promise<void> => {
       console.log(`🚀 Server running on port ${env.PORT}`);
       console.log(`🌍 Environment: ${env.NODE_ENV}`);
       console.log(`📅 Started at: ${new Date().toISOString()}`);
+      
+      // Log CORS configuration
+      if (env.CORS_PUBLIC) {
+        console.log(`🔓 CORS: Public (allowing requests from any origin)`);
+      } else {
+        console.log(`🔒 CORS: Restricted to ${env.CORS_ORIGIN}`);
+      }
     });
 
     // Handle graceful shutdown
