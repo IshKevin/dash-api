@@ -1,35 +1,49 @@
 {
-  "name": "dash-api",
+  "name": "dashboard-avocado-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Backend API for Dashboard Avocado Agricultural Management System",
+  "main": "dist/server.js",
   "scripts": {
-    "dev": "nodemon --watch 'src/**/*.ts' --exec ts-node src/index.ts",
+    "start": "node dist/server.js",
+    "dev": "nodemon --watch 'src/**/*.ts' --exec ts-node src/server.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/IshKevin/dash-api.git"
   },
-  "keywords": [],
+  "keywords": [
+    "nodejs",
+    "express",
+    "mongodb",
+    "typescript",
+    "agriculture",
+    "dashboard"
+  ],
   "author": "",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/IshKevin/dash-api/issues"
   },
   "homepage": "https://github.com/IshKevin/dash-api#readme",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-validator": "^7.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^7.8.7"
+  },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
-    "@types/mongodb": "^4.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.3.1",
     "nodemon": "^3.1.10",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
-  },
-  "dependencies": {
-    "dotenv": "^17.2.2",
-    "express": "^5.1.0",
-    "mongodb": "^6.19.0"
   }
 }
