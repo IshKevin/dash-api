@@ -197,6 +197,8 @@ dashboard-avocado-backend/
 | MONGODB_URI | MongoDB connection string | Yes |
 | JWT_SECRET | Secret key for JWT signing | Yes |
 | JWT_EXPIRES_IN | JWT expiration time | Yes |
+| CORS_ORIGIN | Allowed origin for CORS requests | No |
+| CORS_PUBLIC | Enable public CORS (allows any origin) | No |
 | NODE_ENV | Environment (development/production) | No |
 
 ## Security Features
@@ -205,7 +207,7 @@ dashboard-avocado-backend/
 - JWT-based authentication with expiration
 - Role-based access control
 - Input validation and sanitization
-- CORS protection
+- CORS protection (configurable - restricted by default, can be made public)
 - Rate limiting (to be implemented)
 - Helmet.js security headers (to be implemented)
 
