@@ -18,7 +18,13 @@ export const authenticate = async (
   try {
     // Get token from header
     const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      sendUnauthorized(res, 'Access token is required');
+      return;
+    }
+
+    const token = authHeader.split(' ')[1];
 
     // Check if token exists
     if (!token) {
@@ -28,12 +34,12 @@ export const authenticate = async (
 
     // Verify token
     const decoded = verifyToken(token);
-    if (!decoded) {
+    if (!decoded || !decoded.id) {
       sendUnauthorized(res, 'Invalid or expired token');
       return;
     }
 
-    // Check if user exists
+    // Check if user exists and is active
     const user = await User.findById(decoded.id).select('-password');
     if (!user) {
       sendUnauthorized(res, 'User not found');
@@ -56,6 +62,7 @@ export const authenticate = async (
 
     next();
   } catch (error) {
+    console.error('Authentication error:', error);
     sendUnauthorized(res, 'Authentication failed');
   }
 };
@@ -66,20 +73,25 @@ export const authenticate = async (
  */
 export const authorize = (...roles: UserRole[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
-    // Check if user is authenticated
-    const authenticatedReq = req as AuthenticatedRequest;
-    if (!authenticatedReq.user) {
-      sendUnauthorized(res, 'Authentication required');
-      return;
-    }
+    try {
+      // Check if user is authenticated
+      const authenticatedReq = req as AuthenticatedRequest;
+      if (!authenticatedReq.user) {
+        sendUnauthorized(res, 'Authentication required');
+        return;
+      }
 
-    // Check if user has required role
-    if (!roles.includes(authenticatedReq.user.role)) {
-      sendForbidden(res, 'Insufficient permissions');
-      return;
-    }
+      // Check if user has required role
+      if (!roles.length || !roles.includes(authenticatedReq.user.role)) {
+        sendForbidden(res, 'Insufficient permissions');
+        return;
+      }
 
-    next();
+      next();
+    } catch (error) {
+      console.error('Authorization error:', error);
+      sendForbidden(res, 'Authorization failed');
+    }
   };
 };
 
@@ -87,25 +99,30 @@ export const authorize = (...roles: UserRole[]) => {
  * Admin only middleware
  */
 export const adminOnly = (req: Request, res: Response, next: NextFunction): void => {
-  const authenticatedReq = req as AuthenticatedRequest;
-  if (!authenticatedReq.user) {
-    sendUnauthorized(res, 'Authentication required');
-    return;
-  }
+  try {
+    const authenticatedReq = req as AuthenticatedRequest;
+    if (!authenticatedReq.user) {
+      sendUnauthorized(res, 'Authentication required');
+      return;
+    }
 
-  if (authenticatedReq.user.role !== 'admin') {
-    sendForbidden(res, 'Admin access required');
-    return;
-  }
+    if (authenticatedReq.user.role !== 'admin') {
+      sendForbidden(res, 'Admin access required');
+      return;
+    }
 
-  next();
+    next();
+  } catch (error) {
+    console.error('Admin authorization error:', error);
+    sendForbidden(res, 'Authorization failed');
+  }
 };
 
 /**
  * Optional authentication middleware
  * Allows request to proceed even if no valid token is provided
  * @param req - Express Request object
- * @param res - Express Response object
+ * @param _res - Express Response object
  * @param next - Express NextFunction
  */
 export const optionalAuth = async (
@@ -116,7 +133,14 @@ export const optionalAuth = async (
   try {
     // Get token from header
     const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    
+    // If no authorization header, proceed without authentication
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      next();
+      return;
+    }
+
+    const token = authHeader.split(' ')[1];
 
     // If no token, proceed without authentication
     if (!token) {
@@ -126,7 +150,7 @@ export const optionalAuth = async (
 
     // Verify token
     const decoded = verifyToken(token);
-    if (!decoded) {
+    if (!decoded || !decoded.id) {
       // Invalid token, but we still proceed (optional auth)
       next();
       return;
@@ -158,13 +182,52 @@ export const optionalAuth = async (
     next();
   } catch (error) {
     // Error occurred, but we still proceed (optional auth)
+    console.error('Optional auth error:', error);
     next();
   }
+};
+
+/**
+ * Middleware to check if authenticated user owns the resource
+ * @param resourceIdParam - The parameter name for the resource ID (default: 'id')
+ */
+export const requireOwnership = (resourceIdParam: string = 'id') => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const authenticatedReq = req as AuthenticatedRequest;
+      
+      if (!authenticatedReq.user) {
+        sendUnauthorized(res, 'Authentication required');
+        return;
+      }
+
+      const resourceId = req.params[resourceIdParam];
+      const userId = authenticatedReq.user.id;
+
+      // Admin can access any resource
+      if (authenticatedReq.user.role === 'admin') {
+        next();
+        return;
+      }
+
+      // Check if user owns the resource
+      if (resourceId !== userId) {
+        sendForbidden(res, 'You can only access your own resources');
+        return;
+      }
+
+      next();
+    } catch (error) {
+      console.error('Ownership check error:', error);
+      sendForbidden(res, 'Access denied');
+    }
+  };
 };
 
 export default {
   authenticate,
   authorize,
   adminOnly,
-  optionalAuth
+  optionalAuth,
+  requireOwnership
 };
