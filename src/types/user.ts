@@ -18,6 +18,7 @@ export interface IUser extends Document {
   profile?: UserProfile;
   created_at: Date;
   updated_at: Date;
+  comparePassword(candidatePassword: string): Promise<boolean>;
   toPublicJSON(): import('./user').UserResponse;
 }
 

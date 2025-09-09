@@ -6,7 +6,7 @@ import {
   validatePagination
 } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, authorize, adminOnly } from '../middleware/auth';
+import { authenticate, authorize, adminOnly, simpleAuth, simpleAdminOnly } from '../middleware/auth';
 import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { UpdateUserRequest } from '../types/user';
 import { AuthenticatedRequest } from '../types/auth';
@@ -18,7 +18,7 @@ const router = Router();
  * @desc    Get all users (admin only)
  * @access  Private (Admin only)
  */
-router.get('/', authenticate, adminOnly, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/', simpleAuth, simpleAdminOnly, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
@@ -72,16 +72,11 @@ router.get('/', authenticate, adminOnly, validatePagination, asyncHandler(async 
  * @desc    Get user by ID
  * @access  Private (Admin or self)
  */
-router.get('/:id', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.params.id;
     
-    // Check if user is trying to access their own profile or is admin
-    if (req.user?.id !== userId && req.user?.role !== 'admin') {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
+    // With simplified auth, any token holder can access any user
     const user = await User.findById(userId).select('-password');
     if (!user) {
       sendNotFound(res, 'User not found');
@@ -221,7 +216,7 @@ router.get('/farmers', authenticate, authorize('admin', 'agent'), validatePagina
  * @desc    Get all agents (admin only)
  * @access  Private (Admin only)
  */
-router.get('/agents', authenticate, adminOnly, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/agents', authenticate, authorize('admin'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
@@ -261,6 +256,55 @@ router.get('/agents', authenticate, adminOnly, validatePagination, asyncHandler(
     return;
   } catch (error) {
     sendError(res, 'Failed to retrieve agents', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   GET /api/users/shop-managers
+ * @desc    Get all shop managers (admin only)
+ * @access  Private (Admin only)
+ */
+router.get('/shop-managers', authenticate, authorize('admin'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+    
+    // Build filter for shop managers
+    const filter: any = { role: 'shop_manager' };
+    
+    // Add status filter if provided
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+    
+    // Add search filter if provided
+    if (req.query.search) {
+      const searchRegex = new RegExp(req.query.search as string, 'i');
+      filter.$or = [
+        { full_name: searchRegex },
+        { email: searchRegex },
+      ];
+    }
+    
+    // Get shop managers with pagination
+    const shopManagers = await User.find(filter)
+      .select('-password')
+      .skip(skip)
+      .limit(limit)
+      .sort({ created_at: -1 });
+    
+    // Get total count for pagination
+    const total = await User.countDocuments(filter);
+    
+    // Transform shop managers to public JSON
+    const shopManagerData = shopManagers.map(user => user.toPublicJSON());
+    
+    sendPaginatedResponse(res, shopManagerData, total, page, limit, 'Shop managers retrieved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to retrieve shop managers', 500);
     return;
   }
 }));

@@ -86,9 +86,7 @@ router.post('/login', validateUserLogin, asyncHandler(async (req: Request, res: 
   }
 
   // Compare passwords using the instance method
-  // HACK: Cast to any to bypass TS error. The User model type is likely missing the comparePassword method.
-  // This should be fixed in `src/models/User.ts` by correctly typing the schema and model.
-  const isMatch = await (user as any).comparePassword(password);
+  const isMatch = await user.comparePassword(password);
   if (!isMatch) {
     sendError(res, 'Invalid credentials', 401);
     return;
@@ -201,9 +199,7 @@ router.put('/password', authenticate, validatePasswordChange, asyncHandler(async
   }
 
   // Verify current password using the instance method
-  // HACK: Cast to any to bypass TS error. The User model type is likely missing the comparePassword method.
-  // This should be fixed in `src/models/User.ts` by correctly typing the schema and model.
-  const isMatch = await (user as any).comparePassword(currentPassword);
+  const isMatch = await user.comparePassword(currentPassword);
   if (!isMatch) {
     sendError(res, 'Current password is incorrect', 400);
     return;
