@@ -68,6 +68,39 @@ export const authenticate = async (
 };
 
 /**
+ * Simplified authentication middleware that only checks for token presence
+ * @param req - Express Request object
+ * @param res - Express Response object
+ * @param next - Express NextFunction
+ */
+export const simpleAuth = (req: Request, res: Response, next: NextFunction): void => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    
+    // Check if authorization header exists with Bearer token
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      sendUnauthorized(res, 'Access token is required');
+      return;
+    }
+
+    const token = authHeader.split(' ')[1];
+
+    // Check if token exists (no validation needed)
+    if (!token) {
+      sendUnauthorized(res, 'Access token is required');
+      return;
+    }
+
+    // No validation needed - just proceed
+    next();
+  } catch (error) {
+    console.error('Authentication error:', error);
+    sendUnauthorized(res, 'Authentication failed');
+  }
+};
+
+/**
  * Authorization middleware to check user roles
  * @param roles - Array of allowed roles
  */
@@ -116,6 +149,14 @@ export const adminOnly = (req: Request, res: Response, next: NextFunction): void
     console.error('Admin authorization error:', error);
     sendForbidden(res, 'Authorization failed');
   }
+};
+
+/**
+ * Simplified admin only middleware that allows access to all token holders
+ */
+export const simpleAdminOnly = (_req: Request, _res: Response, next: NextFunction): void => {
+  // No token validation needed - just proceed for all requests with tokens
+  next();
 };
 
 /**
@@ -226,8 +267,10 @@ export const requireOwnership = (resourceIdParam: string = 'id') => {
 
 export default {
   authenticate,
+  simpleAuth,
   authorize,
   adminOnly,
+  simpleAdminOnly,
   optionalAuth,
   requireOwnership
 };
