@@ -34,35 +34,49 @@ export const comparePassword = async (password: string, hashedPassword: string):
 /**
  * Check if a password meets minimum security requirements
  * @param password - Password to validate
- * @returns boolean - True if password is valid, false otherwise
+ * @returns { isValid: boolean, errors: string[] } - Validation result with specific errors
  */
-export const isPasswordValid = (password: string): boolean => {
+export const validatePassword = (password: string): { isValid: boolean; errors: string[] } => {
+  const errors: string[] = [];
+
   // Minimum 8 characters
   if (password.length < 8) {
-    return false;
+    errors.push('Password must be at least 8 characters long');
   }
 
   // Must contain at least one uppercase letter
   if (!/[A-Z]/.test(password)) {
-    return false;
+    errors.push('Password must contain at least one uppercase letter');
   }
 
   // Must contain at least one lowercase letter
   if (!/[a-z]/.test(password)) {
-    return false;
+    errors.push('Password must contain at least one lowercase letter');
   }
 
   // Must contain at least one digit
   if (!/\d/.test(password)) {
-    return false;
+    errors.push('Password must contain at least one number');
   }
 
   // Must contain at least one special character
   if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)) {
-    return false;
+    errors.push('Password must contain at least one special character');
   }
 
-  return true;
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+};
+
+/**
+ * Check if a password meets minimum security requirements (simple boolean)
+ * @param password - Password to validate
+ * @returns boolean - True if password is valid, false otherwise
+ */
+export const isPasswordValid = (password: string): boolean => {
+  return validatePassword(password).isValid;
 };
 
 /**
@@ -71,11 +85,15 @@ export const isPasswordValid = (password: string): boolean => {
  * @returns string - Generated password
  */
 export const generateRandomPassword = (length: number = 12): string => {
+  if (length < 4) {
+    throw new Error('Password length must be at least 4 characters');
+  }
+
   const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const lowercase = 'abcdefghijklmnopqrstuvwxyz';
   const numbers = '0123456789';
   const symbols = '!@#$%^&*()_+-=[]{}|;:,.<>?';
-
+  
   const allChars = uppercase + lowercase + numbers + symbols;
   
   let password = '';
@@ -85,19 +103,26 @@ export const generateRandomPassword = (length: number = 12): string => {
   password += lowercase[Math.floor(Math.random() * lowercase.length)];
   password += numbers[Math.floor(Math.random() * numbers.length)];
   password += symbols[Math.floor(Math.random() * symbols.length)];
-
+  
   // Fill the rest randomly
   for (let i = 4; i < length; i++) {
     password += allChars[Math.floor(Math.random() * allChars.length)];
   }
-
-  // Shuffle the password
-  return password.split('').sort(() => 0.5 - Math.random()).join('');
+  
+  // Shuffle the password using Fisher-Yates algorithm
+  const passwordArray = password.split('');
+  for (let i = passwordArray.length - 1; i > 0; i--) {
+    const j: number = Math.floor(Math.random() * (i + 1));
+    [passwordArray[i], passwordArray[j]] = [passwordArray[j]!, passwordArray[i]!];
+  }
+  
+  return passwordArray.join('');
 };
 
 export default {
   hashPassword,
   comparePassword,
   isPasswordValid,
+  validatePassword,
   generateRandomPassword
 };
