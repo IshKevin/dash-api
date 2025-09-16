@@ -68,101 +68,6 @@ router.get('/', simpleAuth, simpleAdminOnly, validatePagination, asyncHandler(as
 }));
 
 /**
- * @route   GET /api/users/:id
- * @desc    Get user by ID
- * @access  Private (Admin or self)
- */
-router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    
-    // With simplified auth, any token holder can access any user
-    const user = await User.findById(userId).select('-password');
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
-
-    sendSuccess(res, user.toPublicJSON(), 'User retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve user', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/users/:id
- * @desc    Update user (admin or self)
- * @access  Private (Admin or self)
- */
-router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    const updateData: UpdateUserRequest = req.body;
-    
-    // Check permissions
-    if (req.user?.id !== userId && req.user?.role !== 'admin') {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Prevent role/status changes by non-admin users
-    if (req.user?.role !== 'admin') {
-      delete updateData.role;
-      delete updateData.status;
-    }
-    
-    // Update user
-    const user = await User.findByIdAndUpdate(
-      userId,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
-    
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
-
-    sendSuccess(res, user.toPublicJSON(), 'User updated successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update user', 500);
-    return;
-  }
-}));
-
-/**
- * @route   DELETE /api/users/:id
- * @desc    Delete user (admin only)
- * @access  Private (Admin only)
- */
-router.delete('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    
-    // Prevent users from deleting themselves
-    if (req.user?.id === userId) {
-      sendError(res, 'Cannot delete your own account', 400);
-      return;
-    }
-    
-    const user = await User.findByIdAndDelete(userId);
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
-
-    sendSuccess(res, null, 'User deleted successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to delete user', 500);
-    return;
-  }
-}));
-
-/**
  * @route   GET /api/users/farmers
  * @desc    Get all farmers (admin and agents only)
  * @access  Private (Admin and agents)
@@ -309,6 +214,74 @@ router.get('/shop-managers', authenticate, authorize('admin'), validatePaginatio
   }
 }));
 
+// IMPORTANT: All specific routes (like /agents, /farmers) must come BEFORE parameterized routes (like /:id)
+
+/**
+ * @route   GET /api/users/:id
+ * @desc    Get user by ID
+ * @access  Private (Admin or self)
+ */
+router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.params.id;
+    
+    // With simplified auth, any token holder can access any user
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      sendNotFound(res, 'User not found');
+      return;
+    }
+
+    sendSuccess(res, user.toPublicJSON(), 'User retrieved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to retrieve user', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   PUT /api/users/:id
+ * @desc    Update user (admin or self)
+ * @access  Private (Admin or self)
+ */
+router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.params.id;
+    const updateData: UpdateUserRequest = req.body;
+    
+    // Check permissions
+    if (req.user?.id !== userId && req.user?.role !== 'admin') {
+      sendError(res, 'Access denied', 403);
+      return;
+    }
+    
+    // Prevent role/status changes by non-admin users
+    if (req.user?.role !== 'admin') {
+      delete updateData.role;
+      delete updateData.status;
+    }
+    
+    // Update user
+    const user = await User.findByIdAndUpdate(
+      userId,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+    
+    if (!user) {
+      sendNotFound(res, 'User not found');
+      return;
+    }
+
+    sendSuccess(res, user.toPublicJSON(), 'User updated successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to update user', 500);
+    return;
+  }
+}));
+
 /**
  * @route   PUT /api/users/:id/status
  * @desc    Update user status (admin only)
@@ -389,6 +362,35 @@ router.put('/:id/role', authenticate, adminOnly, validateIdParam, asyncHandler(a
     return;
   } catch (error) {
     sendError(res, 'Failed to update user role', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   DELETE /api/users/:id
+ * @desc    Delete user (admin only)
+ * @access  Private (Admin only)
+ */
+router.delete('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.params.id;
+    
+    // Prevent users from deleting themselves
+    if (req.user?.id === userId) {
+      sendError(res, 'Cannot delete your own account', 400);
+      return;
+    }
+    
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      sendNotFound(res, 'User not found');
+      return;
+    }
+
+    sendSuccess(res, null, 'User deleted successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to delete user', 500);
     return;
   }
 }));
