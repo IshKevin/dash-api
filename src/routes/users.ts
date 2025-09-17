@@ -3,7 +3,8 @@ import { User } from '../models/User';
 import { 
   validateIdParam, 
   validateUserProfileUpdate,
-  validatePagination
+  validatePagination,
+  validateFarmerProfile
 } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize, adminOnly, simpleAuth, simpleAdminOnly } from '../middleware/auth';
@@ -117,6 +118,130 @@ router.get('/farmers', authenticate, authorize('admin', 'agent'), validatePagina
 }));
 
 /**
+ * @route   POST /api/users/farmers
+ * @desc    Create new farmer (admin only)
+ * @access  Private (Admin only)
+ */
+router.post('/farmers', authenticate, adminOnly, validateFarmerProfile, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const {
+      full_name,
+      email,
+      age,
+      phone,
+      gender,
+      marital_status,
+      education_level,
+      // Personal location
+      province,
+      district,
+      sector,
+      cell,
+      village,
+      // Farm location
+      farm_province,
+      farm_district,
+      farm_sector,
+      farm_cell,
+      farm_village,
+      // Farm details
+      farm_age,
+      planted,
+      avocado_type,
+      mixed_percentage,
+      farm_size,
+      tree_count,
+      upi_number,
+      assistance
+    } = req.body;
+    
+    // Validate required fields
+    if (!full_name || !email || !gender) {
+      sendError(res, 'Full name, email, and gender are required', 400);
+      return;
+    }
+    
+    // Check if user with this email already exists
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      sendError(res, 'User with this email already exists', 400);
+      return;
+    }
+    
+    // Create farmer with default password
+    const defaultPassword = 'FarmerPass123!';
+    
+    const farmerData = {
+      email: email.toLowerCase().trim(),
+      password: defaultPassword,
+      full_name: full_name.trim(),
+      phone: phone?.trim() || undefined,
+      role: 'farmer' as UserRole,
+      status: 'active' as UserStatus,
+      profile: {
+        age: age || undefined,
+        gender: gender,
+        marital_status: marital_status || undefined,
+        education_level: education_level || undefined,
+        // Personal location
+        province: province?.trim() || undefined,
+        district: district?.trim() || undefined,
+        sector: sector?.trim() || undefined,
+        cell: cell?.trim() || undefined,
+        village: village?.trim() || undefined,
+        // Farm details
+        farm_details: {
+          farm_location: {
+            province: farm_province?.trim() || undefined,
+            district: farm_district?.trim() || undefined,
+            sector: farm_sector?.trim() || undefined,
+            cell: farm_cell?.trim() || undefined,
+            village: farm_village?.trim() || undefined,
+          },
+          farm_age: farm_age || undefined,
+          planted: planted || undefined,
+          avocado_type: avocado_type || undefined,
+          mixed_percentage: mixed_percentage || undefined,
+          farm_size: farm_size || undefined,
+          tree_count: tree_count || undefined,
+          upi_number: upi_number?.trim() || undefined,
+          assistance: assistance || undefined
+        }
+      }
+    };
+    
+    // Create new farmer
+    const farmer = new User(farmerData);
+    await farmer.save();
+    
+    // Return success response with farmer data (excluding password)
+    sendSuccess(res, {
+      ...farmer.toPublicJSON(),
+      default_password: defaultPassword // Include default password in response for admin
+    }, 'Farmer created successfully');
+    return;
+    
+  } catch (error: any) {
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
+      sendError(res, `Validation error: ${validationErrors.join(', ')}`, 400);
+      return;
+    }
+    
+    // Handle duplicate email error
+    if (error.code === 11000 && error.keyPattern?.email) {
+      sendError(res, 'User with this email already exists', 400);
+      return;
+    }
+    
+    console.error('Error creating farmer:', error);
+    sendError(res, 'Failed to create farmer', 500);
+    return;
+  }
+}));
+
+/**
  * @route   GET /api/users/agents
  * @desc    Get all agents (admin only)
  * @access  Private (Admin only)
@@ -217,6 +342,122 @@ router.get('/shop-managers', authenticate, authorize('admin'), validatePaginatio
 // IMPORTANT: All specific routes (like /agents, /farmers) must come BEFORE parameterized routes (like /:id)
 
 /**
+ * @route   GET /api/users/me
+ * @desc    Get current user profile
+ * @access  Private
+ */
+router.get('/me', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const user = await User.findById(req.user?.id).select('-password');
+    if (!user) {
+      sendNotFound(res, 'User not found');
+      return;
+    }
+
+    sendSuccess(res, user.toPublicJSON(), 'Profile retrieved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to retrieve profile', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   PUT /api/users/me
+ * @desc    Update current user profile
+ * @access  Private
+ */
+router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const updateData = req.body;
+    
+    // Remove sensitive fields that shouldn't be updated via this endpoint
+    delete updateData.role;
+    delete updateData.status;
+    delete updateData.password;
+    delete updateData.email; // Email changes should go through a separate verification process
+    
+    // Structure the profile data correctly
+    if (req.user?.role === 'farmer') {
+      const profileData = {
+        full_name: updateData.full_name,
+        phone: updateData.phone,
+        profile: {
+          age: updateData.age,
+          gender: updateData.gender,
+          marital_status: updateData.marital_status,
+          education_level: updateData.education_level,
+          // Personal location
+          province: updateData.province,
+          district: updateData.district,
+          sector: updateData.sector,
+          cell: updateData.cell,
+          village: updateData.village,
+          // Farm details
+          farm_details: {
+            farm_location: {
+              province: updateData.farm_province,
+              district: updateData.farm_district,
+              sector: updateData.farm_sector,
+              cell: updateData.farm_cell,
+              village: updateData.farm_village,
+            },
+            farm_age: updateData.farm_age,
+            planted: updateData.planted,
+            avocado_type: updateData.avocado_type,
+            mixed_percentage: updateData.mixed_percentage,
+            farm_size: updateData.farm_size,
+            tree_count: updateData.tree_count,
+            upi_number: updateData.upi_number,
+            assistance: updateData.assistance
+          }
+        }
+      };
+      
+      const user = await User.findByIdAndUpdate(
+        userId,
+        profileData,
+        { new: true, runValidators: true }
+      ).select('-password');
+      
+      if (!user) {
+        sendNotFound(res, 'User not found');
+        return;
+      }
+
+      sendSuccess(res, user.toPublicJSON(), 'Profile updated successfully');
+      return;
+    } else {
+      // For non-farmer users, update basic profile
+      const user = await User.findByIdAndUpdate(
+        userId,
+        {
+          full_name: updateData.full_name,
+          phone: updateData.phone,
+          profile: {
+            ...updateData.profile
+          }
+        },
+        { new: true, runValidators: true }
+      ).select('-password');
+      
+      if (!user) {
+        sendNotFound(res, 'User not found');
+        return;
+      }
+
+      sendSuccess(res, user.toPublicJSON(), 'Profile updated successfully');
+      return;
+    }
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    sendError(res, 'Failed to update profile', 500);
+    return;
+  }
+}));
+
+/**
  * @route   GET /api/users/:id
  * @desc    Get user by ID
  * @access  Private (Admin or self)
@@ -245,6 +486,43 @@ router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: Authent
  * @desc    Update user (admin or self)
  * @access  Private (Admin or self)
  */
+router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.params.id;
+    const updateData: UpdateUserRequest = req.body;
+    
+    // Check permissions
+    if (req.user?.id !== userId && req.user?.role !== 'admin') {
+      sendError(res, 'Access denied', 403);
+      return;
+    }
+    
+    // Prevent role/status changes by non-admin users
+    if (req.user?.role !== 'admin') {
+      delete updateData.role;
+      delete updateData.status;
+    }
+    
+    // Update user
+    const user = await User.findByIdAndUpdate(
+      userId,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+    
+    if (!user) {
+      sendNotFound(res, 'User not found');
+      return;
+    }
+
+    sendSuccess(res, user.toPublicJSON(), 'User updated successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to update user', 500);
+    return;
+  }
+}));
+
 /**
  * @route   POST /api/users/agents
  * @desc    Create new agent (admin only)
@@ -311,42 +589,6 @@ router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: Authent
     
     console.error('Error creating agent:', error);
     sendError(res, 'Failed to create agent', 500);
-    return;
-  }
-}));
-router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    const updateData: UpdateUserRequest = req.body;
-    
-    // Check permissions
-    if (req.user?.id !== userId && req.user?.role !== 'admin') {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Prevent role/status changes by non-admin users
-    if (req.user?.role !== 'admin') {
-      delete updateData.role;
-      delete updateData.status;
-    }
-    
-    // Update user
-    const user = await User.findByIdAndUpdate(
-      userId,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
-    
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
-
-    sendSuccess(res, user.toPublicJSON(), 'User updated successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update user', 500);
     return;
   }
 }));
