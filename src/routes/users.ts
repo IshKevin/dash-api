@@ -8,7 +8,7 @@ import {
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize, adminOnly, simpleAuth, simpleAdminOnly } from '../middleware/auth';
 import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
-import { UpdateUserRequest } from '../types/user';
+import { UpdateUserRequest, UserRole, UserStatus } from '../types/user';
 import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
@@ -245,6 +245,75 @@ router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: Authent
  * @desc    Update user (admin or self)
  * @access  Private (Admin or self)
  */
+/**
+ * @route   POST /api/users/agents
+ * @desc    Create new agent (admin only)
+ * @access  Private (Admin only)
+ */
+router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { full_name, email, phone, province, district, sector } = req.body;
+    
+    // Validate required fields
+    if (!full_name || !email) {
+      sendError(res, 'Full name and email are required', 400);
+      return;
+    }
+    
+    // Check if user with this email already exists
+    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      sendError(res, 'User with this email already exists', 400);
+      return;
+    }
+    
+    // Create agent with default password
+    const defaultPassword = 'AgentPass123!'; // You can customize this default password
+    
+    const agentData = {
+      email: email.toLowerCase().trim(),
+      password: defaultPassword,
+      full_name: full_name.trim(),
+      phone: phone?.trim() || undefined,
+      role: 'agent' as UserRole,
+      status: 'active' as UserStatus,
+      profile: {
+        province: province?.trim() || undefined,
+        district: district?.trim() || undefined,
+        ...(sector && { service_areas: [sector.trim()] }) // Using service_areas for agent's sector
+      }
+    };
+    
+    // Create new agent
+    const agent = new User(agentData);
+    await agent.save();
+    
+    // Return success response with agent data (excluding password)
+    sendSuccess(res, {
+      ...agent.toPublicJSON(),
+      default_password: defaultPassword // Include default password in response for admin
+    }, 'Agent created successfully');
+    return;
+    
+  } catch (error: any) {
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
+      sendError(res, `Validation error: ${validationErrors.join(', ')}`, 400);
+      return;
+    }
+    
+    // Handle duplicate email error
+    if (error.code === 11000 && error.keyPattern?.email) {
+      sendError(res, 'User with this email already exists', 400);
+      return;
+    }
+    
+    console.error('Error creating agent:', error);
+    sendError(res, 'Failed to create agent', 500);
+    return;
+  }
+}));
 router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.params.id;
