@@ -15,6 +15,42 @@ import { AuthenticatedRequest } from '../types/auth';
 const router = Router();
 
 /**
+ * Helper function to transform user profile to match frontend expectations
+ */
+function transformUserProfileForResponse(user: any) {
+  if (!user.profile) {
+    return user;
+  }
+
+  // Create flattened structure for farmers
+  if (user.role === 'farmer') {
+    return {
+      ...user,
+      profile: {
+        ...user.profile,
+        // Ensure flattened farm details are available
+        farm_age: user.profile.farm_age || user.profile.farm_details?.farm_age,
+        planted: user.profile.planted || user.profile.farm_details?.planted,
+        avocado_type: user.profile.avocado_type || user.profile.farm_details?.avocado_type,
+        mixed_percentage: user.profile.mixed_percentage || user.profile.farm_details?.mixed_percentage,
+        farm_size: user.profile.farm_size || user.profile.farm_details?.farm_size,
+        tree_count: user.profile.tree_count || user.profile.farm_details?.tree_count,
+        upi_number: user.profile.upi_number || user.profile.farm_details?.upi_number,
+        assistance: user.profile.assistance || user.profile.farm_details?.assistance,
+        // Ensure flattened farm location
+        farm_province: user.profile.farm_province || user.profile.farm_details?.farm_location?.province,
+        farm_district: user.profile.farm_district || user.profile.farm_details?.farm_location?.district,
+        farm_sector: user.profile.farm_sector || user.profile.farm_details?.farm_location?.sector,
+        farm_cell: user.profile.farm_cell || user.profile.farm_details?.farm_location?.cell,
+        farm_village: user.profile.farm_village || user.profile.farm_details?.farm_location?.village,
+      }
+    };
+  }
+
+  return user;
+}
+
+/**
  * @route   GET /api/users
  * @desc    Get all users (admin only)
  * @access  Private (Admin only)
@@ -189,7 +225,22 @@ router.post('/farmers', authenticate, adminOnly, validateFarmerProfile, asyncHan
         sector: sector?.trim() || undefined,
         cell: cell?.trim() || undefined,
         village: village?.trim() || undefined,
-        // Farm details
+        // Flattened farm details for easier frontend access
+        farm_age: farm_age || undefined,
+        planted: planted || undefined,
+        avocado_type: avocado_type || undefined,
+        mixed_percentage: mixed_percentage || undefined,
+        farm_size: farm_size || undefined,
+        tree_count: tree_count || undefined,
+        upi_number: upi_number?.trim() || undefined,
+        assistance: assistance || undefined,
+        // Farm location (flattened)
+        farm_province: farm_province?.trim() || undefined,
+        farm_district: farm_district?.trim() || undefined,
+        farm_sector: farm_sector?.trim() || undefined,
+        farm_cell: farm_cell?.trim() || undefined,
+        farm_village: farm_village?.trim() || undefined,
+        // Keep nested structure for backward compatibility
         farm_details: {
           farm_location: {
             province: farm_province?.trim() || undefined,
@@ -354,7 +405,9 @@ router.get('/me', authenticate, asyncHandler(async (req: AuthenticatedRequest, r
       return;
     }
 
-    sendSuccess(res, user.toPublicJSON(), 'Profile retrieved successfully');
+    // Transform the response to match frontend expectations
+    const transformedProfile = transformUserProfileForResponse(user.toPublicJSON());
+    sendSuccess(res, transformedProfile, 'Profile retrieved successfully');
     return;
   } catch (error) {
     sendError(res, 'Failed to retrieve profile', 500);
@@ -381,36 +434,53 @@ router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: 
     // Structure the profile data correctly
     if (req.user?.role === 'farmer') {
       const profileData = {
-        full_name: updateData.full_name,
-        phone: updateData.phone,
+        full_name: updateData.full_name?.trim(),
+        phone: updateData.phone?.trim(),
         profile: {
           age: updateData.age,
           gender: updateData.gender,
           marital_status: updateData.marital_status,
           education_level: updateData.education_level,
+          id_number: updateData.id_number?.trim(),
+          image: updateData.image,
           // Personal location
-          province: updateData.province,
-          district: updateData.district,
-          sector: updateData.sector,
-          cell: updateData.cell,
-          village: updateData.village,
-          // Farm details
+          province: updateData.province?.trim(),
+          district: updateData.district?.trim(),
+          sector: updateData.sector?.trim(),
+          cell: updateData.cell?.trim(),
+          village: updateData.village?.trim(),
+          // Flattened farm details for easier frontend access
+          farm_age: updateData.farm_age,
+          planted: updateData.planted,
+          avocado_type: updateData.avocado_type,
+          mixed_percentage: updateData.mixed_percentage,
+          farm_size: updateData.farm_size,
+          tree_count: updateData.tree_count,
+          upi_number: updateData.upi_number?.trim(),
+          assistance: updateData.assistance,
+          // Farm location (flattened)
+          farm_province: updateData.farm_province?.trim(),
+          farm_district: updateData.farm_district?.trim(),
+          farm_sector: updateData.farm_sector?.trim(),
+          farm_cell: updateData.farm_cell?.trim(),
+          farm_village: updateData.farm_village?.trim(),
+          // Keep nested structure for backward compatibility
           farm_details: {
             farm_location: {
-              province: updateData.farm_province,
-              district: updateData.farm_district,
-              sector: updateData.farm_sector,
-              cell: updateData.farm_cell,
-              village: updateData.farm_village,
+              province: updateData.farm_province?.trim() || undefined,
+              district: updateData.farm_district?.trim() || undefined,
+              sector: updateData.farm_sector?.trim() || undefined,
+              cell: updateData.farm_cell?.trim() || undefined,
+              village: updateData.farm_village?.trim() || undefined,
             },
-            farm_age: updateData.farm_age,
-            planted: updateData.planted,
-            avocado_type: updateData.avocado_type,
-            mixed_percentage: updateData.mixed_percentage,
-            farm_size: updateData.farm_size,
-            tree_count: updateData.tree_count,
-            upi_number: updateData.upi_number,
-            assistance: updateData.assistance
+            farm_age: updateData.farm_age || undefined,
+            planted: updateData.planted || undefined,
+            avocado_type: updateData.avocado_type || undefined,
+            mixed_percentage: updateData.mixed_percentage || undefined,
+            farm_size: updateData.farm_size || undefined,
+            tree_count: updateData.tree_count || undefined,
+            upi_number: updateData.upi_number?.trim() || undefined,
+            assistance: updateData.assistance || undefined
           }
         }
       };
@@ -426,15 +496,17 @@ router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: 
         return;
       }
 
-      sendSuccess(res, user.toPublicJSON(), 'Profile updated successfully');
+      // Transform the response to match frontend expectations
+      const transformedProfile = transformUserProfileForResponse(user.toPublicJSON());
+      sendSuccess(res, transformedProfile, 'Profile updated successfully');
       return;
     } else {
       // For non-farmer users, update basic profile
       const user = await User.findByIdAndUpdate(
         userId,
         {
-          full_name: updateData.full_name,
-          phone: updateData.phone,
+          full_name: updateData.full_name?.trim(),
+          phone: updateData.phone?.trim(),
           profile: {
             ...updateData.profile
           }
@@ -450,8 +522,16 @@ router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: 
       sendSuccess(res, user.toPublicJSON(), 'Profile updated successfully');
       return;
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error updating profile:', error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
+      sendError(res, `Validation error: ${validationErrors.join(', ')}`, 400);
+      return;
+    }
+    
     sendError(res, 'Failed to update profile', 500);
     return;
   }
