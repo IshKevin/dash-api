@@ -192,3 +192,131 @@ export interface ServiceRequestAnalytics {
     completion_rate: number;
   }>;
 }
+
+// Add these to your types/serviceRequest.ts file
+
+export interface HassBreakdown {
+  selectedSizes: string[];
+  c12c14?: string;
+  c16c18?: string;
+  c20c24?: string;
+}
+
+export interface ServiceLocation {
+  province: string;
+  district: string;
+  sector?: string;
+  cell?: string;
+  village?: string;
+  coordinates?: {
+    latitude: number;
+    longitude: number;
+  };
+}
+
+export interface HarvestDetails {
+  workers_needed: number;
+  equipment_needed: string[];
+  trees_to_harvest: number;
+  harvest_date_from: Date;
+  harvest_date_to: Date;
+  harvest_images?: string[];
+  hass_breakdown?: HassBreakdown;
+  
+  // Admin approval details
+  approved_workers?: number;
+  approved_equipment?: string[];
+  
+  // Completion details
+  actual_workers_used?: number;
+  actual_harvest_amount?: string;
+  harvest_quality_notes?: string;
+  completion_images?: string[];
+}
+
+// Request body interfaces
+export interface CreateHarvestRequest {
+  workersNeeded: number | string;
+  equipmentNeeded?: string[];
+  treesToHarvest: number | string;
+  harvestDateFrom: string;
+  harvestDateTo: string;
+  harvestImages?: string[];
+  hassBreakdown?: HassBreakdown;
+  location: ServiceLocation;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  notes?: string;
+}
+
+export interface ApproveHarvestRequest {
+  agent_id?: string;
+  scheduled_date?: string;
+  cost_estimate?: number;
+  notes?: string;
+  approved_workers?: number | string;
+  approved_equipment?: string[];
+}
+
+export interface RejectHarvestRequest {
+  rejection_reason: string;
+  notes?: string;
+}
+
+export interface CompleteHarvestRequest {
+  completion_notes?: string;
+  actual_workers_used?: number | string;
+  actual_harvest_amount?: string;
+  harvest_quality_notes?: string;
+  completion_images?: string[];
+}
+
+export interface StartHarvestRequest {
+  start_notes?: string;
+  actual_start_date?: string;
+}
+
+// Response interfaces
+export interface HarvestRequestResponse {
+  id: string;
+  farmer_id: string;
+  agent_id?: string;
+  service_type: 'harvest';
+  title: string;
+  description: string;
+  request_number: string;
+  status: 'pending' | 'approved' | 'rejected' | 'assigned' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  requested_date: Date;
+  scheduled_date?: Date;
+  started_at?: Date;
+  completed_at?: Date;
+  approved_at?: Date;
+  rejected_at?: Date;
+  rejection_reason?: string;
+  location: ServiceLocation;
+  cost_estimate?: number;
+  final_cost?: number;
+  notes?: string;
+  start_notes?: string;
+  completion_notes?: string;
+  harvest_details?: HarvestDetails;
+  feedback?: {
+    rating: number;
+    comment?: string;
+    submitted_at: Date;
+  };
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface HarvestRequestListResponse {
+  success: boolean;
+  message: string;
+  data: HarvestRequestResponse[];
+  pagination: {
+    currentPage: number;
+    totalPages: number;
+    totalCount: number;
+    limit: number;
+  };
+}

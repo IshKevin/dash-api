@@ -475,6 +475,111 @@ export const validateFarmerProfile = (req: Request, res: Response, next: NextFun
   next();
 };
 
+/**
+ * Validate harvest request creation data
+ */
+export const validateHarvestRequestCreation = (req: Request, res: Response, next: NextFunction) => {
+  const {
+    workersNeeded,
+    equipmentNeeded,
+    treesToHarvest,
+    harvestDateFrom,
+    harvestDateTo,
+    hassBreakdown,
+    location
+  } = req.body;
+
+  // Required fields validation
+  if (!workersNeeded || !treesToHarvest || !harvestDateFrom || !harvestDateTo) {
+    sendError(res, 'Workers needed, trees to harvest, and harvest dates are required', 400);
+    return;
+  }
+
+  // Validate workers needed
+  const workers = parseInt(workersNeeded);
+  if (isNaN(workers) || workers < 1 || workers > 50) {
+    sendError(res, 'Workers needed must be between 1 and 50', 400);
+    return;
+  }
+
+  // Validate trees to harvest
+  const trees = parseInt(treesToHarvest);
+  if (isNaN(trees) || trees < 1) {
+    sendError(res, 'Trees to harvest must be a positive number', 400);
+    return;
+  }
+
+  // Validate dates
+  const fromDate = new Date(harvestDateFrom);
+  const toDate = new Date(harvestDateTo);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (fromDate < today) {
+    sendError(res, 'Harvest start date cannot be in the past', 400);
+    return;
+  }
+
+  if (toDate < fromDate) {
+    sendError(res, 'Harvest end date must be after start date', 400);
+    return;
+  }
+
+  // Validate date range (max 30 days)
+  const diffTime = Math.abs(toDate.getTime() - fromDate.getTime());
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  if (diffDays > 30) {
+    sendError(res, 'Harvest period cannot exceed 30 days', 400);
+    return;
+  }
+
+  // Validate equipment needed array if provided
+  if (equipmentNeeded && !Array.isArray(equipmentNeeded)) {
+    sendError(res, 'Equipment needed must be an array', 400);
+    return;
+  }
+
+  // Validate HASS breakdown if provided
+  if (hassBreakdown) {
+    const { selectedSizes } = hassBreakdown;
+    
+    if (selectedSizes && Array.isArray(selectedSizes) && selectedSizes.length > 0) {
+      let totalPercentage = 0;
+      
+      selectedSizes.forEach(size => {
+        if (!['c12c14', 'c16c18', 'c20c24'].includes(size)) {
+          sendError(res, 'Invalid size category in HASS breakdown', 400);
+          return;
+        }
+        
+        const percentage = parseInt(hassBreakdown[size] || 0);
+        if (isNaN(percentage) || percentage < 0 || percentage > 100) {
+          sendError(res, 'Each HASS percentage must be between 0 and 100', 400);
+          return;
+        }
+        
+        totalPercentage += percentage;
+      });
+      
+      if (totalPercentage > 100) {
+        sendError(res, 'Total HASS breakdown percentage cannot exceed 100%', 400);
+        return;
+      }
+    }
+  }
+
+  // Validate location if provided
+  if (location) {
+    if (!location.province || !location.district) {
+      sendError(res, 'Province and district are required in location', 400);
+      return;
+    }
+  }
+
+  next();
+};
+
 export default {
   validate,
   validateUserRegistration,
@@ -486,5 +591,6 @@ export default {
   validateServiceRequestCreation,
   validateIdParam,
   validatePagination,
-  validateFarmerProfile
+  validateFarmerProfile,
+  validateHarvestRequestCreation
 };
