@@ -29,9 +29,35 @@ export interface IHarvestDetails {
   completion_images?: string[];
 }
 
+export interface IPestDisease {
+  name: string;
+  first_spotted_date: Date;
+  order: number;
+  is_primary: boolean;
+}
+
+export interface IPestManagementDetails {
+  pests_diseases: IPestDisease[];
+  first_noticed: string;
+  damage_observed: string;
+  damage_details: string;
+  control_methods_tried: string;
+  severity_level: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface IFarmerInfo {
+  name: string;
+  phone: string;
+  email?: string;
+  location: string;
+}
+
 export interface IServiceLocation {
+  farm_name?: string;
+  street_address?: string;
+  city?: string;
   province: string;
-  district: string;
+  district?: string;
   sector?: string;
   cell?: string;
   village?: string;
@@ -39,6 +65,7 @@ export interface IServiceLocation {
     latitude: number;
     longitude: number;
   };
+  access_instructions?: string;
 }
 
 export interface IServiceFeedback {
@@ -51,7 +78,7 @@ export interface IServiceRequest extends Document {
   _id: string;
   farmer_id: string;
   agent_id?: string;
-  service_type: 'harvest' | 'planting' | 'maintenance' | 'consultation' | 'other';
+  service_type: 'harvest' | 'planting' | 'maintenance' | 'consultation' | 'pest_control' | 'other';
   title: string;
   description: string;
   request_number: string;
@@ -82,6 +109,9 @@ export interface IServiceRequest extends Document {
   
   // Service-specific details
   harvest_details?: IHarvestDetails;
+  pest_management_details?: IPestManagementDetails;
+  farmer_info?: IFarmerInfo;
+  attachments?: string[];
   
   // Feedback
   feedback?: IServiceFeedback;
@@ -99,6 +129,33 @@ const HassBreakdownSchema = new Schema({
   c12c14: { type: String },
   c16c18: { type: String },
   c20c24: { type: String }
+}, { _id: false });
+
+const PestDiseaseSchema = new Schema({
+  name: { type: String, required: true, trim: true },
+  first_spotted_date: { type: Date, required: true },
+  order: { type: Number, required: true, min: 1 },
+  is_primary: { type: Boolean, required: true, default: false }
+}, { _id: false });
+
+const PestManagementDetailsSchema = new Schema({
+  pests_diseases: [PestDiseaseSchema],
+  first_noticed: { type: String, required: true, trim: true },
+  damage_observed: { type: String, required: true, trim: true },
+  damage_details: { type: String, required: true, trim: true },
+  control_methods_tried: { type: String, required: true, trim: true },
+  severity_level: { 
+    type: String, 
+    enum: ['low', 'medium', 'high', 'critical'], 
+    required: true 
+  }
+}, { _id: false });
+
+const FarmerInfoSchema = new Schema({
+  name: { type: String, required: true, trim: true },
+  phone: { type: String, required: true, trim: true },
+  email: { type: String, trim: true },
+  location: { type: String, required: true, trim: true }
 }, { _id: false });
 
 const HarvestDetailsSchema = new Schema({
@@ -122,15 +179,19 @@ const HarvestDetailsSchema = new Schema({
 }, { _id: false });
 
 const ServiceLocationSchema = new Schema({
+  farm_name: { type: String, trim: true },
+  street_address: { type: String, trim: true },
+  city: { type: String, trim: true },
   province: { type: String, required: true, trim: true },
-  district: { type: String, required: true, trim: true },
+  district: { type: String, trim: true },
   sector: { type: String, trim: true },
   cell: { type: String, trim: true },
   village: { type: String, trim: true },
   coordinates: {
     latitude: { type: Number },
     longitude: { type: Number }
-  }
+  },
+  access_instructions: { type: String, trim: true }
 }, { _id: false });
 
 const ServiceFeedbackSchema = new Schema({
@@ -151,7 +212,7 @@ const ServiceRequestSchema = new Schema<IServiceRequest>({
   },
   service_type: {
     type: String,
-    enum: ['harvest', 'planting', 'maintenance', 'consultation', 'other'],
+    enum: ['harvest', 'planting', 'maintenance', 'consultation', 'pest_control', 'other'],
     required: [true, 'Service type is required']
   },
   title: {
@@ -207,6 +268,9 @@ const ServiceRequestSchema = new Schema<IServiceRequest>({
   
   // Service-specific details
   harvest_details: HarvestDetailsSchema,
+  pest_management_details: PestManagementDetailsSchema,
+  farmer_info: FarmerInfoSchema,
+  attachments: [{ type: String, trim: true }],
   
   // Feedback
   feedback: ServiceFeedbackSchema
@@ -259,6 +323,9 @@ ServiceRequestSchema.methods.toPublicJSON = function() {
     start_notes: requestObject.start_notes,
     completion_notes: requestObject.completion_notes,
     harvest_details: requestObject.harvest_details,
+    pest_management_details: requestObject.pest_management_details,
+    farmer_info: requestObject.farmer_info,
+    attachments: requestObject.attachments,
     feedback: requestObject.feedback,
     created_at: requestObject.created_at,
     updated_at: requestObject.updated_at

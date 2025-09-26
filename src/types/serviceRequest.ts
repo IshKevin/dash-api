@@ -17,6 +17,10 @@ export type ServiceType =
   | 'harvest_assistance' 
   | 'market_linkage'
   | 'training'
+  | 'harvest'
+  | 'planting'
+  | 'maintenance'
+  | 'consultation'
   | 'other';
 
 // Base Service Request Interface
@@ -40,6 +44,8 @@ export interface IServiceRequest extends Document {
   notes?: string;
   feedback?: IServiceFeedback;
   attachments?: string[];
+  pest_management_details?: IPestManagementDetails;
+  farmer_info?: IFarmerInfo;
   created_at: Date;
   updated_at: Date;
   toPublicJSON(): import('./serviceRequest').ServiceRequestResponse;
@@ -319,4 +325,51 @@ export interface HarvestRequestListResponse {
     totalCount: number;
     limit: number;
   };
+}
+
+// Pest Control specific interfaces
+export interface IPestDisease {
+  name: string;
+  first_spotted_date: Date;
+  order: number;
+  is_primary: boolean;
+}
+
+export interface IPestManagementDetails {
+  pests_diseases: IPestDisease[];
+  first_noticed: string;
+  damage_observed: string;
+  damage_details: string;
+  control_methods_tried: string;
+  severity_level: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface IFarmerInfo {
+  name: string;
+  phone: string;
+  email?: string;
+  location: string;
+}
+
+export interface CreatePestControlRequest {
+  service_type: 'pest_control';
+  title: string;
+  description: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  preferred_date: Date;
+  location: {
+    farm_name?: string;
+    street_address?: string;
+    city?: string;
+    province: string;
+    coordinates?: {
+      latitude: number;
+      longitude: number;
+    };
+    access_instructions?: string;
+  };
+  pest_management_details: IPestManagementDetails;
+  farmer_info: IFarmerInfo;
+  attachments?: string[];
+  notes?: string;
 }

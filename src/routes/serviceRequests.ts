@@ -1,24 +1,678 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { body, validationResult } from 'express-validator';
 import { ServiceRequest } from '../models/ServiceRequest';
 import { User } from '../models/User';
 import { 
   validateIdParam, 
-  validateServiceRequestCreation,
-  validatePagination,
-  validateHarvestRequestCreation
+  validatePagination
 } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
-import { 
-  CreateServiceRequestRequest, 
-  UpdateServiceRequestRequest, 
-  AgentAssignmentRequest, 
-  ServiceFeedbackRequest 
-} from '../types/serviceRequest';
+// Import types only when needed
+// import { 
+//   CreateServiceRequestRequest, 
+//   UpdateServiceRequestRequest, 
+//   AgentAssignmentRequest, 
+//   ServiceFeedbackRequest,
+//   CreatePestControlRequest
+// } from '../types/serviceRequest';
 import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
+
+// VALIDATION MIDDLEWARE FUNCTIONS
+/**
+ * Validate pest management request creation
+ */
+const validatePestManagementCreation = [
+  // Validate service type
+  body('service_type')
+    .equals('pest_control')
+    .withMessage('Service type must be pest_control'),
+  
+  // Validate title and description
+  body('title')
+    .notEmpty()
+    .isLength({ max: 200 })
+    .withMessage('Title is required and must be less than 200 characters'),
+  
+  body('description')
+    .notEmpty()
+    .isLength({ max: 1000 })
+    .withMessage('Description is required and must be less than 1000 characters'),
+  
+  // Validate location
+  body('location.province')
+    .notEmpty()
+    .withMessage('Province is required'),
+  
+  // Validate pest management details
+  body('pest_management_details.pests_diseases')
+    .isArray({ min: 1 })
+    .withMessage('At least one pest or disease must be provided'),
+  
+  body('pest_management_details.pests_diseases.*.name')
+    .notEmpty()
+    .withMessage('Pest/disease name is required'),
+  
+  body('pest_management_details.pests_diseases.*.first_spotted_date')
+    .optional()
+    .isISO8601()
+    .withMessage('First spotted date must be a valid ISO date'),
+  
+  body('pest_management_details.first_noticed')
+    .notEmpty()
+    .isLength({ max: 500 })
+    .withMessage('First noticed description is required and must be less than 500 characters'),
+  
+  body('pest_management_details.damage_observed')
+    .notEmpty()
+    .withMessage('Damage observed is required'),
+  
+  body('pest_management_details.damage_details')
+    .notEmpty()
+    .isLength({ max: 1000 })
+    .withMessage('Damage details are required and must be less than 1000 characters'),
+  
+  body('pest_management_details.control_methods_tried')
+    .notEmpty()
+    .isLength({ max: 1000 })
+    .withMessage('Control methods tried is required and must be less than 1000 characters'),
+  
+  body('pest_management_details.severity_level')
+    .isIn(['low', 'medium', 'high', 'critical'])
+    .withMessage('Severity level must be low, medium, high, or critical'),
+  
+  // Validate farmer info
+  body('farmer_info.name')
+    .notEmpty()
+    .withMessage('Farmer name is required'),
+  
+  body('farmer_info.phone')
+    .notEmpty()
+    .withMessage('Farmer phone is required'),
+  
+  body('farmer_info.location')
+    .notEmpty()
+    .withMessage('Farmer location is required'),
+  
+  body('priority')
+    .optional()
+    .isIn(['low', 'medium', 'high', 'urgent'])
+    .withMessage('Priority must be low, medium, high, or urgent'),
+  
+  // Handle validation errors
+  (req: Request, res: Response, next: NextFunction): void => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+      return;
+    }
+    next();
+  }
+];
+
+/**
+ * Validate property evaluation request creation
+ */
+const validatePropertyEvaluationCreation = [
+  body('irrigationSource')
+    .notEmpty()
+    .isIn(['Yes', 'No'])
+    .withMessage('Irrigation source must be Yes or No'),
+  
+  body('irrigationTiming')
+    .if(body('irrigationSource').equals('Yes'))
+    .notEmpty()
+    .isIn(['This Coming Season', 'Next Year'])
+    .withMessage('Irrigation timing is required when irrigation source is Yes'),
+  
+  body('soilTesting')
+    .optional()
+    .isLength({ max: 1000 })
+    .withMessage('Soil testing description must be less than 1000 characters'),
+  
+  body('visitStartDate')
+    .notEmpty()
+    .isISO8601()
+    .withMessage('Visit start date is required and must be valid'),
+  
+  body('visitEndDate')
+    .notEmpty()
+    .isISO8601()
+    .withMessage('Visit end date is required and must be valid'),
+  
+  body('evaluationPurpose')
+    .optional()
+    .isLength({ max: 1000 })
+    .withMessage('Evaluation purpose must be less than 1000 characters'),
+  
+  body('priority')
+    .optional()
+    .isIn(['low', 'medium', 'high', 'urgent'])
+    .withMessage('Priority must be low, medium, high, or urgent'),
+  
+  // Location validation
+  body('location.province')
+    .notEmpty()
+    .withMessage('Province is required for location'),
+  
+  body('location.district')
+    .optional()
+    .isLength({ max: 100 })
+    .withMessage('District must be less than 100 characters'),
+  
+  body('location.farm_name')
+    .optional()
+    .isLength({ max: 200 })
+    .withMessage('Farm name must be less than 200 characters'),
+  
+  // Custom validation for date range
+  body('visitEndDate').custom((endDate, { req }) => {
+    if (req.body.visitStartDate && endDate) {
+      const startDate = new Date(req.body.visitStartDate);
+      const endDateObj = new Date(endDate);
+      const diffTime = Math.abs(endDateObj.getTime() - startDate.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays !== 4) { // 5-day range (inclusive)
+        throw new Error('Visit date range must be exactly 5 days');
+      }
+      
+      if (endDateObj <= startDate) {
+        throw new Error('Visit end date must be after start date');
+      }
+    }
+    return true;
+  }),
+  
+  // Handle validation errors
+  (req: Request, res: Response, next: NextFunction): void => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+      return;
+    }
+    next();
+  }
+];
+
+/**
+ * Validate harvest request creation
+ */
+const validateHarvestRequestCreation = [
+  body('workersNeeded')
+    .isInt({ min: 1 })
+    .withMessage('Workers needed must be a positive integer'),
+  
+  body('equipmentNeeded')
+    .optional()
+    .isArray()
+    .withMessage('Equipment needed must be an array'),
+  
+  body('treesToHarvest')
+    .isInt({ min: 1 })
+    .withMessage('Trees to harvest must be a positive integer'),
+  
+  body('harvestDateFrom')
+    .isISO8601()
+    .withMessage('Harvest start date must be a valid ISO date'),
+  
+  body('harvestDateTo')
+    .isISO8601()
+    .withMessage('Harvest end date must be a valid ISO date'),
+  
+  body('harvestImages')
+    .optional()
+    .isArray()
+    .withMessage('Harvest images must be an array'),
+  
+  body('location.province')
+    .notEmpty()
+    .withMessage('Province is required'),
+  
+  body('priority')
+    .optional()
+    .isIn(['low', 'medium', 'high', 'urgent'])
+    .withMessage('Priority must be low, medium, high, or urgent'),
+  
+  // Custom validation for date range (max 5 days)
+  body('harvestDateTo').custom((endDate, { req }) => {
+    if (req.body.harvestDateFrom && endDate) {
+      const startDate = new Date(req.body.harvestDateFrom);
+      const endDateObj = new Date(endDate);
+      const diffTime = Math.abs(endDateObj.getTime() - startDate.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays > 5) {
+        throw new Error('Harvest date range cannot exceed 5 days');
+      }
+      
+      if (endDateObj < startDate) {
+        throw new Error('Harvest end date must be after start date');
+      }
+    }
+    return true;
+  }),
+  
+  // Handle validation errors
+  (req: Request, res: Response, next: NextFunction): void => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+      return;
+    }
+    next();
+  }
+];
+
+/**
+ * @route   POST /api/service-requests/pest-management
+ * @desc    Create pest management request (farmers only)
+ * @access  Private (Farmers only)
+ */
+router.post('/pest-management', authenticate, authorize('farmer'), validatePestManagementCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const {
+      service_type,
+      title,
+      description,
+      priority = 'medium',
+      preferred_date,
+      location,
+      pest_management_details,
+      farmer_info,
+      attachments,
+      notes
+    } = req.body;
+
+    // Generate unique request number
+    const requestNumber = `PC-${Date.now()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+
+    const pestManagementData = {
+      farmer_id: req.user?.id,
+      service_type: service_type,
+      title: title,
+      description: description,
+      request_number: requestNumber,
+      status: 'pending',
+      priority: priority,
+      requested_date: new Date(),
+      scheduled_date: preferred_date ? new Date(preferred_date) : undefined,
+      location: location,
+      
+      // Pest management specific data
+      pest_management_details: pest_management_details,
+      farmer_info: farmer_info,
+      attachments: attachments || [],
+      
+      notes: notes || '',
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    const serviceRequest = new ServiceRequest(pestManagementData);
+    await serviceRequest.save();
+
+    sendCreated(res, serviceRequest.toPublicJSON(), 'Pest management request submitted successfully');
+    return;
+  } catch (error) {
+    console.error('Error creating pest management request:', error);
+    sendError(res, 'Failed to create pest management request', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   POST /api/service-requests/property-evaluation
+ * @desc    Create property evaluation request (farmers only)
+ * @access  Private (Farmers only)
+ */
+router.post('/property-evaluation', authenticate, authorize('farmer'), validatePropertyEvaluationCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const {
+      irrigationSource,
+      irrigationTiming,
+      soilTesting,
+      visitStartDate,
+      visitEndDate,
+      evaluationPurpose,
+      priority = 'medium',
+      notes,
+      location
+    } = req.body;
+
+    // Generate unique request number
+    const requestNumber = `PROP-${Date.now()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
+
+    // Validate required fields
+    if (!irrigationSource || !visitStartDate || !visitEndDate || !location?.province) {
+      sendError(res, 'Irrigation source, visit start date, visit end date, and location with province are required', 400);
+      return;
+    }
+
+    // Validate conditional field
+    if (irrigationSource === 'Yes' && !irrigationTiming) {
+      sendError(res, 'Irrigation timing is required when irrigation source is Yes', 400);
+      return;
+    }
+
+    // Validate date range (should be 5 days)
+    const startDate = new Date(visitStartDate);
+    const endDate = new Date(visitEndDate);
+    const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays !== 4) { // 5-day range (inclusive)
+      sendError(res, 'Visit date range must be exactly 5 days', 400);
+      return;
+    }
+
+    const propertyEvaluationData = {
+      farmer_id: req.user?.id,
+      service_type: 'other',
+      title: 'Property Evaluation Request',
+      description: `Property evaluation request for ${irrigationSource === 'Yes' ? 'irrigation upgrade' : 'general evaluation'}`,
+      request_number: requestNumber,
+      status: 'pending',
+      priority: priority,
+      requested_date: new Date(),
+      
+      // Location is required by ServiceRequest model
+      location: {
+        province: location?.province || 'Unknown',
+        district: location?.district || '',
+        farm_name: location?.farm_name || '',
+        city: location?.city || '',
+        sector: location?.sector || '',
+        cell: location?.cell || '',
+        village: location?.village || '',
+        access_instructions: location?.access_instructions || '',
+        coordinates: location?.coordinates || undefined
+      },
+      
+      // Property evaluation specific data
+      property_evaluation_details: {
+        irrigation_source: irrigationSource,
+        irrigation_timing: irrigationSource === 'Yes' ? irrigationTiming : null,
+        soil_testing: soilTesting || '',
+        visit_start_date: new Date(visitStartDate),
+        visit_end_date: new Date(visitEndDate),
+        evaluation_purpose: evaluationPurpose || '',
+        certified_valuation_requested: evaluationPurpose ? true : false
+      },
+      
+      notes: notes || '',
+      created_at: new Date(),
+      updated_at: new Date()
+    };
+
+    const serviceRequest = new ServiceRequest(propertyEvaluationData);
+    await serviceRequest.save();
+
+    sendCreated(res, serviceRequest.toPublicJSON(), 'Property evaluation request submitted successfully');
+    return;
+  } catch (error) {
+    console.error('Error creating property evaluation request:', error);
+    sendError(res, 'Failed to create property evaluation request', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   GET /api/service-requests/pest-management
+ * @desc    Get all pest management requests (filtered by role)
+ * @access  Private
+ */
+router.get('/pest-management', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+    
+    // Build filter object based on user role
+    const filter: any = { service_type: 'pest_control' };
+    
+    // Apply role-based filtering (same as harvest)
+    if (req.user?.role === 'farmer') {
+      filter.farmer_id = req.user.id;
+    } else if (req.user?.role === 'agent') {
+      filter.$or = [
+        { agent_id: req.user.id },
+        { agent_id: { $exists: false } },
+        { agent_id: null }
+      ];
+    }
+    
+    // Add additional filters
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.priority) filter.priority = req.query.priority;
+    
+    const requests = await ServiceRequest.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ created_at: -1 })
+      .populate('farmer_id', 'full_name email phone')
+      .populate('agent_id', 'full_name email phone');
+    
+    const total = await ServiceRequest.countDocuments(filter);
+    const requestData = requests.map(request => request.toPublicJSON());
+    
+    sendPaginatedResponse(res, requestData, total, page, limit, 'Pest management requests retrieved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to retrieve pest management requests', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   GET /api/service-requests/property-evaluation
+ * @desc    Get all property evaluation requests (filtered by role)
+ * @access  Private
+ */
+router.get('/property-evaluation', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+    
+    // Build filter object based on user role
+    const filter: any = { service_type: 'other' };
+    
+    // Apply role-based filtering (same as harvest)
+    if (req.user?.role === 'farmer') {
+      filter.farmer_id = req.user.id;
+    } else if (req.user?.role === 'agent') {
+      filter.$or = [
+        { agent_id: req.user.id },
+        { agent_id: { $exists: false } },
+        { agent_id: null }
+      ];
+    }
+    
+    // Add additional filters
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.priority) filter.priority = req.query.priority;
+    
+    // Date range filter for visit dates
+    if (req.query.visit_date_from || req.query.visit_date_to) {
+      if (req.query.visit_date_from) {
+        filter['property_evaluation_details.visit_start_date'] = {
+          $gte: new Date(req.query.visit_date_from as string)
+        };
+      }
+      if (req.query.visit_date_to) {
+        filter['property_evaluation_details.visit_end_date'] = { 
+          $lte: new Date(req.query.visit_date_to as string) 
+        };
+      }
+    }
+    
+    const requests = await ServiceRequest.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ created_at: -1 })
+      .populate('farmer_id', 'full_name email phone')
+      .populate('agent_id', 'full_name email phone');
+    
+    const total = await ServiceRequest.countDocuments(filter);
+    const requestData = requests.map(request => request.toPublicJSON());
+    
+    sendPaginatedResponse(res, requestData, total, page, limit, 'Property evaluation requests retrieved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to retrieve property evaluation requests', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   PUT /api/service-requests/:id/approve-pest-management
+ * @desc    Approve pest management request (admin only)
+ * @access  Private (Admin only)
+ */
+router.put('/:id/approve-pest-management', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const requestId = req.params.id;
+    const { 
+      agent_id, 
+      scheduled_date, 
+      cost_estimate, 
+      notes,
+      recommended_treatment,
+      inspection_priority
+    } = req.body;
+    
+    const serviceRequest = await ServiceRequest.findById(requestId);
+    if (!serviceRequest) {
+      sendNotFound(res, 'Service request not found');
+      return;
+    }
+
+    if (serviceRequest.service_type !== 'pest_control') {
+      sendError(res, 'This endpoint is only for pest management requests', 400);
+      return;
+    }
+    
+    // Verify agent exists and is active if provided
+    if (agent_id) {
+      const agent = await User.findOne({ _id: agent_id, role: 'agent', status: 'active' });
+      if (!agent) {
+        sendError(res, 'Invalid or inactive agent', 400);
+        return;
+      }
+      serviceRequest.agent_id = agent_id;
+    }
+    
+    // Update request status and details
+    serviceRequest.status = 'approved';
+    serviceRequest.approved_at = new Date();
+    if (req.user?.id) {
+      serviceRequest.approved_by = req.user.id;
+    }
+    
+    if (scheduled_date) serviceRequest.scheduled_date = new Date(scheduled_date);
+    if (cost_estimate) serviceRequest.cost_estimate = cost_estimate;
+    if (notes) serviceRequest.notes = notes;
+
+    // Update pest management specific approved details
+    if (recommended_treatment && notes) {
+      serviceRequest.notes = `${notes}\nRecommended Treatment: ${recommended_treatment}`;
+    }
+    if (inspection_priority && serviceRequest.notes) {
+      serviceRequest.notes = `${serviceRequest.notes}\nInspection Priority: ${inspection_priority}`;
+    }
+    
+    await serviceRequest.save();
+
+    sendSuccess(res, serviceRequest.toPublicJSON(), 'Pest management request approved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to approve pest management request', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   PUT /api/service-requests/:id/approve-property-evaluation
+ * @desc    Approve property evaluation request (admin only)
+ * @access  Private (Admin only)
+ */
+router.put('/:id/approve-property-evaluation', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const requestId = req.params.id;
+    const { 
+      agent_id, 
+      scheduled_date, 
+      cost_estimate, 
+      notes,
+      evaluation_type,
+      specialist_required
+    } = req.body;
+    
+    const serviceRequest = await ServiceRequest.findById(requestId);
+    if (!serviceRequest) {
+      sendNotFound(res, 'Service request not found');
+      return;
+    }
+
+    if (serviceRequest.service_type !== 'other') {
+      sendError(res, 'This endpoint is only for property evaluation requests', 400);
+      return;
+    }
+    
+    // Verify agent exists and is active if provided
+    if (agent_id) {
+      const agent = await User.findOne({ _id: agent_id, role: 'agent', status: 'active' });
+      if (!agent) {
+        sendError(res, 'Invalid or inactive agent', 400);
+        return;
+      }
+      serviceRequest.agent_id = agent_id;
+    }
+    
+    // Update request status and details
+    serviceRequest.status = 'approved';
+    serviceRequest.approved_at = new Date();
+    if (req.user?.id) {
+      serviceRequest.approved_by = req.user.id;
+    }
+    
+    if (scheduled_date) serviceRequest.scheduled_date = new Date(scheduled_date);
+    if (cost_estimate) serviceRequest.cost_estimate = cost_estimate;
+    if (notes) serviceRequest.notes = notes;
+
+    // Update property evaluation specific approved details
+    if (evaluation_type && notes) {
+      serviceRequest.notes = `${notes}\nEvaluation Type: ${evaluation_type}`;
+    }
+    if (specialist_required !== undefined && serviceRequest.notes) {
+      serviceRequest.notes = `${serviceRequest.notes}\nSpecialist Required: ${specialist_required}`;
+    }
+    
+    await serviceRequest.save();
+
+    sendSuccess(res, serviceRequest.toPublicJSON(), 'Property evaluation request approved successfully');
+    return;
+  } catch (error) {
+    sendError(res, 'Failed to approve property evaluation request', 500);
+    return;
+  }
+}));
 
 /**
  * @route   POST /api/service-requests/harvest
@@ -158,11 +812,11 @@ router.get('/harvest', authenticate, validatePagination, asyncHandler(async (req
 }));
 
 /**
- * @route   PUT /api/service-requests/:id/approve
+ * @route   PUT /api/service-requests/:id/approve-harvest
  * @desc    Approve harvest request (admin only)
  * @access  Private (Admin only)
  */
-router.put('/:id/approve', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id/approve-harvest', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const requestId = req.params.id;
     const { 
@@ -202,19 +856,11 @@ router.put('/:id/approve', authenticate, authorize('admin'), validateIdParam, as
       serviceRequest.approved_by = req.user.id;
     }
     
-    if (scheduled_date) {
-      serviceRequest.scheduled_date = new Date(scheduled_date);
-    }
-    
-    if (cost_estimate) {
-      serviceRequest.cost_estimate = cost_estimate;
-    }
-    
-    if (notes) {
-      serviceRequest.notes = notes;
-    }
+    if (scheduled_date) serviceRequest.scheduled_date = new Date(scheduled_date);
+    if (cost_estimate) serviceRequest.cost_estimate = cost_estimate;
+    if (notes) serviceRequest.notes = notes;
 
-    // Update harvest-specific approved details
+    // Update harvest specific approved details
     if (serviceRequest.harvest_details) {
       if (approved_workers) {
         serviceRequest.harvest_details.approved_workers = parseInt(approved_workers);
@@ -235,108 +881,11 @@ router.put('/:id/approve', authenticate, authorize('admin'), validateIdParam, as
 }));
 
 /**
- * @route   PUT /api/service-requests/:id/reject
- * @desc    Reject harvest request (admin only)
- * @access  Private (Admin only)
+ * @route   PUT /api/service-requests/:id/complete-harvest
+ * @desc    Complete harvest request (admin/agent only)
+ * @access  Private (Admin/Agent only)
  */
-router.put('/:id/reject', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    const { rejection_reason, notes } = req.body;
-    
-    if (!rejection_reason) {
-      sendError(res, 'Rejection reason is required', 400);
-      return;
-    }
-    
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-
-    if (serviceRequest.service_type !== 'harvest') {
-      sendError(res, 'This endpoint is only for harvest requests', 400);
-      return;
-    }
-    
-    serviceRequest.status = 'rejected';
-    serviceRequest.rejected_at = new Date();
-    if (req.user?.id) {
-      serviceRequest.rejected_by = req.user.id;
-    }
-    serviceRequest.rejection_reason = rejection_reason;
-    
-    if (notes) {
-      serviceRequest.notes = notes;
-    }
-    
-    await serviceRequest.save();
-
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Harvest request rejected');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to reject harvest request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/service-requests/:id/start
- * @desc    Start harvest request (assigned agent only)
- * @access  Private (Assigned agent only)
- */
-router.put('/:id/start', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    const { start_notes, actual_start_date } = req.body;
-    
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-
-    if (serviceRequest.service_type !== 'harvest') {
-      sendError(res, 'This endpoint is only for harvest requests', 400);
-      return;
-    }
-    
-    // Check permissions - must be assigned agent
-    if (req.user?.id !== serviceRequest.agent_id) {
-      sendError(res, 'Only assigned agent can start the harvest', 403);
-      return;
-    }
-    
-    // Can only start approved requests
-    if (serviceRequest.status !== 'approved') {
-      sendError(res, 'Only approved requests can be started', 400);
-      return;
-    }
-    
-    serviceRequest.status = 'in_progress';
-    serviceRequest.started_at = actual_start_date ? new Date(actual_start_date) : new Date();
-    
-    if (start_notes) {
-      serviceRequest.start_notes = start_notes;
-    }
-    
-    await serviceRequest.save();
-
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Harvest request started');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to start harvest request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/service-requests/:id/complete
- * @desc    Mark harvest request as completed
- * @access  Private (Admin or assigned agent)
- */
-router.put('/:id/complete', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id/complete-harvest', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const requestId = req.params.id;
     const { 
@@ -357,30 +906,23 @@ router.put('/:id/complete', authenticate, validateIdParam, asyncHandler(async (r
       sendError(res, 'This endpoint is only for harvest requests', 400);
       return;
     }
-    
-    // Check permissions - admin or assigned agent
-    if (req.user?.role !== 'admin' && req.user?.id !== serviceRequest.agent_id) {
-      sendError(res, 'Access denied', 403);
+
+    // Agent can only complete their assigned requests
+    if (req.user?.role === 'agent' && serviceRequest.agent_id !== req.user?.id) {
+      sendError(res, 'You can only complete your assigned requests', 403);
       return;
     }
     
-    // Can only complete approved or in-progress requests
-    if (!['approved', 'in_progress'].includes(serviceRequest.status)) {
-      sendError(res, 'Only approved or in-progress requests can be completed', 400);
-      return;
-    }
-    
+    // Update request status and details
     serviceRequest.status = 'completed';
     serviceRequest.completed_at = new Date();
     if (req.user?.id) {
       serviceRequest.completed_by = req.user.id;
     }
     
-    if (completion_notes) {
-      serviceRequest.completion_notes = completion_notes;
-    }
+    if (completion_notes) serviceRequest.completion_notes = completion_notes;
 
-    // Update harvest-specific completion details
+    // Update harvest specific completion details
     if (serviceRequest.harvest_details) {
       if (actual_workers_used) {
         serviceRequest.harvest_details.actual_workers_used = parseInt(actual_workers_used);
@@ -398,499 +940,10 @@ router.put('/:id/complete', authenticate, validateIdParam, asyncHandler(async (r
     
     await serviceRequest.save();
 
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Harvest request marked as completed');
+    sendSuccess(res, serviceRequest.toPublicJSON(), 'Harvest request completed successfully');
     return;
   } catch (error) {
     sendError(res, 'Failed to complete harvest request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   GET /api/service-requests
- * @desc    Get all service requests
- * @access  Private (Admin, agents, and farmers can view relevant requests)
- */
-router.get('/', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Build filter object based on user role
-    const filter: any = {};
-    
-    // Farmers can only see their own requests
-    if (req.user?.role === 'farmer') {
-      filter.farmer_id = req.user.id;
-    }
-    // Agents can only see requests assigned to them or unassigned requests
-    else if (req.user?.role === 'agent') {
-      filter.$or = [
-        { agent_id: req.user.id },
-        { agent_id: { $exists: false } },
-        { agent_id: null }
-      ];
-    }
-    // Admins can see all requests
-    
-    // Add farmer filter if provided (admin/agent only)
-    if (req.query.farmer_id && req.user?.role !== 'farmer') {
-      filter.farmer_id = req.query.farmer_id;
-    }
-    
-    // Add agent filter if provided (admin only)
-    if (req.query.agent_id && req.user?.role === 'admin') {
-      filter.agent_id = req.query.agent_id;
-    }
-    
-    // Add service type filter if provided
-    if (req.query.service_type) {
-      filter.service_type = req.query.service_type;
-    }
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add priority filter if provided
-    if (req.query.priority) {
-      filter.priority = req.query.priority;
-    }
-    
-    // Add location filters if provided (admin/agent only)
-    if (req.user?.role !== 'farmer') {
-      if (req.query.province) {
-        filter['location.province'] = req.query.province;
-      }
-      
-      if (req.query.city) {
-        filter['location.city'] = req.query.city;
-      }
-    }
-    
-    // Add date range filters if provided
-    if (req.query.date_from || req.query.date_to) {
-      filter.requested_date = {};
-      if (req.query.date_from) {
-        filter.requested_date.$gte = new Date(req.query.date_from as string);
-      }
-      if (req.query.date_to) {
-        filter.requested_date.$lte = new Date(req.query.date_to as string);
-      }
-    }
-    
-    // Add search filter if provided
-    if (req.query.search) {
-      const searchRegex = new RegExp(req.query.search as string, 'i');
-      filter.$or = [
-        { title: searchRegex },
-        { description: searchRegex },
-        { request_number: searchRegex },
-      ];
-    }
-    
-    // Get service requests with pagination
-    const requests = await ServiceRequest.find(filter)
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await ServiceRequest.countDocuments(filter);
-    
-    // Transform requests to public JSON
-    const requestData = requests.map(request => request.toPublicJSON());
-    
-    sendPaginatedResponse(res, requestData, total, page, limit, 'Service requests retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve service requests', 500);
-    return;
-  }
-}));
-
-/**
- * @route   GET /api/service-requests/:id
- * @desc    Get service request by ID
- * @access  Private (Request owner, assigned agent, or admin)
- */
-router.get('/:id', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    
-    const request = await ServiceRequest.findById(requestId);
-    if (!request) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-    
-    // Check permissions
-    if (req.user?.role !== 'admin' && 
-        req.user?.id !== request.farmer_id && 
-        req.user?.id !== request.agent_id) {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-
-    sendSuccess(res, request.toPublicJSON(), 'Service request retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve service request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   POST /api/service-requests
- * @desc    Create new service request (farmers only)
- * @access  Private (Farmers only)
- */
-router.post('/', authenticate, authorize('farmer'), validateServiceRequestCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestData: CreateServiceRequestRequest = req.body;
-    
-    // Set farmer ID to authenticated user
-    requestData.farmer_id = req.user?.id as string;
-    
-    // Create service request
-    const serviceRequest = new ServiceRequest(requestData);
-    await serviceRequest.save();
-
-    sendCreated(res, serviceRequest.toPublicJSON(), 'Service request created successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to create service request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/service-requests/:id
- * @desc    Update service request (owner or admin)
- * @access  Private (Request owner or admin)
- */
-router.put('/:id', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    const updateData: UpdateServiceRequestRequest = req.body;
-    
-    // Find service request
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-    
-    // Check permissions
-    if (req.user?.role !== 'admin' && req.user?.id !== serviceRequest.farmer_id) {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Prevent certain updates based on status
-    if (serviceRequest.status !== 'pending' && updateData.service_type) {
-      sendError(res, 'Cannot change service type after request is assigned', 400);
-      return;
-    }
-    
-    // Update service request
-    Object.assign(serviceRequest, updateData);
-    await serviceRequest.save();
-
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Service request updated successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update service request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   DELETE /api/service-requests/:id
- * @desc    Delete service request (owner or admin)
- * @access  Private (Request owner or admin)
- */
-router.delete('/:id', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    
-    // Find service request
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-    
-    // Check permissions
-    if (req.user?.role !== 'admin' && req.user?.id !== serviceRequest.farmer_id) {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Prevent deletion of assigned or in-progress requests
-    if (['assigned', 'in_progress'].includes(serviceRequest.status)) {
-      sendError(res, 'Cannot delete assigned or in-progress service requests', 400);
-      return;
-    }
-    
-    // Delete service request
-    await ServiceRequest.findByIdAndDelete(requestId);
-
-    sendSuccess(res, null, 'Service request deleted successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to delete service request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/service-requests/:id/assign
- * @desc    Assign agent to service request (admin only)
- * @access  Private (Admin only)
- */
-router.put('/:id/assign', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    const { agent_id, scheduled_date, cost_estimate, notes }: AgentAssignmentRequest = req.body;
-    
-    // Find service request
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-    
-    // Verify agent exists and is active
-    const agent = await User.findOne({ _id: agent_id, role: 'agent', status: 'active' });
-    if (!agent) {
-      sendError(res, 'Invalid or inactive agent', 400);
-      return;
-    }
-    
-    // Update service request
-    serviceRequest.agent_id = agent_id;
-    serviceRequest.status = 'assigned';
-    if (scheduled_date) serviceRequest.scheduled_date = scheduled_date;
-    if (cost_estimate) serviceRequest.cost_estimate = cost_estimate;
-    if (notes) serviceRequest.notes = notes;
-    
-    await serviceRequest.save();
-
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Service request assigned successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to assign service request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/service-requests/:id/status
- * @desc    Update service request status
- * @access  Private (Request owner, assigned agent, or admin)
- */
-router.put('/:id/status', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    const { status, notes } = req.body;
-    
-    // Find service request
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-    
-    // Check permissions
-    const isOwner = req.user?.id === serviceRequest.farmer_id;
-    const isAgent = req.user?.id === serviceRequest.agent_id;
-    
-    // Validate status transitions
-    if (isOwner && !['pending', 'cancelled'].includes(status)) {
-      sendError(res, 'Farmers can only cancel pending requests', 400);
-      return;
-    }
-    
-    if (isAgent && !['in_progress', 'completed', 'on_hold'].includes(status)) {
-      sendError(res, 'Agents can only update to in_progress, completed, or on_hold', 400);
-      return;
-    }
-    
-    // Additional validation for cancellation
-    if (status === 'cancelled' && typeof (serviceRequest as any).canBeCancelled === 'function') {
-      if (!(serviceRequest as any).canBeCancelled()) {
-        sendError(res, 'This service request cannot be cancelled', 400);
-        return;
-      }
-    }
-    
-    // Update service request
-    serviceRequest.status = status;
-    if (notes) serviceRequest.notes = notes;
-    
-    // Auto-set completed date
-    if (status === 'completed' && !serviceRequest.completed_at) {
-      serviceRequest.completed_at = new Date();
-    }
-    
-    await serviceRequest.save();
-
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Service request status updated successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update service request status', 500);
-    return;
-  }
-}));
-
-/**
- * @route   POST /api/service-requests/:id/feedback
- * @desc    Submit feedback for completed service request (farmers only)
- * @access  Private (Request owner only)
- */
-router.post('/:id/feedback', authenticate, authorize('farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const requestId = req.params.id;
-    const feedbackData: ServiceFeedbackRequest = req.body;
-    
-    // Find service request
-    const serviceRequest = await ServiceRequest.findById(requestId);
-    if (!serviceRequest) {
-      sendNotFound(res, 'Service request not found');
-      return;
-    }
-    
-    // Check if user is the owner
-    if (req.user?.id !== serviceRequest.farmer_id) {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Check if feedback can be submitted
-    if (typeof (serviceRequest as any).canSubmitFeedback === 'function') {
-      if (!(serviceRequest as any).canSubmitFeedback()) {
-        sendError(res, 'Feedback can only be submitted for completed requests without existing feedback', 400);
-        return;
-      }
-    }
-    
-    // Add feedback
-    serviceRequest.feedback = {
-      ...feedbackData,
-      submitted_at: new Date()
-    };
-    
-    await serviceRequest.save();
-
-    sendSuccess(res, serviceRequest.toPublicJSON(), 'Feedback submitted successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to submit feedback', 500);
-    return;
-  }
-}));
-
-/**
- * @route   GET /api/service-requests/farmer/:farmerId
- * @desc    Get service requests for a specific farmer
- * @access  Private (Admin, agents, and the farmer themselves)
- */
-router.get('/farmer/:farmerId', authenticate, validateIdParam, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const farmerId = req.params.farmerId;
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Check permissions
-    if (req.user?.role !== 'admin' && req.user?.role !== 'agent' && req.user?.id !== farmerId) {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Build filter
-    const filter: any = { farmer_id: farmerId };
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add service type filter if provided
-    if (req.query.service_type) {
-      filter.service_type = req.query.service_type;
-    }
-    
-    // Get service requests with pagination
-    const requests = await ServiceRequest.find(filter)
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await ServiceRequest.countDocuments(filter);
-    
-    // Transform requests to public JSON
-    const requestData = requests.map(request => request.toPublicJSON());
-    
-    sendPaginatedResponse(res, requestData, total, page, limit, 'Service requests retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve service requests', 500);
-    return;
-  }
-}));
-
-/**
- * @route   GET /api/service-requests/agent/:agentId
- * @desc    Get service requests assigned to a specific agent
- * @access  Private (Admin and the agent themselves)
- */
-router.get('/agent/:agentId', authenticate, validateIdParam, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const agentId = req.params.agentId;
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Check permissions
-    if (req.user?.role !== 'admin' && req.user?.id !== agentId) {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Build filter
-    const filter: any = { agent_id: agentId };
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add service type filter if provided
-    if (req.query.service_type) {
-      filter.service_type = req.query.service_type;
-    }
-    
-    // Get service requests with pagination
-    const requests = await ServiceRequest.find(filter)
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await ServiceRequest.countDocuments(filter);
-    
-    // Transform requests to public JSON
-    const requestData = requests.map(request => request.toPublicJSON());
-    
-    sendPaginatedResponse(res, requestData, total, page, limit, 'Service requests retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve service requests', 500);
     return;
   }
 }));
