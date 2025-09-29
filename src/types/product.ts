@@ -5,16 +5,10 @@ export type ProductStatus = 'available' | 'out_of_stock' | 'discontinued';
 
 // Product Category
 export type ProductCategory = 
-  | 'seeds' 
-  | 'fertilizers' 
-  | 'pesticides' 
-  | 'tools' 
-  | 'equipment' 
-  | 'produce' 
-  | 'organic_inputs' 
-  | 'livestock_feed'
   | 'irrigation'
-  | 'other';
+  | 'harvesting' 
+  | 'containers' 
+  | 'pest-management';
 
 // Base Product Interface
 export interface IProduct extends Document {

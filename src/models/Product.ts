@@ -15,16 +15,10 @@ const productSchema = new Schema<IProduct>({
     type: String,
     enum: {
       values: [
-        'seeds', 
-        'fertilizers', 
-        'pesticides', 
-        'tools', 
-        'equipment', 
-        'produce', 
-        'organic_inputs', 
-        'livestock_feed',
         'irrigation',
-        'other'
+        'harvesting', 
+        'containers', 
+        'pest-management'
       ] as ProductCategory[],
       message: 'Category must be a valid product category'
     },

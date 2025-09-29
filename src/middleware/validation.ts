@@ -152,16 +152,10 @@ export const validateProductCreation = [
   
   body('category')
     .isIn([
-      'seeds', 
-      'fertilizers', 
-      'pesticides', 
-      'tools', 
-      'equipment', 
-      'produce', 
-      'organic_inputs', 
-      'livestock_feed',
-      'irrigation',
-      'other'
+      'irrigation', 
+      'harvesting', 
+      'containers', 
+      'pest-management'
     ])
     .withMessage('Category must be a valid product category'),
   
