@@ -8,7 +8,8 @@ export type ProductCategory =
   | 'irrigation'
   | 'harvesting' 
   | 'containers' 
-  | 'pest-management';
+  | 'pest-management'
+  | 'protection';
 
 // Base Product Interface
 export interface IProduct extends Document {

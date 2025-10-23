@@ -9,7 +9,7 @@ import {
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
-import { CreateOrderRequest, UpdateOrderRequest, OrderStatusUpdateRequest } from '../types/order';
+import { CreateOrderRequest, UpdateOrderRequest, OrderStatusUpdateRequest, IOrderItem } from '../types/order';
 import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
@@ -131,65 +131,88 @@ router.post('/', authenticate, validateOrderCreation, asyncHandler(async (req: A
   try {
     const orderData: CreateOrderRequest = req.body;
     
-    // Set customer ID to authenticated user
-    orderData.customer_id = req.user?.id as string;
+    // Extract customer_id from authenticated user instead of request body
+    const customerId = req.user?.id as string;
     
-    // Validate and calculate order items
-    const items = [];
+    // Validate required fields
+    if (!orderData.items || !Array.isArray(orderData.items) || orderData.items.length === 0) {
+      sendError(res, 'Order must contain at least one item', 400);
+      return;
+    }
+
+    if (!orderData.shipping_address) {
+      sendError(res, 'Shipping address is required', 400);
+      return;
+    }
+
+    // Calculate order totals and create order object
     let subtotal = 0;
-    
+    const processedItems: IOrderItem[] = [];
+
+    // Process each item and calculate totals
     for (const item of orderData.items) {
-      // Find product
       const product = await Product.findById(item.product_id);
+      
       if (!product) {
         sendError(res, `Product with ID ${item.product_id} not found`, 404);
         return;
       }
-      
-      // Check if product is available
-      if (!product.isInStock()) {
-        sendError(res, `Product ${product.name} is out of stock`, 400);
+
+      if (!product.isInStock() || product.quantity < item.quantity) {
+        sendError(res, `Insufficient stock for product ${product.name}`, 400);
         return;
       }
-      
-      // Check if sufficient quantity is available
-      if (product.quantity < item.quantity) {
-        sendError(res, `Insufficient quantity for product ${product.name}`, 400);
-        return;
-      }
-      
-      // Calculate item total
+
       const itemTotal = product.price * item.quantity;
       subtotal += itemTotal;
-      
-      // Add item to order
-      items.push({
-        product_id: product._id,
+
+      processedItems.push({
+        product_id: item.product_id,
         product_name: product.name,
         quantity: item.quantity,
         unit_price: product.price,
         total_price: itemTotal,
-        specifications: item.specifications || {}
+     specifications: item.specifications || {}
       });
     }
-    
-    // Create order object
-    const orderObj = {
-      customer_id: orderData.customer_id,
-      items,
+
+    // Calculate taxes and shipping (you can customize this logic)
+    const taxRate = 0.1; // 10% tax
+    const taxAmount = subtotal * taxRate;
+    const shippingCost = 10; // Fixed shipping cost for now
+    const discountAmount = 0; // Apply discount logic here if needed
+    const totalAmount = subtotal + taxAmount + shippingCost - discountAmount;
+
+    // Create order with customer_id from auth context
+    const newOrder = new Order({
+      customer_id: customerId, // Use customer ID from authentication
+      items: processedItems,
       subtotal,
+      tax_amount: taxAmount,
+      shipping_cost: shippingCost,
+      discount_amount: discountAmount,
+      total_amount: totalAmount,
+      payment_method: orderData.payment_method,
       shipping_address: orderData.shipping_address,
       billing_address: orderData.billing_address || orderData.shipping_address,
       notes: orderData.notes,
-    };
-    
-    // Create order
-    const order = new Order(orderObj);
-    await order.save();
+      order_date: new Date()
+    });
 
-    sendCreated(res, order.toPublicJSON(), 'Order created successfully');
+    const savedOrder = await newOrder.save();
+
+    // Update product quantities
+    for (const item of orderData.items) {
+      await Product.findByIdAndUpdate(
+        item.product_id,
+        { $inc: { quantity: -item.quantity } }
+      );
+    }
+
+    sendCreated(res, savedOrder.toPublicJSON(), 'Order created successfully');
     return;
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Create order error:', error);
     sendError(res, 'Failed to create order', 500);
     return;
   }

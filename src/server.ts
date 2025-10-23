@@ -10,6 +10,7 @@ import { sendSuccess } from './utils/responses';
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
 import productRoutes from './routes/products';
+import farmerInformationRoutes from './routes/farmer-information';
 import orderRoutes from './routes/orders';
 import serviceRequestRoutes from './routes/serviceRequests';
 import analyticsRoutes from './routes/analytics';
@@ -62,6 +63,7 @@ app.get('/health', (_req: Request, res: Response) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/farmer-information', farmerInformationRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/service-requests', serviceRequestRoutes);
 app.use('/api/analytics', analyticsRoutes);

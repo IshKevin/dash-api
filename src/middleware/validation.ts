@@ -5,34 +5,26 @@ import { ValidationError } from '../types/api';
 
 /**
  * Format express-validator errors to our standard format
- * @param errors - Express-validator errors
- * @returns ValidationError[] - Formatted validation errors
  */
 const formatValidationErrors = (errors: ExpressValidationError[]): ValidationError[] => {
   return errors.map(error => {
-    // Handle different types of validation errors
     if ('param' in error && typeof error.param === 'string') {
       return {
         field: error.param,
         message: error.msg,
         value: (error as any).value
       };
-    } else {
-      // Handle alternative validation errors
-      return {
-        field: 'unknown',
-        message: error.msg,
-        value: undefined
-      };
     }
+    return {
+      field: 'unknown',
+      message: error.msg,
+      value: undefined
+    };
   });
 };
 
 /**
  * Validation middleware to check for validation errors
- * @param req - Express Request object
- * @param res - Express Response object
- * @param next - Express NextFunction
  */
 export const validate = (req: Request, res: Response, next: NextFunction): void => {
   const errors = validationResult(req);
@@ -46,9 +38,10 @@ export const validate = (req: Request, res: Response, next: NextFunction): void 
   next();
 };
 
-/**
- * Validation rules for user registration
- */
+// ============================================================================
+// USER VALIDATIONS
+// ============================================================================
+
 export const validateUserRegistration = [
   body('email')
     .isEmail()
@@ -79,9 +72,6 @@ export const validateUserRegistration = [
   validate
 ];
 
-/**
- * Validation rules for user login
- */
 export const validateUserLogin = [
   body('email')
     .isEmail()
@@ -95,9 +85,6 @@ export const validateUserLogin = [
   validate
 ];
 
-/**
- * Validation rules for user profile update
- */
 export const validateUserProfileUpdate = [
   body('email')
     .optional()
@@ -124,9 +111,6 @@ export const validateUserProfileUpdate = [
   validate
 ];
 
-/**
- * Validation rules for password change
- */
 export const validatePasswordChange = [
   body('currentPassword')
     .notEmpty()
@@ -141,9 +125,187 @@ export const validatePasswordChange = [
   validate
 ];
 
-/**
- * Validation rules for product creation
- */
+// ============================================================================
+// FARMER PROFILE VALIDATIONS
+// ============================================================================
+
+export const validateProfileCreation = [
+  body('full_name')
+    .notEmpty()
+    .withMessage('Full name is required')
+    .isLength({ min: 2 })
+    .withMessage('Full name must be at least 2 characters long')
+    .trim(),
+  
+  body('email')
+    .notEmpty()
+    .withMessage('Email is required')
+    .isEmail()
+    .withMessage('Please provide a valid email address')
+    .normalizeEmail(),
+  
+  body('gender')
+    .notEmpty()
+    .withMessage('Gender is required')
+    .isIn(['Male', 'Female', 'Other'])
+    .withMessage('Gender must be Male, Female, or Other'),
+  
+  body('age')
+    .optional()
+    .isInt({ min: 0, max: 150 })
+    .withMessage('Age must be a valid number between 0 and 150'),
+  
+  body('phone')
+    .optional()
+    .matches(/^\+?[\d\s\-\(\)]{10,15}$/)
+    .withMessage('Phone number must be a valid format with 10-15 digits'),
+  
+  body('marital_status')
+    .optional()
+    .isIn(['Single', 'Married', 'Divorced', 'Widowed'])
+    .withMessage('Marital status must be Single, Married, Divorced, or Widowed'),
+  
+  body('education_level')
+    .optional()
+    .isIn(['Primary', 'Secondary', 'University', 'None'])
+    .withMessage('Education level must be Primary, Secondary, University, or None'),
+  
+  body('id_number').optional().isString().trim(),
+  body('province').optional().isString().trim(),
+  body('district').optional().isString().trim(),
+  body('sector').optional().isString().trim(),
+  body('cell').optional().isString().trim(),
+  body('village').optional().isString().trim(),
+  
+  body('farm_age')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Farm age must be a positive number'),
+  
+  body('planted').optional().isString().trim(),
+  body('avocado_type').optional().isString().trim(),
+  
+  body('mixed_percentage')
+    .optional()
+    .isFloat({ min: 0, max: 100 })
+    .withMessage('Mixed percentage must be between 0 and 100'),
+  
+  body('farm_size')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Farm size must be a positive number'),
+  
+  body('tree_count')
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage('Tree count must be a positive integer'),
+  
+  body('upi_number').optional().isString().trim(),
+  body('farm_province').optional().isString().trim(),
+  body('farm_district').optional().isString().trim(),
+  body('farm_sector').optional().isString().trim(),
+  body('farm_cell').optional().isString().trim(),
+  body('farm_village').optional().isString().trim(),
+  
+  body('assistance')
+    .optional()
+    .isArray()
+    .withMessage('Assistance must be an array'),
+  
+  body('image').optional().isString(),
+  
+  validate
+];
+
+export const validateProfileUpdate = [
+  body('email')
+    .optional()
+    .isEmail()
+    .withMessage('Please provide a valid email address')
+    .normalizeEmail(),
+  
+  body('full_name')
+    .optional()
+    .isLength({ min: 2 })
+    .withMessage('Full name must be at least 2 characters long')
+    .trim(),
+  
+  body('phone')
+    .optional()
+    .matches(/^\+?[\d\s\-\(\)]{10,15}$/)
+    .withMessage('Phone number must be a valid format with 10-15 digits'),
+  
+  body('age')
+    .optional()
+    .isInt({ min: 0, max: 150 })
+    .withMessage('Age must be a valid number between 0 and 150'),
+  
+  body('gender')
+    .optional()
+    .isIn(['Male', 'Female', 'Other'])
+    .withMessage('Gender must be Male, Female, or Other'),
+  
+  body('marital_status')
+    .optional()
+    .isIn(['Single', 'Married', 'Divorced', 'Widowed'])
+    .withMessage('Marital status must be Single, Married, Divorced, or Widowed'),
+  
+  body('education_level')
+    .optional()
+    .isIn(['Primary', 'Secondary', 'University', 'None'])
+    .withMessage('Education level must be Primary, Secondary, University, or None'),
+  
+  body('id_number').optional().isString().trim(),
+  body('province').optional().isString().trim(),
+  body('district').optional().isString().trim(),
+  body('sector').optional().isString().trim(),
+  body('cell').optional().isString().trim(),
+  body('village').optional().isString().trim(),
+  
+  body('farm_age')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Farm age must be a positive number'),
+  
+  body('planted').optional().isString().trim(),
+  body('avocado_type').optional().isString().trim(),
+  
+  body('mixed_percentage')
+    .optional()
+    .isFloat({ min: 0, max: 100 })
+    .withMessage('Mixed percentage must be between 0 and 100'),
+  
+  body('farm_size')
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage('Farm size must be a positive number'),
+  
+  body('tree_count')
+    .optional()
+    .isInt({ min: 0 })
+    .withMessage('Tree count must be a positive integer'),
+  
+  body('upi_number').optional().isString().trim(),
+  body('farm_province').optional().isString().trim(),
+  body('farm_district').optional().isString().trim(),
+  body('farm_sector').optional().isString().trim(),
+  body('farm_cell').optional().isString().trim(),
+  body('farm_village').optional().isString().trim(),
+  
+  body('assistance')
+    .optional()
+    .isArray()
+    .withMessage('Assistance must be an array'),
+  
+  body('image').optional().isString(),
+  
+  validate
+];
+
+// ============================================================================
+// PRODUCT VALIDATIONS
+// ============================================================================
+
 export const validateProductCreation = [
   body('name')
     .isLength({ min: 2 })
@@ -151,12 +313,7 @@ export const validateProductCreation = [
     .trim(),
   
   body('category')
-    .isIn([
-      'irrigation', 
-      'harvesting', 
-      'containers', 
-      'pest-management'
-    ])
+    .isIn(['irrigation', 'harvesting', 'containers', 'pest-management'])
     .withMessage('Category must be a valid product category'),
   
   body('price')
@@ -178,9 +335,10 @@ export const validateProductCreation = [
   validate
 ];
 
-/**
- * Validation rules for order creation
- */
+// ============================================================================
+// ORDER VALIDATIONS
+// ============================================================================
+
 export const validateOrderCreation = [
   body('customer_id')
     .notEmpty()
@@ -221,9 +379,10 @@ export const validateOrderCreation = [
   validate
 ];
 
-/**
- * Validation rules for service request creation
- */
+// ============================================================================
+// SERVICE REQUEST VALIDATIONS
+// ============================================================================
+
 export const validateServiceRequestCreation = [
   body('farmer_id')
     .notEmpty()
@@ -267,9 +426,108 @@ export const validateServiceRequestCreation = [
   validate
 ];
 
-/**
- * Validation rules for ID parameters
- */
+// ============================================================================
+// HARVEST REQUEST VALIDATIONS
+// ============================================================================
+
+export const validateHarvestRequestCreation = (req: Request, res: Response, next: NextFunction) => {
+  const {
+    workersNeeded,
+    equipmentNeeded,
+    treesToHarvest,
+    harvestDateFrom,
+    harvestDateTo,
+    hassBreakdown,
+    location
+  } = req.body;
+
+  // Required fields
+  if (!workersNeeded || !treesToHarvest || !harvestDateFrom || !harvestDateTo) {
+    sendError(res, 'Workers needed, trees to harvest, and harvest dates are required', 400);
+    return;
+  }
+
+  // Workers validation
+  const workers = parseInt(workersNeeded);
+  if (isNaN(workers) || workers < 1 || workers > 50) {
+    sendError(res, 'Workers needed must be between 1 and 50', 400);
+    return;
+  }
+
+  // Trees validation
+  const trees = parseInt(treesToHarvest);
+  if (isNaN(trees) || trees < 1) {
+    sendError(res, 'Trees to harvest must be a positive number', 400);
+    return;
+  }
+
+  // Date validations
+  const fromDate = new Date(harvestDateFrom);
+  const toDate = new Date(harvestDateTo);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  if (fromDate < today) {
+    sendError(res, 'Harvest start date cannot be in the past', 400);
+    return;
+  }
+
+  if (toDate < fromDate) {
+    sendError(res, 'Harvest end date must be after start date', 400);
+    return;
+  }
+
+  // Date range validation (max 30 days)
+  const diffDays = Math.ceil(Math.abs(toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays > 30) {
+    sendError(res, 'Harvest period cannot exceed 30 days', 400);
+    return;
+  }
+
+  // Equipment validation
+  if (equipmentNeeded && !Array.isArray(equipmentNeeded)) {
+    sendError(res, 'Equipment needed must be an array', 400);
+    return;
+  }
+
+  // HASS breakdown validation
+  if (hassBreakdown?.selectedSizes && Array.isArray(hassBreakdown.selectedSizes)) {
+    let totalPercentage = 0;
+    
+    for (const size of hassBreakdown.selectedSizes) {
+      if (!['c12c14', 'c16c18', 'c20c24'].includes(size)) {
+        sendError(res, 'Invalid size category in HASS breakdown', 400);
+        return;
+      }
+      
+      const percentage = parseInt(hassBreakdown[size] || 0);
+      if (isNaN(percentage) || percentage < 0 || percentage > 100) {
+        sendError(res, 'Each HASS percentage must be between 0 and 100', 400);
+        return;
+      }
+      
+      totalPercentage += percentage;
+    }
+    
+    if (totalPercentage > 100) {
+      sendError(res, 'Total HASS breakdown percentage cannot exceed 100%', 400);
+      return;
+    }
+  }
+
+  // Location validation
+  if (location && (!location.province || !location.district)) {
+    sendError(res, 'Province and district are required in location', 400);
+    return;
+  }
+
+  next();
+};
+
+// ============================================================================
+// COMMON VALIDATIONS
+// ============================================================================
+
 export const validateIdParam = [
   param('id')
     .isMongoId()
@@ -278,9 +536,6 @@ export const validateIdParam = [
   validate
 ];
 
-/**
- * Validation rules for pagination
- */
 export const validatePagination = [
   query('page')
     .optional()
@@ -297,282 +552,23 @@ export const validatePagination = [
   validate
 ];
 
-/**
- * Validate farmer profile data
- */
-export const validateFarmerProfile = (req: Request, res: Response, next: NextFunction) => {
-  const {
-    full_name,
-    email,
-    age,
-    phone,
-    gender,
-    marital_status,
-    education_level,
-    province,
-    district,
-    sector,
-    cell,
-    village,
-    farm_province,
-    farm_district,
-    farm_sector,
-    farm_cell,
-    farm_village,
-    farm_age,
-    planted,
-    avocado_type,
-    mixed_percentage,
-    farm_size,
-    tree_count,
-    upi_number,
-    assistance
-  } = req.body;
+// ============================================================================
+// DEFAULT EXPORT
+// ============================================================================
 
-  // Basic validation for required fields (for creation)
-  if (req.method === 'POST') {
-    if (!full_name || !email || !gender) {
-      sendError(res, 'Full name, email, and gender are required', 400);
-      return;
-    }
-
-    // Email format validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (email && !emailRegex.test(email)) {
-      sendError(res, 'Invalid email format', 400);
-      return;
-    }
-  }
-
-  // Validate gender if provided
-  if (gender && !['Male', 'Female', 'Other'].includes(gender)) {
-    sendError(res, 'Invalid gender value', 400);
-    return;
-  }
-
-  // Validate marital status if provided
-  if (marital_status && !['Single', 'Married', 'Divorced', 'Widowed'].includes(marital_status)) {
-    sendError(res, 'Invalid marital status', 400);
-    return;
-  }
-
-  // Validate education level if provided
-  if (education_level && !['Primary', 'Secondary', 'University', 'None'].includes(education_level)) {
-    sendError(res, 'Invalid education level', 400);
-    return;
-  }
-
-  // Validate age if provided
-  if (age && (isNaN(age) || age < 0 || age > 150)) {
-    sendError(res, 'Age must be a valid number between 0 and 150', 400);
-    return;
-  }
-
-  // Validate farm age if provided
-  if (farm_age && (isNaN(farm_age) || farm_age < 0)) {
-    sendError(res, 'Farm age must be a positive number', 400);
-    return;
-  }
-
-  // Validate mixed percentage if provided
-  if (mixed_percentage && (isNaN(mixed_percentage) || mixed_percentage < 0 || mixed_percentage > 100)) {
-    sendError(res, 'Mixed percentage must be between 0 and 100', 400);
-    return;
-  }
-
-  // Validate farm size if provided
-  if (farm_size && (isNaN(farm_size) || farm_size < 0)) {
-    sendError(res, 'Farm size must be a positive number', 400);
-    return;
-  }
-
-  // Validate tree count if provided
-  if (tree_count && (isNaN(tree_count) || tree_count < 0)) {
-    sendError(res, 'Tree count must be a positive number', 400);
-    return;
-  }
-
-  // Validate phone number if provided
-  if (phone && !/^\+?[\d\s\-\(\)]{10,15}$/.test(phone)) {
-    sendError(res, 'Phone number must be a valid format with 10-15 digits', 400);
-    return;
-  }
-
-  // Validate location fields if provided
-  if (province && typeof province !== 'string') {
-    sendError(res, 'Province must be a string', 400);
-    return;
-  }
-  if (district && typeof district !== 'string') {
-    sendError(res, 'District must be a string', 400);
-    return;
-  }
-  if (sector && typeof sector !== 'string') {
-    sendError(res, 'Sector must be a string', 400);
-    return;
-  }
-  if (cell && typeof cell !== 'string') {
-    sendError(res, 'Cell must be a string', 400);
-    return;
-  }
-  if (village && typeof village !== 'string') {
-    sendError(res, 'Village must be a string', 400);
-    return;
-  }
-
-  // Validate farm location fields if provided
-  if (farm_province && typeof farm_province !== 'string') {
-    sendError(res, 'Farm province must be a string', 400);
-    return;
-  }
-  if (farm_district && typeof farm_district !== 'string') {
-    sendError(res, 'Farm district must be a string', 400);
-    return;
-  }
-  if (farm_sector && typeof farm_sector !== 'string') {
-    sendError(res, 'Farm sector must be a string', 400);
-    return;
-  }
-  if (farm_cell && typeof farm_cell !== 'string') {
-    sendError(res, 'Farm cell must be a string', 400);
-    return;
-  }
-  if (farm_village && typeof farm_village !== 'string') {
-    sendError(res, 'Farm village must be a string', 400);
-    return;
-  }
-
-  // Validate planted if provided
-  if (planted && typeof planted !== 'string') {
-    sendError(res, 'Planted must be a string', 400);
-    return;
-  }
-
-  // Validate avocado type if provided
-  if (avocado_type && typeof avocado_type !== 'string') {
-    sendError(res, 'Avocado type must be a string', 400);
-    return;
-  }
-
-  // Validate UPI number if provided
-  if (upi_number && typeof upi_number !== 'string') {
-    sendError(res, 'UPI number must be a string', 400);
-    return;
-  }
-
-  // Validate assistance if provided
-  if (assistance && typeof assistance !== 'string') {
-    sendError(res, 'Assistance must be a string', 400);
-    return;
-  }
-
-  next();
-};
+// ============================================================================
+// LEGACY ALIAS (for backward compatibility)
+// ============================================================================
 
 /**
- * Validate harvest request creation data
+ * @deprecated Use validateProfileCreation or validateProfileUpdate instead
+ * Legacy alias for backward compatibility with existing routes
  */
-export const validateHarvestRequestCreation = (req: Request, res: Response, next: NextFunction) => {
-  const {
-    workersNeeded,
-    equipmentNeeded,
-    treesToHarvest,
-    harvestDateFrom,
-    harvestDateTo,
-    hassBreakdown,
-    location
-  } = req.body;
+export const validateFarmerProfile = validateProfileUpdate;
 
-  // Required fields validation
-  if (!workersNeeded || !treesToHarvest || !harvestDateFrom || !harvestDateTo) {
-    sendError(res, 'Workers needed, trees to harvest, and harvest dates are required', 400);
-    return;
-  }
-
-  // Validate workers needed
-  const workers = parseInt(workersNeeded);
-  if (isNaN(workers) || workers < 1 || workers > 50) {
-    sendError(res, 'Workers needed must be between 1 and 50', 400);
-    return;
-  }
-
-  // Validate trees to harvest
-  const trees = parseInt(treesToHarvest);
-  if (isNaN(trees) || trees < 1) {
-    sendError(res, 'Trees to harvest must be a positive number', 400);
-    return;
-  }
-
-  // Validate dates
-  const fromDate = new Date(harvestDateFrom);
-  const toDate = new Date(harvestDateTo);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  if (fromDate < today) {
-    sendError(res, 'Harvest start date cannot be in the past', 400);
-    return;
-  }
-
-  if (toDate < fromDate) {
-    sendError(res, 'Harvest end date must be after start date', 400);
-    return;
-  }
-
-  // Validate date range (max 30 days)
-  const diffTime = Math.abs(toDate.getTime() - fromDate.getTime());
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  
-  if (diffDays > 30) {
-    sendError(res, 'Harvest period cannot exceed 30 days', 400);
-    return;
-  }
-
-  // Validate equipment needed array if provided
-  if (equipmentNeeded && !Array.isArray(equipmentNeeded)) {
-    sendError(res, 'Equipment needed must be an array', 400);
-    return;
-  }
-
-  // Validate HASS breakdown if provided
-  if (hassBreakdown) {
-    const { selectedSizes } = hassBreakdown;
-    
-    if (selectedSizes && Array.isArray(selectedSizes) && selectedSizes.length > 0) {
-      let totalPercentage = 0;
-      
-      selectedSizes.forEach(size => {
-        if (!['c12c14', 'c16c18', 'c20c24'].includes(size)) {
-          sendError(res, 'Invalid size category in HASS breakdown', 400);
-          return;
-        }
-        
-        const percentage = parseInt(hassBreakdown[size] || 0);
-        if (isNaN(percentage) || percentage < 0 || percentage > 100) {
-          sendError(res, 'Each HASS percentage must be between 0 and 100', 400);
-          return;
-        }
-        
-        totalPercentage += percentage;
-      });
-      
-      if (totalPercentage > 100) {
-        sendError(res, 'Total HASS breakdown percentage cannot exceed 100%', 400);
-        return;
-      }
-    }
-  }
-
-  // Validate location if provided
-  if (location) {
-    if (!location.province || !location.district) {
-      sendError(res, 'Province and district are required in location', 400);
-      return;
-    }
-  }
-
-  next();
-};
+// ============================================================================
+// DEFAULT EXPORT
+// ============================================================================
 
 export default {
   validate,
@@ -585,6 +581,8 @@ export default {
   validateServiceRequestCreation,
   validateIdParam,
   validatePagination,
+  validateProfileUpdate,
+  validateProfileCreation,
   validateFarmerProfile,
   validateHarvestRequestCreation
 };

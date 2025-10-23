@@ -18,7 +18,8 @@ const productSchema = new Schema<IProduct>({
         'irrigation',
         'harvesting', 
         'containers', 
-        'pest-management'
+        'pest-management',
+        'protection'
       ] as ProductCategory[],
       message: 'Category must be a valid product category'
     },

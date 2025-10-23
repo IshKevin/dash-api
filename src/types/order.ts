@@ -57,9 +57,8 @@ export interface IOrder extends Document {
   toPublicJSON(): import('./order').OrderResponse;
 }
 
-// Order Create Request
+// Order Create Request - customer_id removed, will be auto-generated from auth context
 export interface CreateOrderRequest {
-  customer_id: string;
   items: Array<{
     product_id: string;
     quantity: number;
@@ -71,6 +70,8 @@ export interface CreateOrderRequest {
   notes?: string;
   discount_code?: string;
 }
+
+
 
 // Order Update Request
 export interface UpdateOrderRequest {
