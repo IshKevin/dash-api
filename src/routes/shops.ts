@@ -4,26 +4,9 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendCreated, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import Shop from '../models/Shop';
 
 const router = Router();
-
-// Temporary in-memory storage for shops (replace with database model later)
-interface Shop {
-  id: number;
-  shopName: string;
-  description: string;
-  province: string;
-  district: string;
-  ownerName: string;
-  ownerEmail: string;
-  ownerPhone: string;
-  createdBy: string;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-let shops: Shop[] = [];
-let nextShopId = 1; // Auto-incrementing ID counter
 
 // Validation middleware for shop creation
 const validateShopCreation = [
@@ -155,10 +138,10 @@ router.post('/addshop', authenticate, authorize('admin'), validateShopCreation, 
       ownerPhone
     } = req.body;
 
-    // Use auto-incrementing integer ID
-    const shopId = nextShopId++;
+    // Get the next auto-incrementing ID
+    const shopId = await (Shop as any).getNextId();
 
-    const newShop: Shop = {
+    const newShop = new Shop({
       id: shopId,
       shopName,
       description,
@@ -167,14 +150,12 @@ router.post('/addshop', authenticate, authorize('admin'), validateShopCreation, 
       ownerName,
       ownerEmail,
       ownerPhone,
-      createdBy: req.user?.id || '',
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
+      createdBy: req.user?.id
+    });
 
-    shops.push(newShop);
+    await newShop.save();
 
-    sendCreated(res, newShop, 'Shop created successfully');
+    sendCreated(res, newShop.toObject(), 'Shop created successfully');
   } catch (error: any) {
     console.error('Error creating shop:', error);
     sendError(res, 'Failed to create shop', 500);
@@ -188,12 +169,12 @@ router.post('/addshop', authenticate, authorize('admin'), validateShopCreation, 
  */
 router.get('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
   try {
-    const filteredShops = shops;
+    const shops = await Shop.find().sort({ id: 1 }).populate('createdBy', 'full_name email');
 
     // Shop managers can only see shops (all shops are created by admin, so they see all)
     // If you want to filter by specific criteria, add logic here
     
-    sendSuccess(res, filteredShops, 'Shops retrieved successfully');
+    sendSuccess(res, shops, 'Shops retrieved successfully');
   } catch (error: any) {
     console.error('Error retrieving shops:', error);
     sendError(res, 'Failed to retrieve shops', 500);
@@ -214,7 +195,7 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHandle
       return;
     }
     
-    const shop = shops.find(s => s.id === shopId);
+    const shop = await Shop.findOne({ id: shopId }).populate('createdBy', 'full_name email');
 
     if (!shop) {
       sendNotFound(res, 'Shop not found');
@@ -242,9 +223,9 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateSho
       return;
     }
     
-    const shopIndex = shops.findIndex(s => s.id === shopId);
+    const shop = await Shop.findOne({ id: shopId });
 
-    if (shopIndex === -1) {
+    if (!shop) {
       sendNotFound(res, 'Shop not found');
       return;
     }
@@ -260,21 +241,17 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateSho
     } = req.body;
 
     // Update shop details
-    const updatedShop = {
-      ...shops[shopIndex],
-      ...(shopName && { shopName }),
-      ...(description && { description }),
-      ...(province && { province }),
-      ...(district && { district }),
-      ...(ownerName && { ownerName }),
-      ...(ownerEmail && { ownerEmail }),
-      ...(ownerPhone && { ownerPhone }),
-      updatedAt: new Date()
-    };
+    if (shopName) shop.shopName = shopName;
+    if (description) shop.description = description;
+    if (province) shop.province = province;
+    if (district) shop.district = district;
+    if (ownerName) shop.ownerName = ownerName;
+    if (ownerEmail) shop.ownerEmail = ownerEmail;
+    if (ownerPhone) shop.ownerPhone = ownerPhone;
 
-    shops[shopIndex] = updatedShop;
+    await shop.save();
 
-    sendSuccess(res, updatedShop, 'Shop updated successfully');
+    sendSuccess(res, shop.toObject(), 'Shop updated successfully');
   } catch (error: any) {
     console.error('Error updating shop:', error);
     sendError(res, 'Failed to update shop', 500);
@@ -295,15 +272,15 @@ router.delete('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHan
       return;
     }
     
-    const shopIndex = shops.findIndex(s => s.id === shopId);
+    const shop = await Shop.findOne({ id: shopId });
 
-    if (shopIndex === -1) {
+    if (!shop) {
       sendNotFound(res, 'Shop not found');
       return;
     }
 
-    const deletedShop = shops[shopIndex];
-    shops.splice(shopIndex, 1);
+    const deletedShop = shop.toObject();
+    await Shop.deleteOne({ id: shopId });
 
     sendSuccess(res, deletedShop, 'Shop deleted successfully');
   } catch (error: any) {
