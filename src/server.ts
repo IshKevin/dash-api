@@ -14,6 +14,7 @@ import farmerInformationRoutes from './routes/farmer-information';
 import orderRoutes from './routes/orders';
 import serviceRequestRoutes from './routes/serviceRequests';
 import analyticsRoutes from './routes/analytics';
+import shopRoutes from './routes/shops';
 
 // Load environment variables
 dotenv.config();
@@ -67,6 +68,7 @@ app.use('/api/farmer-information', farmerInformationRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/service-requests', serviceRequestRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/shops', shopRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
