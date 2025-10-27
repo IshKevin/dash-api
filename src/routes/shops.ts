@@ -139,7 +139,7 @@ const validateShopUpdate = [
 ];
 
 /**
- * @route   POST /api/shops/addshop
+ * @route   POST /api/addshops/addshop
  * @desc    Create a new shop (Admin only)
  * @access  Private (Admin only)
  */
@@ -182,7 +182,7 @@ router.post('/addshop', authenticate, authorize('admin'), validateShopCreation, 
 }));
 
 /**
- * @route   GET /api/shops
+ * @route   GET /api/addshops
  * @desc    Get all shops (Admin sees all, Shop Manager sees only shops created by admin)
  * @access  Private (Admin, Shop Manager)
  */
@@ -201,7 +201,7 @@ router.get('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(a
 }));
 
 /**
- * @route   GET /api/shops/:id
+ * @route   GET /api/addshops/:id
  * @desc    Get a single shop by ID
  * @access  Private (Admin, Shop Manager)
  */
@@ -229,7 +229,7 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHandle
 }));
 
 /**
- * @route   PUT /api/shops/:id
+ * @route   PUT /api/addshops/:id
  * @desc    Update a shop (Admin and Shop Manager can update)
  * @access  Private (Admin, Shop Manager)
  */
@@ -282,7 +282,7 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateSho
 }));
 
 /**
- * @route   DELETE /api/shops/:id
+ * @route   DELETE /api/addshops/:id
  * @desc    Delete a shop (Admin and Shop Manager can delete)
  * @access  Private (Admin, Shop Manager)
  */

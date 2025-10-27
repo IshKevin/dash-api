@@ -5,7 +5,7 @@ The Shop Management API provides endpoints for managing shops with role-based ac
 
 ## Base URL
 ```
-/api/shops
+/api/addshops
 ```
 
 ## Authentication
@@ -17,7 +17,7 @@ Authorization: Bearer <your-jwt-token>
 ## Endpoints
 
 ### 1. Create Shop (Admin Only)
-**POST** `/api/shops/addshop`
+**POST** `/api/addshops/addshop`
 
 **Access**: Admin only
 
@@ -75,7 +75,7 @@ Authorization: Bearer <your-jwt-token>
 ---
 
 ### 2. Get All Shops
-**GET** `/api/shops`
+**GET** `/api/addshops`
 
 **Access**: Admin, Shop Manager
 
@@ -124,14 +124,14 @@ Authorization: Bearer <your-jwt-token>
 ---
 
 ### 3. Get Single Shop
-**GET** `/api/shops/:id`
+**GET** `/api/addshops/:id`
 
 **Access**: Admin, Shop Manager
 
 **URL Parameters**:
 - `id` (required): Shop ID (integer)
 
-**Example**: `GET /api/shops/1`
+**Example**: `GET /api/addshops/1`
 
 **Success Response** (200 OK):
 ```json
@@ -161,7 +161,7 @@ Authorization: Bearer <your-jwt-token>
 ---
 
 ### 4. Update Shop
-**PUT** `/api/shops/:id`
+**PUT** `/api/addshops/:id`
 
 **Access**: Admin, Shop Manager
 
@@ -217,14 +217,14 @@ Authorization: Bearer <your-jwt-token>
 ---
 
 ### 5. Delete Shop
-**DELETE** `/api/shops/:id`
+**DELETE** `/api/addshops/:id`
 
 **Access**: Admin, Shop Manager
 
 **URL Parameters**:
 - `id` (required): Shop ID (integer)
 
-**Example**: `DELETE /api/shops/1`
+**Example**: `DELETE /api/addshops/1`
 
 **Success Response** (200 OK):
 ```json
@@ -355,7 +355,7 @@ Authorization: Bearer <your-jwt-token>
 
 ### Create a shop (as Admin):
 ```bash
-curl -X POST http://localhost:5000/api/shops/addshop \
+curl -X POST http://localhost:5000/api/addshops/addshop \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
   -d '{
@@ -371,13 +371,13 @@ curl -X POST http://localhost:5000/api/shops/addshop \
 
 ### Get all shops:
 ```bash
-curl -X GET http://localhost:5000/api/shops \
+curl -X GET http://localhost:5000/api/addshops \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 ### Update a shop:
 ```bash
-curl -X PUT http://localhost:5000/api/shops/1 \
+curl -X PUT http://localhost:5000/api/addshops/1 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
@@ -387,7 +387,7 @@ curl -X PUT http://localhost:5000/api/shops/1 \
 
 ### Delete a shop:
 ```bash
-curl -X DELETE http://localhost:5000/api/shops/1 \
+curl -X DELETE http://localhost:5000/api/addshops/1 \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
