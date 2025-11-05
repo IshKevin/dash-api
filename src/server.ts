@@ -11,10 +11,13 @@ import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
 import productRoutes from './routes/products';
 import farmerInformationRoutes from './routes/farmer-information';
+import agentInformationRoutes from './routes/agent-information';
 import orderRoutes from './routes/orders';
 import serviceRequestRoutes from './routes/serviceRequests';
 import analyticsRoutes from './routes/analytics';
 import shopRoutes from './routes/shops';
+
+console.log('✅ Agent Information routes imported');
 
 // Load environment variables
 dotenv.config();
@@ -65,6 +68,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/farmer-information', farmerInformationRoutes);
+app.use('/api/agent-information', agentInformationRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/service-requests', serviceRequestRoutes);
 app.use('/api/analytics', analyticsRoutes);
