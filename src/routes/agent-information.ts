@@ -37,6 +37,7 @@ interface AgentInformationResponse {
 
 interface AgentProfileData {
   agentId: string;
+  location?: string;
   province?: string;
   district?: string;
   sector?: string;
@@ -49,6 +50,20 @@ interface AgentProfileData {
   totalTransactions?: number;
   performance?: string;
   profileImage?: string;
+}
+
+/**
+ * Helper function to build location string
+ */
+function buildLocationString(profile: any): string {
+  const parts: string[] = [];
+  
+  if (profile.sector) parts.push(profile.sector);
+  if (profile.district) parts.push(profile.district);
+  if (profile.province) parts.push(profile.province);
+  parts.push('Rwanda');
+  
+  return parts.join(', ');
 }
 
 /**
@@ -72,6 +87,7 @@ function transformAgentDataForResponse(user: any, profile: any = null): AgentInf
   if (profile) {
     response.agent_profile = {
       agentId: profile.agentId,
+      location: buildLocationString(profile),
       province: profile.province,
       district: profile.district,
       sector: profile.sector,

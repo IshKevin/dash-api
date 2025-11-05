@@ -138,13 +138,13 @@ router.get(
 
 /**
  * @route   POST /api/products
- * @desc    Create new product (admin and shop managers only)
- * @access  Private (Admin and shop managers)
+ * @desc    Create new product (admin, shop managers, and agents)
+ * @access  Private (Admin, shop managers, and agents)
  */
 router.post(
   '/',
   authenticate,
-  authorize('admin', 'shop_manager'),
+  authorize('admin', 'shop_manager', 'agent'),
   validateProductCreation,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     try {
@@ -172,13 +172,13 @@ router.post(
 
 /**
  * @route   PUT /api/products/:id
- * @desc    Update product (admin and shop managers only)
- * @access  Private (Admin and shop managers)
+ * @desc    Update product (admin, shop managers, and agents)
+ * @access  Private (Admin, shop managers, and agents)
  */
 router.put(
   '/:id',
   authenticate,
-  authorize('admin', 'shop_manager'),
+  authorize('admin', 'shop_manager', 'agent'),
   validateIdParam,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     try {
@@ -254,13 +254,13 @@ router.delete(
 
 /**
  * @route   PUT /api/products/:id/stock
- * @desc    Update product stock (admin and shop managers only)
- * @access  Private (Admin and shop managers)
+ * @desc    Update product stock (admin, shop managers, and agents)
+ * @access  Private (Admin, shop managers, and agents)
  */
 router.put(
   '/:id/stock',
   authenticate,
-  authorize('admin', 'shop_manager'),
+  authorize('admin', 'shop_manager', 'agent'),
   validateIdParam,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     try {
