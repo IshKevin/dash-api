@@ -727,6 +727,7 @@ router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarv
 
     const harvestRequestData = {
       farmer_id: farmerId,
+      agent_id: userRole === 'agent' ? req.user?.id : undefined, // Save agent_id if created by agent
       service_type: 'harvest',
       title: 'Harvest Request',
       description: `Harvest request for ${treesToHarvest} trees requiring ${workersNeeded} workers`,
@@ -753,19 +754,127 @@ router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarv
       },
       
       notes: notes || '',
-      created_by: req.user?.id, // Track who created the request
       created_at: new Date(),
       updated_at: new Date()
     };
 
+    console.log('📝 Creating harvest request:', {
+      requestNumber,
+      farmerId,
+      agentId: harvestRequestData.agent_id,
+      createdBy: userRole
+    });
+
     const serviceRequest = new ServiceRequest(harvestRequestData);
     await serviceRequest.save();
+
+    console.log('✅ Harvest request saved successfully with agent_id:', serviceRequest.agent_id);
 
     sendCreated(res, serviceRequest.toPublicJSON(), 'Harvest request submitted successfully');
     return;
   } catch (error) {
     console.error('Error creating harvest request:', error);
     sendError(res, 'Failed to create harvest request', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   GET /api/service-requests/harvest/agent/me
+ * @desc    Get all harvest requests created by the authenticated agent
+ * @access  Private (Agents only)
+ * @note    This route MUST be defined BEFORE the general /harvest route to prevent route conflicts
+ */
+router.get('/harvest/agent/me', authenticate, authorize('agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const agentId = req.user?.id;
+    
+    if (!agentId) {
+      sendError(res, 'Agent ID not found in token', 401);
+      return;
+    }
+    
+    // Parse query parameters
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const skip = (page - 1) * limit;
+    
+    // Build filter object - looking for harvest requests created by this agent
+    const filter: any = {
+      agent_id: agentId,
+      service_type: 'harvest'
+    };
+    
+    // Optional status filter
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+    
+    // Optional date range filter
+    if (req.query.date_from) {
+      filter.created_at = { ...filter.created_at, $gte: new Date(req.query.date_from as string) };
+    }
+    
+    if (req.query.date_to) {
+      filter.created_at = { ...filter.created_at, $lte: new Date(req.query.date_to as string) };
+    }
+    
+    console.log('🔍 Agent harvest request filter:', JSON.stringify(filter));
+    console.log('👤 Agent ID from token:', agentId);
+    
+    // Get total count
+    const total = await ServiceRequest.countDocuments(filter);
+    
+    console.log('📊 Total harvest requests for this agent:', total);
+    
+    // Get paginated harvest requests
+    const requests = await ServiceRequest.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ created_at: -1 })
+      .populate('farmer_id', 'full_name email phone')
+      .populate('agent_id', 'full_name email phone');
+    
+    console.log('📦 Found requests:', requests.length);
+    
+    // Transform data to include farmer_info and agent_info
+    const requestData = requests.map(request => {
+      const publicJSON = request.toPublicJSON();
+      
+      // Add farmer_info from populated data
+      const farmerData = request.farmer_id as any;
+      if (farmerData && farmerData.full_name) {
+        publicJSON.farmer_info = {
+          name: farmerData.full_name,
+          phone: farmerData.phone || '',
+          email: farmerData.email || ''
+        };
+      }
+      
+      // Add agent_info from populated data
+      const agentData = request.agent_id as any;
+      if (agentData && agentData.full_name) {
+        publicJSON.agent_info = {
+          agentId: agentData._id,
+          name: agentData.full_name,
+          phone: agentData.phone || '',
+          email: agentData.email || ''
+        };
+      }
+      
+      return publicJSON;
+    });
+    
+    if (requestData.length === 0) {
+      sendPaginatedResponse(res, [], 0, page, limit, 'No harvest requests found for this agent');
+      return;
+    }
+    
+    sendPaginatedResponse(res, requestData, total, page, limit, 'Harvest requests retrieved successfully');
+    return;
+  } catch (error: any) {
+    console.error('Error fetching agent harvest requests:', error);
+    sendError(res, 'An error occurred while retrieving harvest requests', 500);
     return;
   }
 }));
