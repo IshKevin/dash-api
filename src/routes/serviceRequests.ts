@@ -676,10 +676,10 @@ router.put('/:id/approve-property-evaluation', authenticate, authorize('admin'),
 
 /**
  * @route   POST /api/service-requests/harvest
- * @desc    Create harvest request (farmers only)
- * @access  Private (Farmers only)
+ * @desc    Create harvest request (farmers and agents)
+ * @access  Private (Farmers and Agents)
  */
-router.post('/harvest', authenticate, authorize('farmer'), validateHarvestRequestCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarvestRequestCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
       workersNeeded,
@@ -691,14 +691,42 @@ router.post('/harvest', authenticate, authorize('farmer'), validateHarvestReques
       hassBreakdown,
       location,
       priority = 'medium',
-      notes
+      notes,
+      farmer_id // Optional: for agents to create on behalf of a farmer
     } = req.body;
+
+    // Determine the farmer_id
+    let farmerId;
+    const userRole = req.user?.role;
+    
+    if (userRole === 'farmer') {
+      // Farmers create for themselves
+      farmerId = req.user?.id;
+    } else if (userRole === 'agent') {
+      // Agents can create on behalf of farmers
+      if (!farmer_id) {
+        sendError(res, 'farmer_id is required when agent creates a harvest request', 400);
+        return;
+      }
+      
+      // Verify the farmer exists
+      const farmer = await User.findById(farmer_id);
+      if (!farmer || farmer.role !== 'farmer') {
+        sendError(res, 'Invalid farmer_id provided', 400);
+        return;
+      }
+      
+      farmerId = farmer_id;
+    } else {
+      sendError(res, 'Unauthorized to create harvest requests', 403);
+      return;
+    }
 
     // Generate unique request number
     const requestNumber = `HRV-${Date.now()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
 
     const harvestRequestData = {
-      farmer_id: req.user?.id,
+      farmer_id: farmerId,
       service_type: 'harvest',
       title: 'Harvest Request',
       description: `Harvest request for ${treesToHarvest} trees requiring ${workersNeeded} workers`,
@@ -725,6 +753,7 @@ router.post('/harvest', authenticate, authorize('farmer'), validateHarvestReques
       },
       
       notes: notes || '',
+      created_by: req.user?.id, // Track who created the request
       created_at: new Date(),
       updated_at: new Date()
     };
