@@ -16,6 +16,7 @@ import orderRoutes from './routes/orders';
 import serviceRequestRoutes from './routes/serviceRequests';
 import analyticsRoutes from './routes/analytics';
 import shopRoutes from './routes/shops';
+import pestDiseaseRoutes from './routes/pestDisease';
 
 console.log('✅ Agent Information routes imported');
 
@@ -73,6 +74,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/service-requests', serviceRequestRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/addshops', shopRoutes);
+app.use('/api/pest-disease', pestDiseaseRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

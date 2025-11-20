@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { body, validationResult } from 'express-validator';
 import { ServiceRequest } from '../models/ServiceRequest';
 import { User } from '../models/User';
+import { PestDisease } from '../models/PestDisease';
 import { 
   validateIdParam, 
   validatePagination
@@ -26,76 +27,106 @@ const router = Router();
  * Validate pest management request creation
  */
 const validatePestManagementCreation = [
-  // Validate service type
-  body('service_type')
-    .equals('pest_control')
-    .withMessage('Service type must be pest_control'),
-  
-  // Validate title and description
-  body('title')
-    .notEmpty()
+  // Admin format: disease object with name, symptoms, index
+  body('disease.name')
+    .optional()
+    .isString()
     .isLength({ max: 200 })
-    .withMessage('Title is required and must be less than 200 characters'),
+    .withMessage('Disease name must be a string less than 200 characters'),
   
-  body('description')
+  body('disease.symptoms')
+    .optional()
+    .isString()
+    .isLength({ max: 200 })
+    .withMessage('Disease symptoms must be a string less than 200 characters'),
+  
+  body('disease.index')
+    .optional()
+    .isString()
+    .withMessage('Disease index must be a string'),
+  
+  // Admin format: pest object with name, damage, index
+  body('pest.name')
+    .optional()
+    .isString()
+    .isLength({ max: 200 })
+    .withMessage('Pest name must be a string less than 200 characters'),
+  
+  body('pest.damage')
+    .optional()
+    .isString()
+    .isLength({ max: 200 })
+    .withMessage('Pest damage must be a string less than 200 characters'),
+  
+  body('pest.index')
+    .optional()
+    .isString()
+    .withMessage('Pest index must be a string'),
+  
+  // Farmer format: symptom/damage categories
+  body('disease_symptoms')
+    .optional()
+    .isString()
+    .isLength({ max: 200 })
+    .withMessage('Disease symptom category must be a string less than 200 characters'),
+  
+  body('pest_damage')
+    .optional()
+    .isString()
+    .isLength({ max: 200 })
+    .withMessage('Pest damage category must be a string less than 200 characters'),
+  
+  // Legacy format: pest/disease IDs
+  body('pest_id')
+    .optional()
+    .isMongoId()
+    .withMessage('Invalid pest ID format'),
+  
+  body('disease_id')
+    .optional()
+    .isMongoId()
+    .withMessage('Invalid disease ID format'),
+  
+  // At least one must be provided
+  body().custom((_value, { req }) => {
+    const hasDisease = req.body.disease?.name || req.body.disease_id || req.body.disease_symptoms;
+    const hasPest = req.body.pest?.name || req.body.pest_id || req.body.pest_damage;
+    const hasLegacy = req.body.diseaseInfo || req.body.pestInfo;
+    
+    if (!hasDisease && !hasPest && !hasLegacy) {
+      throw new Error('At least one pest or disease must be provided');
+    }
+    return true;
+  }),
+  
+  // Validate when pest was noticed
+  body('pestNoticed')
     .notEmpty()
+    .isIn(['this_week', 'this_month', 'few_months', 'over_6_months'])
+    .withMessage('Pest noticed timeframe is required (this_week, this_month, few_months, over_6_months)'),
+  
+  // Validate control methods (optional now for admin)
+  body('controlMethods')
+    .optional()
     .isLength({ max: 1000 })
-    .withMessage('Description is required and must be less than 1000 characters'),
+    .withMessage('Control methods must be less than 1000 characters'),
+  
+  // Validate images (optional)
+  body('primaryImage')
+    .optional()
+    .isString()
+    .withMessage('Primary image must be a string (base64 or URL)'),
+  
+  body('secondaryImage')
+    .optional()
+    .isString()
+    .withMessage('Secondary image must be a string (base64 or URL)'),
   
   // Validate location
   body('location.province')
-    .notEmpty()
-    .withMessage('Province is required'),
-  
-  // Validate pest management details
-  body('pest_management_details.pests_diseases')
-    .isArray({ min: 1 })
-    .withMessage('At least one pest or disease must be provided'),
-  
-  body('pest_management_details.pests_diseases.*.name')
-    .notEmpty()
-    .withMessage('Pest/disease name is required'),
-  
-  body('pest_management_details.pests_diseases.*.first_spotted_date')
     .optional()
-    .isISO8601()
-    .withMessage('First spotted date must be a valid ISO date'),
-  
-  body('pest_management_details.first_noticed')
-    .notEmpty()
-    .isLength({ max: 500 })
-    .withMessage('First noticed description is required and must be less than 500 characters'),
-  
-  body('pest_management_details.damage_observed')
-    .notEmpty()
-    .withMessage('Damage observed is required'),
-  
-  body('pest_management_details.damage_details')
-    .notEmpty()
-    .isLength({ max: 1000 })
-    .withMessage('Damage details are required and must be less than 1000 characters'),
-  
-  body('pest_management_details.control_methods_tried')
-    .notEmpty()
-    .isLength({ max: 1000 })
-    .withMessage('Control methods tried is required and must be less than 1000 characters'),
-  
-  body('pest_management_details.severity_level')
-    .isIn(['low', 'medium', 'high', 'critical'])
-    .withMessage('Severity level must be low, medium, high, or critical'),
-  
-  // Validate farmer info
-  body('farmer_info.name')
-    .notEmpty()
-    .withMessage('Farmer name is required'),
-  
-  body('farmer_info.phone')
-    .notEmpty()
-    .withMessage('Farmer phone is required'),
-  
-  body('farmer_info.location')
-    .notEmpty()
-    .withMessage('Farmer location is required'),
+    .isString()
+    .withMessage('Province must be a string'),
   
   body('priority')
     .optional()
@@ -281,57 +312,314 @@ const validateHarvestRequestCreation = [
 
 /**
  * @route   POST /api/service-requests/pest-management
- * @desc    Create pest management request (farmers only)
- * @access  Private (Farmers only)
+ * @desc    Create pest management request (farmers, agents, and admins)
+ * @access  Private (Farmers, Agents, and Admins)
  */
-router.post('/pest-management', authenticate, authorize('farmer'), validatePestManagementCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/pest-management', authenticate, authorize('farmer', 'agent', 'admin'), validatePestManagementCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
-      service_type,
-      title,
-      description,
-      priority = 'medium',
-      preferred_date,
+      disease,           // ADMIN: { name, symptoms, index }
+      pest,              // ADMIN: { name, damage, index }
+      disease_symptoms,  // FARMER: Symptom category string (e.g., "Brown leaf tips and margins")
+      pest_damage,       // FARMER: Damage category string (e.g., "Causes bronzing of leaves")
+      pest_id,           // LEGACY: Direct pest ID
+      disease_id,        // LEGACY: Direct disease ID
+      diseaseInfo,       // LEGACY: Old format
+      pestInfo,          // LEGACY: Old format
+      pestNoticed,
+      controlMethods = '',
+      primaryImage,
+      secondaryImage,
       location,
-      pest_management_details,
-      farmer_info,
-      attachments,
-      notes
+      priority = 'medium',
+      notes,
+      farmer_id // Optional: for agents/admins to create on behalf of a farmer
     } = req.body;
+
+    // Determine the farmer_id
+    let farmerId;
+    const userRole = req.user?.role;
+    
+    if (userRole === 'farmer') {
+      // Farmers create for themselves
+      farmerId = req.user?.id;
+    } else if (userRole === 'agent' || userRole === 'admin') {
+      // Agents/Admins can create on behalf of farmers
+      if (!farmer_id) {
+        sendError(res, 'farmer_id is required when agent/admin creates a pest management request', 400);
+        return;
+      }
+      
+      // Verify the farmer exists
+      const farmer = await User.findById(farmer_id);
+      if (!farmer || farmer.role !== 'farmer') {
+        sendError(res, 'Invalid farmer_id provided', 400);
+        return;
+      }
+      
+      farmerId = farmer_id;
+    } else {
+      sendError(res, 'Unauthorized to create pest management requests', 403);
+      return;
+    }
+
+    // 🆕 ADMIN FORMAT: Process disease/pest objects with name, symptoms/damage, index
+    let diseaseDetails = null;
+    let pestDetails = null;
+    
+    // Handle ADMIN format: disease object
+    if (disease && disease.name) {
+      // For admin, we use the provided disease info directly
+      diseaseDetails = {
+        name: disease.name,
+        symptom_category: disease.symptoms,
+        index: disease.index
+      };
+    }
+    // Handle FARMER format: symptom category lookup
+    else if (disease_symptoms) {
+      diseaseDetails = await PestDisease.findOne({
+        type: 'disease',
+        symptom_category: disease_symptoms,
+        is_active: true
+      });
+      
+      if (!diseaseDetails) {
+        sendError(res, `No disease found for symptom: "${disease_symptoms}"`, 400);
+        return;
+      }
+    }
+    // Handle LEGACY: disease_id lookup
+    else if (disease_id) {
+      diseaseDetails = await PestDisease.findById(disease_id);
+      if (!diseaseDetails || diseaseDetails.type !== 'disease') {
+        sendError(res, 'Invalid disease_id provided', 400);
+        return;
+      }
+    }
+    
+    // Handle ADMIN format: pest object
+    if (pest && pest.name) {
+      // For admin, we use the provided pest info directly
+      pestDetails = {
+        name: pest.name,
+        damage_category: pest.damage,
+        index: pest.index
+      };
+    }
+    // Handle FARMER format: damage category lookup
+    else if (pest_damage) {
+      pestDetails = await PestDisease.findOne({
+        type: 'pest',
+        damage_category: pest_damage,
+        is_active: true
+      });
+      
+      if (!pestDetails) {
+        sendError(res, `No pest found for damage type: "${pest_damage}"`, 400);
+        return;
+      }
+    }
+    // Handle LEGACY: pest_id lookup
+    else if (pest_id) {
+      pestDetails = await PestDisease.findById(pest_id);
+      if (!pestDetails || pestDetails.type !== 'pest') {
+        sendError(res, 'Invalid pest_id provided', 400);
+        return;
+      }
+    }
 
     // Generate unique request number
     const requestNumber = `PC-${Date.now()}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
 
+    // Map severity based on pestNoticed timeframe
+    let severityLevel = 'medium';
+    if (pestNoticed === 'this_week') severityLevel = 'critical';
+    else if (pestNoticed === 'this_month') severityLevel = 'high';
+    else if (pestNoticed === 'few_months') severityLevel = 'medium';
+    else if (pestNoticed === 'over_6_months') severityLevel = 'low';
+
+    // Fetch farmer details to get location if not provided
+    const farmerUser = await User.findById(farmerId).select('full_name phone email profile');
+    
+    // Build location - use request location if provided, otherwise farmer's profile location
+    let requestLocation: any = {};
+    if (location && location.province) {
+      requestLocation = location;
+    } else if (farmerUser?.profile) {
+      // Use farmer's profile location
+      requestLocation = {
+        province: farmerUser.profile.province || 'Unknown',
+        district: farmerUser.profile.district,
+        sector: farmerUser.profile.sector,
+        cell: farmerUser.profile.cell,
+        village: farmerUser.profile.village
+      };
+    } else {
+      // Fallback to a default province if nothing is available
+      requestLocation = { province: 'Not Specified' };
+    }
+
+    // Build pest/disease array with proper structure (NEW FORMAT WITH AUTO-FILLED NAMES)
+    const pestsAndDiseases = [];
+    let order = 1;
+    let titleParts = [];
+    let damageObserved = [];
+    
+    if (diseaseDetails) {
+      const diseaseSymptoms = disease?.symptoms || disease_symptoms || diseaseDetails.symptom_category;
+      const diseaseIndex = disease?.index || (diseaseDetails as any).index;
+      pestsAndDiseases.push({
+        name: diseaseDetails.name,
+        type: 'disease',
+        symptoms: diseaseSymptoms,
+        index: diseaseIndex,
+        first_spotted_date: new Date(),
+        order: order++,
+        is_primary: true // First one is primary
+      });
+      titleParts.push(diseaseDetails.name);
+      if (diseaseSymptoms) damageObserved.push(diseaseSymptoms);
+    } else if (diseaseInfo) {
+      // Legacy format support
+      pestsAndDiseases.push({
+        name: diseaseInfo.disease,
+        type: 'disease',
+        symptoms: diseaseInfo.symptoms,
+        first_spotted_date: new Date(),
+        order: order++,
+        is_primary: pestsAndDiseases.length === 0
+      });
+      titleParts.push(diseaseInfo.disease);
+      if (diseaseInfo.symptoms) damageObserved.push(diseaseInfo.symptoms);
+    }
+    
+    if (pestDetails) {
+      const pestDamage = pest?.damage || pest_damage || pestDetails.damage_category;
+      const pestIndex = pest?.index || (pestDetails as any).index;
+      pestsAndDiseases.push({
+        name: pestDetails.name,
+        type: 'pest',
+        damage: pestDamage,
+        index: pestIndex,
+        first_spotted_date: new Date(),
+        order: order++,
+        is_primary: pestsAndDiseases.length === 0
+      });
+      titleParts.push(pestDetails.name);
+      if (pestDamage) damageObserved.push(pestDamage);
+    } else if (pestInfo) {
+      // Legacy format support
+      pestsAndDiseases.push({
+        name: pestInfo.pest,
+        type: 'pest',
+        damage: pestInfo.damage,
+        first_spotted_date: new Date(),
+        order: order++,
+        is_primary: pestsAndDiseases.length === 0
+      });
+      titleParts.push(pestInfo.pest);
+      if (pestInfo.damage) damageObserved.push(pestInfo.damage);
+    }
+
+    // Collect images
+    const attachments = [];
+    if (primaryImage) attachments.push(primaryImage);
+    if (secondaryImage) attachments.push(secondaryImage);
+
+    // Build farmer info for database (location as string)
+    const farmerLocationString = [
+      farmerUser?.profile?.village,
+      farmerUser?.profile?.cell,
+      farmerUser?.profile?.sector,
+      farmerUser?.profile?.district,
+      farmerUser?.profile?.province
+    ].filter(Boolean).join(', ') || requestLocation.province || 'Location not specified';
+
     const pestManagementData = {
-      farmer_id: req.user?.id,
-      service_type: service_type,
-      title: title,
-      description: description,
+      farmer_id: farmerId,
+      agent_id: userRole === 'agent' ? req.user?.id : undefined,
+      service_type: 'pest_control',
+      title: `Pest Control: ${titleParts.join(' & ')}`,
+      description: damageObserved.join('; '),
       request_number: requestNumber,
       status: 'pending',
       priority: priority,
       requested_date: new Date(),
-      scheduled_date: preferred_date ? new Date(preferred_date) : undefined,
-      location: location,
+      location: requestLocation,
       
       // Pest management specific data
-      pest_management_details: pest_management_details,
-      farmer_info: farmer_info,
-      attachments: attachments || [],
+      pest_management_details: {
+        pests_diseases: pestsAndDiseases,
+        first_noticed: pestNoticed,
+        damage_observed: damageObserved.join('; '),
+        control_methods_tried: controlMethods,
+        severity_level: severityLevel
+      },
       
+      // Farmer information
+      farmer_info: {
+        name: farmerUser?.full_name || 'Unknown',
+        phone: farmerUser?.phone || 'N/A',
+        email: farmerUser?.email,
+        location: farmerLocationString
+      },
+      
+      attachments: attachments,
       notes: notes || '',
+      created_by: req.user?.id,
       created_at: new Date(),
       updated_at: new Date()
     };
 
+    console.log('📝 Creating pest management request:', {
+      farmerId,
+      agentId: pestManagementData.agent_id,
+      createdBy: req.user?.id,
+      userRole,
+      format: disease?.name || pest?.name ? 'ADMIN' : (disease_symptoms || pest_damage ? 'FARMER' : 'LEGACY'),
+      location: requestLocation,
+      pestsCount: pestsAndDiseases.length,
+      diseaseAutoFilled: diseaseDetails ? diseaseDetails.name : 'none',
+      pestAutoFilled: pestDetails ? pestDetails.name : 'none'
+    });
+
     const serviceRequest = new ServiceRequest(pestManagementData);
     await serviceRequest.save();
+    
+    // Build farmer location for response
+    const farmerLocation = farmerUser?.profile ? {
+      province: farmerUser.profile.province,
+      district: farmerUser.profile.district,
+      sector: farmerUser.profile.sector,
+      cell: farmerUser.profile.cell,
+      village: farmerUser.profile.village
+    } : requestLocation;
+    
+    // Build response with farmer information
+    const responseData = {
+      ...serviceRequest.toPublicJSON(),
+      farmer_info: farmerUser ? {
+        name: farmerUser.full_name,
+        phone: farmerUser.phone || 'N/A',
+        location: farmerLocation
+      } : null
+    };
 
-    sendCreated(res, serviceRequest.toPublicJSON(), 'Pest management request submitted successfully');
+    sendCreated(res, responseData, 'Pest management request submitted successfully');
     return;
-  } catch (error) {
-    console.error('Error creating pest management request:', error);
-    sendError(res, 'Failed to create pest management request', 500);
+  } catch (error: any) {
+    console.error('❌ Error creating pest management request:', error);
+    console.error('❌ Error details:', {
+      message: error.message,
+      name: error.name,
+      errors: error.errors,
+      stack: error.stack
+    });
+    
+    // Send detailed error for debugging
+    const errorMessage = error.message || 'Failed to create pest management request';
+    sendError(res, errorMessage, 500);
     return;
   }
 }));
@@ -433,33 +721,42 @@ router.post('/property-evaluation', authenticate, authorize('farmer'), validateP
 }));
 
 /**
- * @route   GET /api/service-requests/pest-management
- * @desc    Get all pest management requests (filtered by role)
- * @access  Private
+ * @route   GET /api/service-requests/pest-management/agent/me
+ * @desc    Get pest management requests for the authenticated agent
+ * @access  Private (Agents only)
  */
-router.get('/pest-management', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/pest-management/agent/me', authenticate, authorize('agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
     const skip = (page - 1) * limit;
     
-    // Build filter object based on user role
-    const filter: any = { service_type: 'pest_control' };
-    
-    // Apply role-based filtering (same as harvest)
-    if (req.user?.role === 'farmer') {
-      filter.farmer_id = req.user.id;
-    } else if (req.user?.role === 'agent') {
-      filter.$or = [
-        { agent_id: req.user.id },
-        { agent_id: { $exists: false } },
-        { agent_id: null }
-      ];
-    }
+    // Build filter for agent's pest management requests
+    const filter: any = { 
+      service_type: 'pest_control',
+      agent_id: req.user?.id
+    };
     
     // Add additional filters
-    if (req.query.status) filter.status = req.query.status;
-    if (req.query.priority) filter.priority = req.query.priority;
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+    if (req.query.priority) {
+      filter.priority = req.query.priority;
+    }
+
+    // Date range filter
+    if (req.query.date_from || req.query.date_to) {
+      filter.requested_date = {};
+      if (req.query.date_from) {
+        filter.requested_date.$gte = new Date(req.query.date_from as string);
+      }
+      if (req.query.date_to) {
+        filter.requested_date.$lte = new Date(req.query.date_to as string);
+      }
+    }
+
+    console.log('🔍 Agent pest management request filter:', filter);
     
     const requests = await ServiceRequest.find(filter)
       .skip(skip)
@@ -470,10 +767,83 @@ router.get('/pest-management', authenticate, validatePagination, asyncHandler(as
     
     const total = await ServiceRequest.countDocuments(filter);
     const requestData = requests.map(request => request.toPublicJSON());
+
+    console.log(`📊 Found ${total} pest management requests for agent ${req.user?.id}`);
+    
+    sendPaginatedResponse(res, requestData, total, page, limit, 'Agent pest management requests retrieved successfully');
+    return;
+  } catch (error) {
+    console.error('Error retrieving agent pest management requests:', error);
+    sendError(res, 'Failed to retrieve agent pest management requests', 500);
+    return;
+  }
+}));
+
+/**
+ * @route   GET /api/service-requests/pest-management
+ * @desc    Get all pest management requests (filtered by role)
+ * @access  Private
+ */
+router.get('/pest-management', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const skip = (page - 1) * limit;
+    
+    // Build filter object based on user role
+    const filter: any = { service_type: 'pest_control' };
+    
+    // Farmers can only see their own requests
+    if (req.user?.role === 'farmer') {
+      filter.farmer_id = req.user.id;
+    }
+    // Agents can see assigned requests and unassigned ones
+    else if (req.user?.role === 'agent') {
+      filter.$or = [
+        { agent_id: req.user.id },
+        { agent_id: { $exists: false } },
+        { agent_id: null }
+      ];
+    }
+    // Admins can see all requests
+    
+    // Add additional filters
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+    if (req.query.priority) {
+      filter.priority = req.query.priority;
+    }
+
+    // Date range filter
+    if (req.query.date_from || req.query.date_to) {
+      filter.requested_date = {};
+      if (req.query.date_from) {
+        filter.requested_date.$gte = new Date(req.query.date_from as string);
+      }
+      if (req.query.date_to) {
+        filter.requested_date.$lte = new Date(req.query.date_to as string);
+      }
+    }
+
+    console.log('🔍 Pest management request filter:', filter);
+    
+    const requests = await ServiceRequest.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ created_at: -1 })
+      .populate('farmer_id', 'full_name email phone')
+      .populate('agent_id', 'full_name email phone');
+    
+    const total = await ServiceRequest.countDocuments(filter);
+    const requestData = requests.map(request => request.toPublicJSON());
+
+    console.log(`📊 Found ${total} pest management requests for ${req.user?.role}`);
     
     sendPaginatedResponse(res, requestData, total, page, limit, 'Pest management requests retrieved successfully');
     return;
   } catch (error) {
+    console.error('Error retrieving pest management requests:', error);
     sendError(res, 'Failed to retrieve pest management requests', 500);
     return;
   }
@@ -727,7 +1097,6 @@ router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarv
 
     const harvestRequestData = {
       farmer_id: farmerId,
-      agent_id: userRole === 'agent' ? req.user?.id : undefined, // Save agent_id if created by agent
       service_type: 'harvest',
       title: 'Harvest Request',
       description: `Harvest request for ${treesToHarvest} trees requiring ${workersNeeded} workers`,
@@ -754,127 +1123,19 @@ router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarv
       },
       
       notes: notes || '',
+      created_by: req.user?.id, // Track who created the request
       created_at: new Date(),
       updated_at: new Date()
     };
 
-    console.log('📝 Creating harvest request:', {
-      requestNumber,
-      farmerId,
-      agentId: harvestRequestData.agent_id,
-      createdBy: userRole
-    });
-
     const serviceRequest = new ServiceRequest(harvestRequestData);
     await serviceRequest.save();
-
-    console.log('✅ Harvest request saved successfully with agent_id:', serviceRequest.agent_id);
 
     sendCreated(res, serviceRequest.toPublicJSON(), 'Harvest request submitted successfully');
     return;
   } catch (error) {
     console.error('Error creating harvest request:', error);
     sendError(res, 'Failed to create harvest request', 500);
-    return;
-  }
-}));
-
-/**
- * @route   GET /api/service-requests/harvest/agent/me
- * @desc    Get all harvest requests created by the authenticated agent
- * @access  Private (Agents only)
- * @note    This route MUST be defined BEFORE the general /harvest route to prevent route conflicts
- */
-router.get('/harvest/agent/me', authenticate, authorize('agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const agentId = req.user?.id;
-    
-    if (!agentId) {
-      sendError(res, 'Agent ID not found in token', 401);
-      return;
-    }
-    
-    // Parse query parameters
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
-    const skip = (page - 1) * limit;
-    
-    // Build filter object - looking for harvest requests created by this agent
-    const filter: any = {
-      agent_id: agentId,
-      service_type: 'harvest'
-    };
-    
-    // Optional status filter
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Optional date range filter
-    if (req.query.date_from) {
-      filter.created_at = { ...filter.created_at, $gte: new Date(req.query.date_from as string) };
-    }
-    
-    if (req.query.date_to) {
-      filter.created_at = { ...filter.created_at, $lte: new Date(req.query.date_to as string) };
-    }
-    
-    console.log('🔍 Agent harvest request filter:', JSON.stringify(filter));
-    console.log('👤 Agent ID from token:', agentId);
-    
-    // Get total count
-    const total = await ServiceRequest.countDocuments(filter);
-    
-    console.log('📊 Total harvest requests for this agent:', total);
-    
-    // Get paginated harvest requests
-    const requests = await ServiceRequest.find(filter)
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 })
-      .populate('farmer_id', 'full_name email phone')
-      .populate('agent_id', 'full_name email phone');
-    
-    console.log('📦 Found requests:', requests.length);
-    
-    // Transform data to include farmer_info and agent_info
-    const requestData = requests.map(request => {
-      const publicJSON = request.toPublicJSON();
-      
-      // Add farmer_info from populated data
-      const farmerData = request.farmer_id as any;
-      if (farmerData && farmerData.full_name) {
-        publicJSON.farmer_info = {
-          name: farmerData.full_name,
-          phone: farmerData.phone || '',
-          email: farmerData.email || ''
-        };
-      }
-      
-      // Add agent_info from populated data
-      const agentData = request.agent_id as any;
-      if (agentData && agentData.full_name) {
-        publicJSON.agent_info = {
-          agentId: agentData._id,
-          name: agentData.full_name,
-          phone: agentData.phone || '',
-          email: agentData.email || ''
-        };
-      }
-      
-      return publicJSON;
-    });
-    
-    if (requestData.length === 0) {
-      sendPaginatedResponse(res, [], 0, page, limit, 'No harvest requests found for this agent');
-      return;
-    }
-    
-    sendPaginatedResponse(res, requestData, total, page, limit, 'Harvest requests retrieved successfully');
-    return;
-  } catch (error: any) {
-    console.error('Error fetching agent harvest requests:', error);
-    sendError(res, 'An error occurred while retrieving harvest requests', 500);
     return;
   }
 }));
