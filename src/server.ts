@@ -29,6 +29,8 @@ import uploadRoutes from './routes/upload';
 import logRoutes from './routes/logs';
 import profileAccessRoutes from './routes/profile-access';
 import monitoringRoutes from './routes/monitoring';
+import welcomeRoutes from './routes/welcome';
+import apiDocsRoutes from './routes/api-docs';
 
 // Load environment variables
 dotenv.config();
@@ -42,11 +44,15 @@ app.use(compression()); // Gzip compression
 
 // Rate Limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  windowMs: env.RATE_LIMIT_WINDOW_MS, // Configurable window
+  max: env.RATE_LIMIT_MAX_REQUESTS, // Configurable max requests
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  message: 'Too many requests from this IP, please try again after 15 minutes'
+  message: {
+    success: false,
+    message: 'Too many requests from this IP, please try again later',
+    error: 'Rate limit exceeded'
+  }
 });
 app.use('/api', limiter);
 
@@ -94,6 +100,8 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 // API Routes
+app.use('/api/welcome', welcomeRoutes);
+app.use('/api-docs', apiDocsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/products', productRoutes);

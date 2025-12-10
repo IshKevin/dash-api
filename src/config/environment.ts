@@ -16,6 +16,13 @@ interface EnvironmentConfig {
   CLOUDINARY_CLOUD_NAME: string;
   CLOUDINARY_API_KEY: string;
   CLOUDINARY_API_SECRET: string;
+  RESEND_API_KEY: string | undefined;
+  FROM_EMAIL: string | undefined;
+  RATE_LIMIT_WINDOW_MS: number;
+  RATE_LIMIT_MAX_REQUESTS: number;
+  BCRYPT_ROUNDS: number;
+  ACCESS_KEY_EXPIRY_DAYS: number;
+  QR_CODE_EXPIRY_DAYS: number;
 }
 
 const validateEnvironment = (): EnvironmentConfig => {
@@ -32,6 +39,13 @@ const validateEnvironment = (): EnvironmentConfig => {
     CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
     CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
     CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
+    RESEND_API_KEY: process.env.RESEND_API_KEY,
+    FROM_EMAIL: process.env.FROM_EMAIL,
+    RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
+    RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+    BCRYPT_ROUNDS: parseInt(process.env.BCRYPT_ROUNDS || '12', 10),
+    ACCESS_KEY_EXPIRY_DAYS: parseInt(process.env.ACCESS_KEY_EXPIRY_DAYS || '30', 10),
+    QR_CODE_EXPIRY_DAYS: parseInt(process.env.QR_CODE_EXPIRY_DAYS || '7', 10),
   };
 
   // Validate required environment variables
