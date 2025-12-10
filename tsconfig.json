@@ -1,23 +1,25 @@
 {
   "compilerOptions": {
     // File Layout
-    "rootDir": "./src",
+    "rootDir": "./",
     "outDir": "./dist",
-
     // Environment Settings
     "module": "CommonJS",
     "target": "ES2020",
-    "lib": ["ES2020"],
-    "types": ["node", "mocha"],
+    "lib": [
+      "ES2020"
+    ],
+    "types": [
+      "node",
+      "mocha"
+    ],
     "moduleResolution": "node",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-
     // Other Outputs
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
-
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -25,7 +27,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-
     // Recommended Options
     "strict": true,
     "isolatedModules": true,
@@ -34,12 +35,11 @@
     "resolveJsonModule": true
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "test/**/*"
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "**/*.test.ts",
-    "**/*.spec.ts"
+    "dist"
   ]
 }

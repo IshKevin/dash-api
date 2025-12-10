@@ -1,10 +1,17 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
+import compression from 'compression';
+import mongoSanitize from 'express-mongo-sanitize';
+import rateLimit from 'express-rate-limit';
+import morgan from 'morgan';
 import { database } from './config/database';
 import { env } from './config/environment';
+import logger from './config/logger';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import { sendSuccess } from './utils/responses';
+import { requestLogger } from './middleware/requestLogger';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -16,16 +23,45 @@ import orderRoutes from './routes/orders';
 import serviceRequestRoutes from './routes/serviceRequests';
 import analyticsRoutes from './routes/analytics';
 import shopRoutes from './routes/shops';
-
-console.log('✅ Agent Information routes imported');
+import inventoryRoutes from './routes/inventory';
+import notificationRoutes from './routes/notifications';
+import uploadRoutes from './routes/upload';
+import logRoutes from './routes/logs';
+import profileAccessRoutes from './routes/profile-access';
+import monitoringRoutes from './routes/monitoring';
 
 // Load environment variables
 dotenv.config();
 
 const app: Application = express();
 
-// Middleware
-// Configure CORS based on environment settings
+// Security Middleware
+app.use(helmet()); // Set security HTTP headers
+app.use(mongoSanitize()); // Data sanitization against NoSQL query injection
+app.use(compression()); // Gzip compression
+
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  message: 'Too many requests from this IP, please try again after 15 minutes'
+});
+app.use('/api', limiter);
+
+// HTTP Request Logging
+const morganFormat = env.NODE_ENV === 'development' ? 'dev' : 'combined';
+app.use(morgan(morganFormat, {
+  stream: {
+    write: (message) => logger.http(message.trim()),
+  },
+}));
+
+// Custom Request Logging for Monitoring
+app.use(requestLogger);
+
+// CORS Configuration
 if (env.CORS_PUBLIC) {
   // Public CORS - allow requests from any origin
   app.use(cors({
@@ -42,12 +78,6 @@ if (env.CORS_PUBLIC) {
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Request logging middleware
-app.use((_req: Request, _res: Response, next: Function) => {
-  console.log(`${new Date().toISOString()} - ${_req.method} ${_req.path}`);
-  next();
-});
 
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
@@ -72,7 +102,13 @@ app.use('/api/agent-information', agentInformationRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/service-requests', serviceRequestRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/addshops', shopRoutes);
+app.use('/api/shops', shopRoutes);
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/logs', logRoutes);
+app.use('/api/profile-access', profileAccessRoutes);
+app.use('/api/monitoring', monitoringRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
@@ -94,36 +130,35 @@ const startServer = async (): Promise<void> => {
   try {
     // Connect to database
     await database.connect();
-    console.log('✅ Database connection established');
+    logger.info('✅ Database connection established');
 
     // Start server
     const server = app.listen(env.PORT, () => {
-      console.log(`🚀 Server running on port ${env.PORT}`);
-      console.log(`🌍 Environment: ${env.NODE_ENV}`);
-      console.log(`📅 Started at: ${new Date().toISOString()}`);
-      
+      logger.info(`🚀 Server running on port ${env.PORT}`);
+      logger.info(`🌍 Environment: ${env.NODE_ENV}`);
+
       // Log CORS configuration
       if (env.CORS_PUBLIC) {
-        console.log(`🔓 CORS: Public (allowing requests from any origin)`);
+        logger.info(`🔓 CORS: Public (allowing requests from any origin)`);
       } else {
-        console.log(`🔒 CORS: Restricted to ${env.CORS_ORIGIN}`);
+        logger.info(`🔒 CORS: Restricted to ${env.CORS_ORIGIN}`);
       }
     });
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
-      console.log('🔄 Shutting down server...');
+      logger.info('🔄 Shutting down server...');
       server.close(async () => {
-        console.log('🛑 Server closed');
+        logger.info('🛑 Server closed');
         await database.disconnect();
-        console.log('🔌 Database connection closed');
+        logger.info('🔌 Database connection closed');
         process.exit(0);
       });
     });
 
     // Handle unhandled promise rejections
     process.on('unhandledRejection', (reason, promise) => {
-      console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
+      logger.error(`🚨 Unhandled Rejection at: ${promise}, reason: ${reason}`);
       server.close(() => {
         process.exit(1);
       });
@@ -131,14 +166,14 @@ const startServer = async (): Promise<void> => {
 
     // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
-      console.error('🚨 Uncaught Exception:', error);
+      logger.error(`🚨 Uncaught Exception: ${error}`);
       server.close(() => {
         process.exit(1);
       });
     });
 
   } catch (error) {
-    console.error('❌ Failed to start server:', error);
+    logger.error(`❌ Failed to start server: ${error}`);
     process.exit(1);
   }
 };

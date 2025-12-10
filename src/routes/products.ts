@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Product } from '../models/Product';
+import { StockHistory } from '../models/StockHistory';
 import {
   validateIdParam,
   validateProductCreation,
@@ -161,6 +162,20 @@ router.post(
       const product = new Product(productData);
       await product.save();
 
+      // Initial Stock History
+      if (product.quantity > 0) {
+        await StockHistory.create({
+          product_id: product._id,
+          shop_id: product.supplier_id,
+          previous_quantity: 0,
+          new_quantity: product.quantity,
+          change_amount: product.quantity,
+          reason: 'restock', // Initial stock
+          notes: 'Initial stock creation',
+          created_by: req.user?.id
+        });
+      }
+
       sendCreated(res, product.toPublicJSON(), 'Product created successfully');
       return;
     } catch (error) {
@@ -265,7 +280,7 @@ router.put(
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     try {
       const productId = req.params.id;
-      const { quantity }: StockUpdateRequest = req.body;
+      const { quantity, reason = 'adjustment', notes }: StockUpdateRequest & { reason?: string, notes?: string } = req.body;
 
       // Validate quantity
       if (!Number.isInteger(quantity) || quantity < 0) {
@@ -273,19 +288,32 @@ router.put(
         return;
       }
 
-      // Update product stock
-      const product = await Product.findByIdAndUpdate(
-        productId,
-        {
-          quantity,
-          status: quantity > 0 ? 'available' : 'out_of_stock',
-        },
-        { new: true, runValidators: true }
-      );
-
+      const product = await Product.findById(productId);
       if (!product) {
         sendNotFound(res, 'Product not found');
         return;
+      }
+
+      const previousQuantity = product.quantity;
+      const changeAmount = quantity - previousQuantity;
+
+      // Update product stock
+      product.quantity = quantity;
+      product.status = quantity > 0 ? 'available' : 'out_of_stock';
+      await product.save();
+
+      // Record Stock History
+      if (changeAmount !== 0) {
+        await StockHistory.create({
+          product_id: product._id,
+          shop_id: product.supplier_id,
+          previous_quantity: previousQuantity,
+          new_quantity: quantity,
+          change_amount: changeAmount,
+          reason: reason,
+          notes: notes || 'Manual stock update',
+          created_by: req.user?.id
+        });
       }
 
       sendSuccess(res, product.toPublicJSON(), 'Product stock updated successfully');
@@ -293,6 +321,39 @@ router.put(
     } catch (error) {
       sendError(res, 'Failed to update product stock', 500);
       return;
+    }
+  })
+);
+
+/**
+ * @route   GET /api/products/:id/stock-history
+ * @desc    Get product stock history
+ * @access  Private (Admin, shop managers)
+ */
+router.get(
+  '/:id/stock-history',
+  authenticate,
+  authorize('admin', 'shop_manager'),
+  validateIdParam,
+  validatePagination,
+  asyncHandler(async (req: Request, res: Response) => {
+    try {
+      const productId = req.params.id;
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const skip = (page - 1) * limit;
+
+      const history = await StockHistory.find({ product_id: productId })
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('created_by', 'full_name email');
+
+      const total = await StockHistory.countDocuments({ product_id: productId });
+
+      sendPaginatedResponse(res, history, total, page, limit, 'Stock history retrieved successfully');
+    } catch (error) {
+      sendError(res, 'Failed to retrieve stock history', 500);
     }
   })
 );

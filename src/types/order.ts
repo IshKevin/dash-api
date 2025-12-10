@@ -31,7 +31,7 @@ export interface IShippingAddress {
   is_default?: boolean;
 }
 
-// Base Order Interface
+// Base Order 
 export interface IOrder extends Document {
   _id: string;
   order_number: string;

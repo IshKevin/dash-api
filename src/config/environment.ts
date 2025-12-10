@@ -13,6 +13,9 @@ interface EnvironmentConfig {
   CORS_PUBLIC: boolean;
   APP_NAME: string;
   APP_VERSION: string;
+  CLOUDINARY_CLOUD_NAME: string;
+  CLOUDINARY_API_KEY: string;
+  CLOUDINARY_API_SECRET: string;
 }
 
 const validateEnvironment = (): EnvironmentConfig => {
@@ -26,6 +29,9 @@ const validateEnvironment = (): EnvironmentConfig => {
     CORS_PUBLIC: process.env.CORS_PUBLIC === 'true',
     APP_NAME: process.env.APP_NAME || 'Dashboard Avocado Backend',
     APP_VERSION: process.env.APP_VERSION || '1.0.0',
+    CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
+    CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
+    CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
   };
 
   // Validate required environment variables
