@@ -1,8 +1,8 @@
 import { Response } from 'express';
-import { 
-  ApiResponse, 
-  SuccessResponse, 
-  ErrorResponse, 
+import {
+  ApiResponse,
+  SuccessResponse,
+  ErrorResponse,
   HttpStatusCode,
   ValidationError
 } from '../types/api';
@@ -84,10 +84,11 @@ export const sendPaginatedResponse = <T>(
   total: number,
   page: number,
   limit: number,
-  message: string = 'Request successful'
+  message: string = 'Request successful',
+  extraMeta: Record<string, any> = {}
 ): Response => {
   const totalPages = Math.ceil(total / limit);
-  
+
   const response: ApiResponse<T[]> = {
     success: true,
     message,
@@ -102,7 +103,8 @@ export const sendPaginatedResponse = <T>(
         totalPages,
         hasNext: page < totalPages,
         hasPrev: page > 1,
-      }
+      },
+      ...extraMeta
     }
   };
 
