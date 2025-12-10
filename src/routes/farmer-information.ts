@@ -42,14 +42,14 @@ interface FarmerProfileData {
   gender?: string;
   marital_status?: string;
   education_level?: string;
-  
+
   // Personal Location
   province?: string;
   district?: string;
   sector?: string;
   cell?: string;
   village?: string;
-  
+
   // Farm Information
   farm_age?: number;
   planted?: string;
@@ -58,14 +58,14 @@ interface FarmerProfileData {
   farm_size?: number;
   tree_count?: number;
   upi_number?: string;
-  
+
   // Farm Location
   farm_province?: string;
   farm_district?: string;
   farm_sector?: string;
   farm_cell?: string;
   farm_village?: string;
-  
+
   // Additional fields
   assistance?: string[];
   image?: string;
@@ -97,14 +97,14 @@ function transformFarmerDataForResponse(user: any, profile: any = null): FarmerI
       gender: profile.gender,
       marital_status: profile.marital_status,
       education_level: profile.education_level,
-      
+
       // Personal Location
       province: profile.province,
       district: profile.district,
       sector: profile.sector,
       cell: profile.cell,
       village: profile.village,
-      
+
       // Farm Information
       farm_age: profile.farm_age,
       planted: profile.planted,
@@ -113,14 +113,14 @@ function transformFarmerDataForResponse(user: any, profile: any = null): FarmerI
       farm_size: profile.farm_size,
       tree_count: profile.tree_count,
       upi_number: profile.upi_number,
-      
+
       // Farm Location
       farm_province: profile.farm_province,
       farm_district: profile.farm_district,
       farm_sector: profile.farm_sector,
       farm_cell: profile.farm_cell,
       farm_village: profile.farm_village,
-      
+
       // Additional fields
       assistance: profile.assistance || [],
       image: profile.image || null
@@ -133,27 +133,42 @@ function transformFarmerDataForResponse(user: any, profile: any = null): FarmerI
 /**
  * @route   GET /api/farmer-information
  * @desc    Get farmer information and profile
- * @access  Private (Farmers only)
+ * @access  Private (Farmers, Agents, Admin)
  */
 router.get('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
-    
+    let userId = req.user?.id;
+
     if (!userId) {
       sendError(res, 'User ID not found in token', 401);
       return;
     }
-    
-    // Get user basic information
-    const user = await User.findById(userId).select('-password -__v');
-    if (!user) {
+
+    const requestUser = await User.findById(userId).select('role');
+
+    if (!requestUser) {
       sendError(res, 'User not found', 404);
       return;
     }
 
-    // Check if user is a farmer
+    // specific farmer check
+    if (req.query.farmerId && (requestUser.role === 'agent' || requestUser.role === 'admin')) {
+      userId = req.query.farmerId as string;
+    } else if (requestUser.role !== 'farmer') {
+      sendError(res, 'Access denied. Only farmers can access their own info, or Agents/Admins can access via farmerId', 403);
+      return;
+    }
+
+    // Get user basic information
+    const user = await User.findById(userId).select('-password -__v');
+    if (!user) {
+      sendError(res, 'Target user not found', 404);
+      return;
+    }
+
+    // Check if target user is a farmer
     if (user.role !== 'farmer') {
-      sendError(res, 'Access denied. This endpoint is for farmers only', 403);
+      sendError(res, 'Target user is not a farmer', 400);
       return;
     }
 
@@ -161,7 +176,7 @@ router.get('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
     const profile = await FarmerProfile.findOne({ user_id: userId });
 
     const farmerData = transformFarmerDataForResponse(user, profile);
-    
+
     sendSuccess(res, farmerData, 'Farmer information retrieved successfully');
   } catch (error: any) {
     console.error('Get farmer information error:', error);
@@ -172,11 +187,11 @@ router.get('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
 /**
  * @route   PUT /api/farmer-information
  * @desc    Update farmer profile information
- * @access  Private (Farmers only)
+ * @access  Private (Farmers, Agents, Admin)
  */
 router.put('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = req.user?.id;
+    let userId = req.user?.id;
     const updateData = req.body;
 
     if (!userId) {
@@ -184,16 +199,31 @@ router.put('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
       return;
     }
 
-    // Get user
-    const user = await User.findById(userId);
-    if (!user) {
+    const requestUser = await User.findById(userId).select('role');
+
+    if (!requestUser) {
       sendError(res, 'User not found', 404);
       return;
     }
 
-    // Check if user is a farmer
+    // specific farmer check
+    if (updateData.farmerId && (requestUser.role === 'agent' || requestUser.role === 'admin')) {
+      userId = updateData.farmerId;
+    } else if (requestUser.role !== 'farmer') {
+      sendError(res, 'Access denied. Only farmers can update their own info, or Agents/Admins can update via farmerId', 403);
+      return;
+    }
+
+    // Get user
+    const user = await User.findById(userId);
+    if (!user) {
+      sendError(res, 'Target user not found', 404);
+      return;
+    }
+
+    // Check if target user is a farmer
     if (user.role !== 'farmer') {
-      sendError(res, 'Access denied. This endpoint is for farmers only', 403);
+      sendError(res, 'Target user is not a farmer', 400);
       return;
     }
 
@@ -209,21 +239,21 @@ router.put('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
 
     // Update farmer profile data
     const profileData: any = {};
-    
+
     // Personal Information
     if (updateData.age !== undefined) profileData.age = updateData.age;
     if (updateData.id_number) profileData.id_number = updateData.id_number;
     if (updateData.gender) profileData.gender = updateData.gender;
     if (updateData.marital_status) profileData.marital_status = updateData.marital_status;
     if (updateData.education_level) profileData.education_level = updateData.education_level;
-    
+
     // Personal Location
     if (updateData.province) profileData.province = updateData.province;
     if (updateData.district) profileData.district = updateData.district;
     if (updateData.sector) profileData.sector = updateData.sector;
     if (updateData.cell) profileData.cell = updateData.cell;
     if (updateData.village) profileData.village = updateData.village;
-    
+
     // Farm Information
     if (updateData.farm_age !== undefined) profileData.farm_age = updateData.farm_age;
     if (updateData.planted) profileData.planted = updateData.planted;
@@ -232,14 +262,14 @@ router.put('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
     if (updateData.farm_size !== undefined) profileData.farm_size = updateData.farm_size;
     if (updateData.tree_count !== undefined) profileData.tree_count = updateData.tree_count;
     if (updateData.upi_number) profileData.upi_number = updateData.upi_number;
-    
+
     // Farm Location
     if (updateData.farm_province) profileData.farm_province = updateData.farm_province;
     if (updateData.farm_district) profileData.farm_district = updateData.farm_district;
     if (updateData.farm_sector) profileData.farm_sector = updateData.farm_sector;
     if (updateData.farm_cell) profileData.farm_cell = updateData.farm_cell;
     if (updateData.farm_village) profileData.farm_village = updateData.farm_village;
-    
+
     // Additional fields
     if (updateData.assistance) profileData.assistance = updateData.assistance;
     if (updateData.image) profileData.image = updateData.image;
@@ -258,7 +288,7 @@ router.put('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
     // Get updated user data
     const updatedUser = await User.findById(userId).select('-password -__v');
     const farmerData = transformFarmerDataForResponse(updatedUser, profile);
-    
+
     sendSuccess(res, farmerData, 'Farmer information updated successfully');
   } catch (error: any) {
     console.error('Update farmer information error:', error);
@@ -274,7 +304,7 @@ router.put('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res
 router.post('/create', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.user?.id;
-    
+
     if (!userId) {
       sendError(res, 'User ID not found in token', 401);
       return;
@@ -308,7 +338,7 @@ router.post('/create', authenticate, asyncHandler(async (req: AuthenticatedReque
     const savedProfile = await newProfile.save();
 
     const farmerData = transformFarmerDataForResponse(user, savedProfile);
-    
+
     sendCreated(res, farmerData, 'Farmer profile created successfully');
   } catch (error: any) {
     console.error('Create farmer profile error:', error);
@@ -354,7 +384,7 @@ router.put('/tree-count', authenticate, asyncHandler(async (req: AuthenticatedRe
     );
 
     const farmerData = transformFarmerDataForResponse(user, profile);
-    
+
     sendSuccess(res, farmerData, 'Tree count updated successfully');
   } catch (error: any) {
     console.error('Update tree count error:', error);
