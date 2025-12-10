@@ -45,6 +45,7 @@ export interface IUser extends Document {
   role: UserRole;
   status: UserStatus;
   profile?: IUserProfile;
+  qr_code_token?: string;
   created_at: Date;
   updated_at: Date;
   comparePassword(candidatePassword: string): Promise<boolean>;
@@ -73,20 +74,20 @@ const FarmDetailsSchema = new Schema({
 
 const UserProfileSchema = new Schema({
   age: { type: Number, min: 0, max: 150 },
-  gender: { 
-    type: String, 
+  gender: {
+    type: String,
     enum: ['Male', 'Female', 'Other'],
-    trim: true 
+    trim: true
   },
-  marital_status: { 
-    type: String, 
+  marital_status: {
+    type: String,
     enum: ['Single', 'Married', 'Divorced', 'Widowed'],
-    trim: true 
+    trim: true
   },
-  education_level: { 
-    type: String, 
+  education_level: {
+    type: String,
     enum: ['Primary', 'Secondary', 'University', 'None'],
-    trim: true 
+    trim: true
   },
   province: { type: String, trim: true },
   district: { type: String, trim: true },
@@ -144,6 +145,11 @@ const userSchema = new Schema<IUser>({
   profile: {
     type: UserProfileSchema,
     default: {}
+  },
+  qr_code_token: {
+    type: String,
+    unique: true,
+    sparse: true
   }
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
@@ -157,9 +163,9 @@ userSchema.index({ 'profile.province': 1, 'profile.district': 1 });
 userSchema.index({ created_at: -1 });
 
 // Pre-save middleware to hash password
-userSchema.pre('save', async function(this: IUser, next) {
+userSchema.pre('save', async function (this: IUser, next) {
   if (!this.isModified('password')) return next();
-  
+
   try {
     const salt = await bcrypt.genSalt(12);
     this.password = await bcrypt.hash(this.password, salt);
@@ -170,7 +176,7 @@ userSchema.pre('save', async function(this: IUser, next) {
 });
 
 // Instance method to compare password
-userSchema.methods.comparePassword = async function(this: IUser, candidatePassword: string): Promise<boolean> {
+userSchema.methods.comparePassword = async function (this: IUser, candidatePassword: string): Promise<boolean> {
   try {
     return await bcrypt.compare(candidatePassword, this.password);
   } catch (error) {
@@ -179,7 +185,7 @@ userSchema.methods.comparePassword = async function(this: IUser, candidatePasswo
 };
 
 // Instance method to get public user data (without password)
-userSchema.methods.toPublicJSON = function(this: IUser): UserResponse {
+userSchema.methods.toPublicJSON = function (this: IUser): UserResponse {
   const user = this.toObject();
   delete user.password;
   delete user.__v;
@@ -197,22 +203,22 @@ userSchema.methods.toPublicJSON = function(this: IUser): UserResponse {
 };
 
 // Static method to find users by role
-userSchema.statics.findByRole = function(this: Model<IUser>, role: UserRole) {
+userSchema.statics.findByRole = function (this: Model<IUser>, role: UserRole) {
   return this.find({ role, status: 'active' });
 };
 
 // Static method to find active farmers
-userSchema.statics.findActiveFarmers = function(this: Model<IUser>) {
+userSchema.statics.findActiveFarmers = function (this: Model<IUser>) {
   return this.find({ role: 'farmer', status: 'active' });
 };
 
 // Static method to find available agents
-userSchema.statics.findAvailableAgents = function(this: Model<IUser>) {
+userSchema.statics.findAvailableAgents = function (this: Model<IUser>) {
   return this.find({ role: 'agent', status: 'active' });
 };
 
 // Static method for user search
-userSchema.statics.searchUsers = function(
+userSchema.statics.searchUsers = function (
   this: Model<IUser>,
   query: string,
   options: { role?: UserRole; limit?: number } = {}
@@ -236,7 +242,7 @@ userSchema.statics.searchUsers = function(
 };
 
 // Virtual for user's full profile based on role
-userSchema.virtual('roleSpecificProfile').get(function(this: Document) {
+userSchema.virtual('roleSpecificProfile').get(function (this: Document) {
   const user = this as unknown as IUser;
   if (!user.profile) return {};
 
