@@ -1,3 +1,4 @@
 --require ts-node/register
 --extension ts
 test/simpleAuth.test.ts
+test/api.test.ts
