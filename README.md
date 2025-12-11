@@ -1,243 +1,385 @@
 # Dashboard Avocado Backend API
 
-A RESTful Node.js/Express.js backend API for agricultural management dashboard supporting farmers, agents, shop managers, and administrators.
+A comprehensive, production-ready backend API for agricultural management system with QR code profile access, bulk user import, and advanced monitoring capabilities.
 
-## Features
+## 🚀 Features
 
-- User authentication with JWT
-- Role-based access control (RBAC)
-- CRUD operations for users, products, orders, and service requests
-- Analytics and reporting endpoints
-- MongoDB with Mongoose ODM
-- TypeScript for type safety
-- Comprehensive validation and error handling
+### Core Features
+- **User Authentication & Authorization** - JWT-based with role-based access control
+- **QR Code Profile Access System** - Generate access keys for profile editing via QR codes
+- **Bulk User Import** - Import users from Excel/JSON with automatic access key generation
+- **Comprehensive Profile Management** - Farmer, agent, and admin profiles with detailed information
+- **Product Inventory Management** - Full CRUD operations with stock tracking
+- **Order Processing System** - Complete order lifecycle management
+- **Real-time Analytics** - Dashboard statistics and reporting
+- **File Upload & Storage** - Cloudinary integration for images and documents
+- **Advanced Monitoring** - Health checks, metrics, and system monitoring
+- **Notification System** - Real-time notifications for users
+- **Comprehensive Logging** - Winston-based logging with different levels
 
-## Technology Stack
+### Production Features
+- **Rate Limiting** - Configurable request throttling
+- **Security Headers** - Helmet.js for security best practices
+- **Input Validation** - Comprehensive request validation
+- **Error Handling** - Centralized error handling with proper HTTP status codes
+- **Database Optimization** - Indexed queries and connection pooling
+- **Graceful Shutdown** - Proper cleanup on server termination
+- **Health Monitoring** - Detailed health checks and system metrics
+- **Automated Cleanup** - Scripts for removing expired data
 
-- **Runtime**: Node.js
-- **Framework**: Express.js
-- **Database**: MongoDB with Mongoose
-- **Authentication**: JWT (JSON Web Tokens)
-- **Password Security**: bcryptjs
-- **Validation**: express-validator
-- **Type Safety**: TypeScript
-- **Environment Config**: dotenv
+## 🛠 Tech Stack
 
-## Prerequisites
+- **Runtime**: Node.js 18+ with TypeScript
+- **Framework**: Express.js with comprehensive middleware
+- **Database**: MongoDB with Mongoose ODM
+- **Authentication**: JWT with bcrypt password hashing
+- **File Storage**: Cloudinary for images and documents
+- **Logging**: Winston with multiple transports
+- **Testing**: Mocha & Chai
+- **Security**: Helmet, CORS, Rate Limiting, Input Validation, MongoDB Sanitization
+- **Monitoring**: Custom health checks and metrics collection
 
-- Node.js (v14 or higher)
-- MongoDB (local or cloud instance)
-- npm or yarn package manager
+## 📋 Prerequisites
 
-## Installation
+- Node.js (v18 or higher)
+- MongoDB (v5 or higher)
+- npm or yarn
+- Cloudinary account (for file uploads)
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd dashboard-avocado-backend
-   ```
+## 🚀 Quick Start
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Create a `.env` file based on `.env.example`:
-   ```bash
-   cp .env.example .env
-   ```
-
-4. Configure environment variables in `.env`:
-   ```
-   PORT=3000
-   MONGODB_URI=mongodb://localhost:27017/dashboard-avocado
-   JWT_SECRET=your-super-secret-jwt-key
-   JWT_EXPIRES_IN=7d
-   ```
-
-## Development
-
-1. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-2. The API will be available at `http://localhost:3000`
-
-## Production
-
-1. Build the TypeScript code:
-   ```bash
-   npm run build
-   ```
-
-2. Start the production server:
-   ```bash
-   npm start
-   ```
-
-## API Endpoints
-
-### Authentication
-
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/auth/register` | Register new user | No |
-| POST | `/api/auth/login` | User authentication | No |
-| POST | `/api/auth/logout` | User logout | Yes |
-| GET | `/api/auth/profile` | Get current user profile | Yes |
-| PUT | `/api/auth/profile` | Update current user profile | Yes |
-| PUT | `/api/auth/password` | Change user password | Yes |
-
-### Users Management
-
-| Method | Endpoint | Description | Auth Required | Roles |
-|--------|----------|-------------|---------------|-------|
-| GET | `/api/users` | List all users | Yes | Admin |
-| GET | `/api/users/:id` | Get user by ID | Yes | Admin, Self |
-| PUT | `/api/users/:id` | Update user | Yes | Admin, Self |
-| DELETE | `/api/users/:id` | Delete user | Yes | Admin |
-| GET | `/api/users/farmers` | List farmers | Yes | Admin, Agent |
-| GET | `/api/users/agents` | List agents | Yes | Admin |
-| PUT | `/api/users/:id/status` | Update user status | Yes | Admin |
-| PUT | `/api/users/:id/role` | Update user role | Yes | Admin |
-
-### Products Management
-
-| Method | Endpoint | Description | Auth Required | Roles |
-|--------|----------|-------------|---------------|-------|
-| GET | `/api/products` | List all products | Yes | All |
-| GET | `/api/products/:id` | Get product details | Yes | All |
-| POST | `/api/products` | Create new product | Yes | Admin, Shop Manager |
-| PUT | `/api/products/:id` | Update product | Yes | Admin, Shop Manager |
-| DELETE | `/api/products/:id` | Delete product | Yes | Admin |
-| GET | `/api/products/category/:category` | Filter by category | Yes | All |
-| PUT | `/api/products/:id/stock` | Update product stock | Yes | Admin, Shop Manager |
-
-### Orders Management
-
-| Method | Endpoint | Description | Auth Required | Roles |
-|--------|----------|-------------|---------------|-------|
-| GET | `/api/orders` | List orders | Yes | Admin, Shop Manager |
-| GET | `/api/orders/:id` | Get order details | Yes | Admin, Shop Manager, Owner |
-| POST | `/api/orders` | Create new order | Yes | All |
-| PUT | `/api/orders/:id` | Update order | Yes | Admin, Shop Manager |
-| PUT | `/api/orders/:id/status` | Update order status | Yes | Admin, Shop Manager |
-| DELETE | `/api/orders/:id` | Delete order | Yes | Admin |
-| GET | `/api/orders/user/:userId` | Get user orders | Yes | Admin, Self |
-
-### Service Requests
-
-| Method | Endpoint | Description | Auth Required | Roles |
-|--------|----------|-------------|---------------|-------|
-| GET | `/api/service-requests` | List service requests | Yes | Admin, Agent, Farmer |
-| GET | `/api/service-requests/:id` | Get request details | Yes | Admin, Agent, Owner |
-| POST | `/api/service-requests` | Create new request | Yes | Farmer |
-| PUT | `/api/service-requests/:id` | Update request | Yes | Admin, Agent, Owner |
-| DELETE | `/api/service-requests/:id` | Delete request | Yes | Admin, Owner |
-| PUT | `/api/service-requests/:id/assign` | Assign agent | Yes | Admin |
-| PUT | `/api/service-requests/:id/status` | Update request status | Yes | Admin, Agent, Owner |
-| POST | `/api/service-requests/:id/feedback` | Submit feedback | Yes | Farmer |
-| GET | `/api/service-requests/farmer/:farmerId` | Farmer's requests | Yes | Admin, Agent, Self |
-| GET | `/api/service-requests/agent/:agentId` | Agent's requests | Yes | Admin, Self |
-
-### Analytics
-
-| Method | Endpoint | Description | Auth Required | Roles |
-|--------|----------|-------------|---------------|-------|
-| GET | `/api/analytics/dashboard` | Dashboard statistics | Yes | Admin, Shop Manager |
-| GET | `/api/analytics/sales` | Sales analytics | Yes | Admin, Shop Manager |
-| GET | `/api/analytics/products` | Product analytics | Yes | Admin, Shop Manager |
-| GET | `/api/analytics/users` | User statistics | Yes | Admin |
-| GET | `/api/analytics/orders/monthly` | Monthly order trends | Yes | Admin, Shop Manager |
-
-## User Roles
-
-| Role | Permissions |
-|------|------------|
-| **Admin** | Full system access, user management, all analytics |
-| **Agent** | Service request management, farmer interaction, limited analytics |
-| **Farmer** | Create service requests, view own data, place orders |
-| **Shop Manager** | Product management, order management, sales analytics |
-
-## Testing
-
-Run the API test suite:
+### 1. Installation
 
 ```bash
-node test/api-test.js
+# Clone the repository
+git clone https://github.com/IshKevin/dash-api.git
+cd dash-api
+
+# Install dependencies
+npm install
+
+# Copy environment configuration
+cp .env.example .env
 ```
 
-## Project Structure
+### 2. Environment Configuration
 
-```
-dashboard-avocado-backend/
-├── src/                    # TypeScript source files
-│   ├── server.ts          # Main application entry point
-│   ├── config/            # Configuration modules
-│   ├── models/            # Mongoose schemas & models
-│   ├── routes/            # API route definitions
-│   ├── middleware/        # Custom middleware functions
-│   ├── utils/             # Utility functions
-│   └── types/             # TypeScript type definitions
-├── dist/                  # Compiled JavaScript output
-├── test/                  # Test files
-├── .env                   # Environment variables
-├── .env.example           # Environment template
-├── package.json           # Project dependencies
-├── tsconfig.json          # TypeScript configuration
-└── README.md              # Project documentation
-```
+Edit `.env` file with your configuration:
 
-## Environment Variables
+```env
+# Server Configuration
+PORT=5000
+NODE_ENV=development
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| PORT | Server port | Yes |
-| MONGODB_URI | MongoDB connection string | Yes |
-| JWT_SECRET | Secret key for JWT signing | Yes |
-| JWT_EXPIRES_IN | JWT expiration time | Yes |
-| CORS_ORIGIN | Allowed origin for CORS requests | No |
-| CORS_PUBLIC | Enable public CORS (allows any origin) | No |
-| NODE_ENV | Environment (development/production) | No |
+# Database Configuration
+MONGODB_URI=mongodb://localhost:27017/dashboard-avocado
 
-## Security Features
+# JWT Configuration (CHANGE IN PRODUCTION!)
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+JWT_EXPIRE=7d
 
-- Password hashing with bcrypt (10 salt rounds)
-- JWT-based authentication with expiration
-- Role-based access control
-- Input validation and sanitization
-- CORS protection (configurable - restricted by default, can be made public)
-- Rate limiting (to be implemented)
-- Helmet.js security headers (to be implemented)
+# CORS Configuration
+CORS_ORIGIN=http://localhost:3000
+CORS_PUBLIC=false
 
-## Error Handling
+# Application Configuration
+APP_NAME=Dashboard Avocado Backend
+APP_VERSION=1.0.0
 
-The API follows standard HTTP status codes:
-- 200: Success
-- 201: Created
-- 400: Bad Request
-- 401: Unauthorized
-- 403: Forbidden
-- 404: Not Found
-- 500: Internal Server Error
+# Cloudinary Configuration
+CLOUDINARY_CLOUD_NAME=your-cloudinary-cloud-name
+CLOUDINARY_API_KEY=your-cloudinary-api-key
+CLOUDINARY_API_SECRET=your-cloudinary-api-secret
 
-All errors return a JSON response with:
-```json
-{
-  "success": false,
-  "message": "Error description"
-}
+# Optional: Email Configuration
+RESEND_API_KEY=your-resend-api-key
+FROM_EMAIL=noreply@yourdomain.com
+
+# Security Configuration
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+BCRYPT_ROUNDS=12
+
+# Access Key Configuration
+ACCESS_KEY_EXPIRY_DAYS=30
+QR_CODE_EXPIRY_DAYS=7
 ```
 
-## Contributing
+### 3. Database Setup
+
+```bash
+# Seed initial data (admin user, sample products)
+npm run seed
+```
+
+### 4. Start Development Server
+
+```bash
+npm run dev
+```
+
+The server will start on `http://localhost:5000`
+
+## 📚 API Documentation
+
+### Welcome & Documentation
+- `GET /` - Welcome message with system overview
+- `GET /api/welcome` - Detailed welcome with statistics
+- `GET /api-docs` - Complete API documentation
+- `GET /health` - Health check endpoint
+
+### Authentication
+- `POST /api/auth/register` - Register new user
+- `POST /api/auth/login` - User login
+- `POST /api/auth/logout` - User logout
+- `POST /api/auth/refresh` - Refresh JWT token
+- `POST /api/auth/forgot-password` - Request password reset
+- `POST /api/auth/reset-password` - Reset password with token
+
+### QR Code Profile Access System
+- `POST /api/profile-access/bulk-import` - Import users from Excel/JSON with access keys
+- `POST /api/profile-access/verify-access-key` - Verify access key for profile editing
+- `PUT /api/profile-access/update-profile` - Update profile using access key
+- `GET /api/profile-access/generate-qr/:userId` - Generate QR code with access key
+
+### User Management
+- `GET /api/users` - Get all users (Admin only)
+- `GET /api/users/profile` - Get current user profile
+- `PUT /api/users/profile` - Update current user profile
+- `GET /api/users/:id` - Get user by ID
+- `PUT /api/users/:id` - Update user by ID (Admin only)
+- `DELETE /api/users/:id` - Delete user by ID (Admin only)
+
+### Product Management
+- `GET /api/products` - Get all products
+- `POST /api/products` - Create new product
+- `GET /api/products/:id` - Get product by ID
+- `PUT /api/products/:id` - Update product
+- `DELETE /api/products/:id` - Delete product
+
+### Order Management
+- `GET /api/orders` - Get all orders
+- `POST /api/orders` - Create new order
+- `GET /api/orders/:id` - Get order by ID
+- `PUT /api/orders/:id` - Update order
+- `DELETE /api/orders/:id` - Delete order
+
+### Analytics & Monitoring
+- `GET /api/analytics/dashboard` - Dashboard analytics
+- `GET /api/monitoring/health` - Comprehensive health check
+- `GET /api/monitoring/metrics` - System metrics (Admin only)
+- `POST /api/monitoring/cleanup` - Clean expired data (Admin only)
+
+## 🔧 QR Code Access System
+
+### How It Works
+
+1. **Bulk Import Users**: Import users from Excel/JSON files
+2. **Generate Access Keys**: Each user gets a unique access key (format: XXXX-XXXX-XXXX)
+3. **Create QR Codes**: Generate QR codes containing access keys
+4. **User Scans QR**: User scans QR code to get access key
+5. **Profile Access**: User enters access key on web page to edit their profile
+6. **One-Time Use**: Access keys are marked as used after profile update
+
+### Example Usage
+
+```bash
+# Import users from Excel file
+curl -X POST http://localhost:5000/api/profile-access/bulk-import \
+  -H "Authorization: Bearer <admin-token>" \
+  -F "file=@users.xlsx"
+
+# Generate QR code for a user
+curl -X GET http://localhost:5000/api/profile-access/generate-qr/USER_ID \
+  -H "Authorization: Bearer <agent-token>"
+
+# Verify access key (public endpoint)
+curl -X POST http://localhost:5000/api/profile-access/verify-access-key \
+  -H "Content-Type: application/json" \
+  -d '{"access_key": "ABCD-1234-EFGH"}'
+
+# Update profile with access key
+curl -X PUT http://localhost:5000/api/profile-access/update-profile \
+  -H "Content-Type: application/json" \
+  -d '{
+    "access_key": "ABCD-1234-EFGH",
+    "profile_data": {
+      "full_name": "Updated Name",
+      "phone": "+250788123456",
+      "profile": {
+        "age": 35,
+        "gender": "Male"
+      }
+    }
+  }'
+```
+
+## 📁 Project Structure
+
+```
+src/
+├── config/              # Configuration files
+│   ├── database.ts      # MongoDB connection
+│   ├── environment.ts   # Environment variables
+│   ├── logger.ts        # Winston logging setup
+│   └── cloudinary.ts    # Cloudinary configuration
+├── middleware/          # Express middleware
+│   ├── auth.ts          # Authentication middleware
+│   ├── errorHandler.ts  # Error handling
+│   ├── validation.ts    # Input validation
+│   └── upload.ts        # File upload handling
+├── models/              # Database models
+│   ├── User.ts          # User model with profiles
+│   ├── AccessKey.ts     # Access key model
+│   ├── Product.ts       # Product model
+│   ├── Order.ts         # Order model
+│   └── ...              # Other models
+├── routes/              # API routes
+│   ├── auth.ts          # Authentication routes
+│   ├── profile-access.ts # QR code access system
+│   ├── welcome.ts       # Welcome endpoints
+│   ├── api-docs.ts      # API documentation
+│   ├── monitoring.ts    # Health & monitoring
+│   └── ...              # Other route files
+├── scripts/             # Utility scripts
+│   ├── seed.ts          # Database seeding
+│   └── cleanup.ts       # Data cleanup
+├── types/               # TypeScript definitions
+├── utils/               # Utility functions
+│   ├── accessKey.ts     # Access key utilities
+│   ├── responses.ts     # Response helpers
+│   └── ...              # Other utilities
+└── server.ts            # Main server file
+```
+
+## 🚀 Production Deployment
+
+### 1. Build for Production
+
+```bash
+# Clean build
+npm run build:clean
+
+# Or just build
+npm run build
+```
+
+### 2. Environment Setup
+
+```bash
+# Set production environment
+export NODE_ENV=production
+
+# Set secure JWT secret
+export JWT_SECRET="your-very-secure-production-jwt-secret"
+
+# Configure database
+export MONGODB_URI="mongodb://your-production-db-url"
+```
+
+### 3. Start Production Server
+
+```bash
+npm run start:prod
+```
+
+### 4. Health Monitoring
+
+```bash
+# Check health
+curl http://localhost:5000/health
+
+# Get detailed metrics (requires admin token)
+curl -H "Authorization: Bearer <admin-token>" \
+     http://localhost:5000/api/monitoring/metrics
+```
+
+### 5. Maintenance Scripts
+
+```bash
+# Clean expired data
+npm run cleanup
+
+# Health check for monitoring systems
+npm run health-check
+```
+
+## 🔒 Security Features
+
+- **JWT Authentication** with configurable expiration
+- **Password Hashing** with bcrypt (configurable rounds)
+- **Rate Limiting** with configurable windows and limits
+- **Input Validation** with express-validator
+- **SQL Injection Protection** with express-mongo-sanitize
+- **XSS Protection** with Helmet.js security headers
+- **CORS Configuration** with whitelist support
+- **Request Logging** for audit trails
+- **Error Handling** without information leakage
+
+## 📊 Monitoring & Analytics
+
+### Health Checks
+- Database connectivity
+- Memory usage monitoring
+- Disk space monitoring
+- Service availability checks
+
+### Metrics Collection
+- Request volume and patterns
+- User activity tracking
+- System resource usage
+- Error rate monitoring
+
+### Automated Cleanup
+- Expired access keys removal
+- Old log cleanup
+- Used access key cleanup
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+npm test
+
+# Run unit tests only
+npm run test:unit
+
+# Run e2e tests only
+npm run test:e2e
+
+# Watch mode for development
+npm run test:watch
+```
+
+## 📝 Scripts Reference
+
+```bash
+npm start          # Start production server
+npm run dev        # Development server with hot reload
+npm run build      # Build TypeScript
+npm run build:prod # Production build
+npm run start:prod # Start production server
+npm test           # Run all tests
+npm run seed       # Seed initial data
+npm run cleanup    # Clean expired data
+npm run health-check # Health check for monitoring
+```
+
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a pull request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-## License
+## 📄 License
 
-This project is licensed under the MIT License.
+This project is licensed under the ISC License.
+
+## 🆘 Support
+
+For support and questions:
+- Create an issue in the GitHub repository
+- Check the API documentation at `/api-docs`
+- Review the health status at `/health`

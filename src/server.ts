@@ -31,6 +31,11 @@ import profileAccessRoutes from './routes/profile-access';
 import monitoringRoutes from './routes/monitoring';
 import welcomeRoutes from './routes/welcome';
 import apiDocsRoutes from './routes/api-docs';
+import customersRoutes from './routes/customers';
+import suppliersRoutes from './routes/suppliers';
+import reportsRoutes from './routes/reports';
+import weatherRoutes from './routes/weather';
+import farmsRoutes from './routes/farms';
 
 // Load environment variables
 dotenv.config();
@@ -117,6 +122,11 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/logs', logRoutes);
 app.use('/api/profile-access', profileAccessRoutes);
 app.use('/api/monitoring', monitoringRoutes);
+app.use('/api/customers', customersRoutes);
+app.use('/api/suppliers', suppliersRoutes);
+app.use('/api/reports', reportsRoutes);
+app.use('/api/weather', weatherRoutes);
+app.use('/api/farms', farmsRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
