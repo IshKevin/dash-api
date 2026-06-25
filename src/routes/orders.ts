@@ -101,8 +101,13 @@ router.get('/:id', authenticate, validateIdParam, asyncHandler(async (req: Authe
 
 // POST /api/orders
 router.post('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { items, shipping_address, billing_address, payment_method, notes } = req.body;
-  const customerId = req.user?.id as string;
+  const { customer_id, items, shipping_address, billing_address, payment_method, notes } = req.body;
+
+  if (!customer_id) {
+    sendError(res, 'customer_id is required', 400);
+    return;
+  }
+  const customerId = customer_id;
 
   if (!items || !Array.isArray(items) || items.length === 0) {
     sendError(res, 'Order must contain at least one item', 400);
