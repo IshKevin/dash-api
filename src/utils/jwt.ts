@@ -61,7 +61,7 @@ export const decodeToken = (token: string): any => {
 export const refreshToken = (oldToken: string): string | null => {
   try {
     const decoded = jwt.verify(oldToken, env.JWT_SECRET) as JWTPayload & { exp?: number; iat?: number };
-    const { exp, iat, ...payload } = decoded;
+    const { exp: _exp, iat: _iat, ...payload } = decoded;
 
     const signOptions: SignOptions = {
       expiresIn: parseJwtExpire(),
