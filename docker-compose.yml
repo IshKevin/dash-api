@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dash-api-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dashuser
+      POSTGRES_PASSWORD: dashpass
+      POSTGRES_DB: dashboard_avocado
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dashuser -d dashboard_avocado']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: dash-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://dashuser:dashpass@postgres:5432/dashboard_avocado
+      PORT: 5000
+      NODE_ENV: development
+      JWT_SECRET: supersecret-change-in-prod
+      CORS_ORIGIN: http://localhost:3000
+      CORS_PUBLIC: 'true'
+    ports:
+      - '5000:5000'
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
