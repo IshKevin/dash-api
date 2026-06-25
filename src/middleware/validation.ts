@@ -8,11 +8,11 @@ import { ValidationError } from '../types/api';
  */
 const formatValidationErrors = (errors: ExpressValidationError[]): ValidationError[] => {
   return errors.map(error => {
-    if ('param' in error && typeof error.param === 'string') {
+    if (error.type === 'field') {
       return {
-        field: error.param,
+        field: error.path,
         message: error.msg,
-        value: (error as any).value
+        value: error.value
       };
     }
     return {

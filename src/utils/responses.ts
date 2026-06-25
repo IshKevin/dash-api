@@ -20,7 +20,7 @@ export const sendSuccess = <T>(
   res: Response,
   data: T,
   message: string = 'Request successful',
-  statusCode: HttpStatusCode = HttpStatusCode.OK
+  statusCode: number = HttpStatusCode.OK
 ): Response => {
   const response: SuccessResponse<T> = {
     success: true,
@@ -46,7 +46,7 @@ export const sendSuccess = <T>(
 export const sendError = (
   res: Response,
   message: string = 'An error occurred',
-  statusCode: HttpStatusCode = HttpStatusCode.INTERNAL_SERVER_ERROR,
+  statusCode: number = HttpStatusCode.INTERNAL_SERVER_ERROR,
   errors?: ValidationError[]
 ): Response => {
   const response: ErrorResponse = {

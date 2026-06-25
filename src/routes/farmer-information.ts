@@ -82,7 +82,7 @@ router.get('/me', authenticate, authorize('farmer'), asyncHandler(async (req: Au
     return;
   }
 
-  const { password, ...userWithoutPassword } = user as any;
+  const { password: _pw1, ...userWithoutPassword } = user as any;
   sendSuccess(res, formatFarmerResponse(userWithoutPassword, (user as any).farmer_profile), 'Farmer profile retrieved');
 }));
 
@@ -115,7 +115,7 @@ router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
     return;
   }
 
-  const { password, ...userWithoutPassword } = user as any;
+  const { password: _pw2, ...userWithoutPassword } = user as any;
   sendSuccess(res, formatFarmerResponse(userWithoutPassword, (user as any).farmer_profile), 'Farmer information retrieved');
 }));
 

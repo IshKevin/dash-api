@@ -56,7 +56,7 @@ router.get('/', authenticate, authorize('admin'), validatePagination, asyncHandl
   ]);
 
   const data = agents.map(agent => {
-    const { password, ...user } = agent as any;
+    const { password: _password, ...user } = agent as any;
     return formatAgentResponse(user, (agent as any).agent_profile);
   });
 
@@ -75,7 +75,7 @@ router.get('/me', authenticate, authorize('agent'), asyncHandler(async (req: Aut
     return;
   }
 
-  const { password, ...userWithoutPassword } = user as any;
+  const { password: _pw1, ...userWithoutPassword } = user as any;
   sendSuccess(res, formatAgentResponse(userWithoutPassword, (user as any).agent_profile), 'Agent profile retrieved');
 }));
 
@@ -96,7 +96,7 @@ router.get('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
     return;
   }
 
-  const { password, ...userWithoutPassword } = user as any;
+  const { password: _pw2, ...userWithoutPassword } = user as any;
   sendSuccess(res, formatAgentResponse(userWithoutPassword, (user as any).agent_profile), 'Agent information retrieved');
 }));
 
