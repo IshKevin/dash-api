@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { validateIdParam, validatePagination } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, authorize } from '../middleware/auth';
+import { authenticate, authorize, adminOnly } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 
@@ -139,7 +139,7 @@ router.get('/:id/production-stats', authenticate, authorize('admin', 'agent', 'f
 
 // POST /api/farms
 router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { farmer_id, farm_name, farm_size, location, varieties, tree_count, planting_date, expected_harvest, status, notes, crop_type } = req.body;
+  const { farmer_id, farm_name, farm_size, location, varieties, tree_count, planting_date, expected_harvest, status, notes, crop_type, latitude, longitude } = req.body;
 
   if (!farmer_id || !farm_name) {
     sendError(res, 'farmer_id and farm_name are required', 400);
@@ -166,6 +166,8 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
       crop_type: crop_type || 'avocado',
       status: (status || 'planted') as any,
       notes,
+      ...(latitude !== undefined && { latitude }),
+      ...(longitude !== undefined && { longitude }),
     },
     include: { farmer: { select: { full_name: true, email: true, phone: true } } },
   });
@@ -182,12 +184,14 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
     sendError(res, 'Access denied', 403); return;
   }
 
-  const { farmer_id, farm_name, farm_size, planting_date, expected_harvest, ...rest } = req.body;
+  const { farmer_id, farm_name, farm_size, planting_date, expected_harvest, latitude, longitude, ...rest } = req.body;
   const updateData: any = { ...rest };
   if (farm_name) updateData.farmName = farm_name;
   if (farm_size !== undefined) updateData.farm_size = farm_size;
   if (planting_date) updateData.planting_date = new Date(planting_date);
   if (expected_harvest) updateData.expected_harvest = new Date(expected_harvest);
+  if (latitude !== undefined) updateData.latitude = latitude;
+  if (longitude !== undefined) updateData.longitude = longitude;
 
   const farm = await prisma.farm.update({
     where: { id: req.params.id },
@@ -204,6 +208,74 @@ router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHa
   if (!farm) { sendNotFound(res, 'Farm not found'); return; }
 
   sendSuccess(res, null, 'Farm deleted successfully');
+}));
+
+// GET /api/farms/:id/history
+router.get('/:id/history', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const farm = await prisma.farm.findUnique({ where: { id: req.params.id } });
+  if (!farm) { sendNotFound(res, 'Farm not found'); return; }
+
+  const [serviceRequests, reports, visits] = await Promise.all([
+    prisma.serviceRequest.findMany({
+      where: { location: { path: ['farm_name'], string_contains: farm.farmName } },
+      select: { id: true, title: true, service_type: true, status: true, created_at: true },
+      orderBy: { created_at: 'desc' },
+      take: 20,
+    }),
+    prisma.report.findMany({
+      where: { farmer_id: farm.farmer_id },
+      select: { id: true, title: true, report_type: true, status: true, created_at: true },
+      orderBy: { created_at: 'desc' },
+      take: 20,
+    }),
+    prisma.farmVisit.findMany({
+      where: { farm_id: req.params.id },
+      include: { agent: { select: { full_name: true } } },
+      orderBy: { scheduled_at: 'desc' },
+      take: 20,
+    }),
+  ]);
+
+  sendSuccess(res, { service_requests: serviceRequests, reports, visits }, 'Farm history retrieved');
+}));
+
+// PUT /api/farms/:id/archive
+router.put('/:id/archive', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const farm = await prisma.farm.findUnique({ where: { id: req.params.id } });
+  if (!farm) { sendNotFound(res, 'Farm not found'); return; }
+  if ((farm as any).archived_at) { sendError(res, 'Farm is already archived', 400); return; }
+
+  const updated = await prisma.farm.update({
+    where: { id: req.params.id },
+    data: { archived_at: new Date() } as any,
+  });
+  sendSuccess(res, updated, 'Farm archived successfully');
+}));
+
+// PUT /api/farms/:id/assign-agent
+router.put('/:id/assign-agent', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { agent_id } = req.body;
+  if (!agent_id) { sendError(res, 'agent_id is required', 400); return; }
+
+  const [farm, agent] = await Promise.all([
+    prisma.farm.findUnique({ where: { id: req.params.id } }),
+    prisma.user.findUnique({ where: { id: agent_id } }),
+  ]);
+  if (!farm) { sendNotFound(res, 'Farm not found'); return; }
+  if (!agent || agent.role !== 'agent') { sendError(res, 'Agent not found or user is not an agent', 400); return; }
+
+  // Schedule a visit
+  const visit = await prisma.farmVisit.create({
+    data: {
+      visit_number: 'VISIT-' + Date.now(),
+      farm_id: req.params.id,
+      agent_id,
+      scheduled_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 1 week from now
+      purpose: 'Initial farm assessment',
+    },
+  });
+
+  sendCreated(res, visit, 'Agent assigned and visit scheduled');
 }));
 
 export default router;

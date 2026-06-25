@@ -1,8 +1,8 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, authorize } from '../middleware/auth';
-import { sendSuccess, sendError } from '../utils/responses';
+import { authenticate, authorize, adminOnly } from '../middleware/auth';
+import { sendSuccess, sendError, sendNotFound, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import QRCode from 'qrcode';
 import { generateAccessKey, generateQRToken, isValidAccessKeyFormat } from '../utils/accessKey';
@@ -79,6 +79,10 @@ router.get('/scan/:token', asyncHandler(async (req: AuthenticatedRequest, res: R
     sendError(res, 'Invalid QR code or user not found', 404);
     return;
   }
+
+  await prisma.qRActivity.create({
+    data: { user_id: user.id, action: 'scanned', scanned_by: (req as any).user?.id || null, ip_address: req.ip }
+  });
 
   // Surface the appropriate profile record
   let profile: unknown = user.profile; // fallback: embedded JSON profile
@@ -420,6 +424,57 @@ router.get('/generate-qr/:userId', authenticate, authorize('agent', 'admin'), as
     qr_image:   qrImage,
     expires_at: expiresAt,
   }, 'QR Code generated successfully');
+}));
+
+// POST /api/profile-access/regenerate/:userId  (authenticate, authorize admin/agent)
+router.post('/regenerate/:userId', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { userId } = req.params;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) { sendNotFound(res, 'User not found'); return; }
+
+  // Generate new QR token
+  const newToken = require('crypto').randomBytes(20).toString('hex');
+  await prisma.user.update({ where: { id: userId }, data: { qr_code_token: newToken } });
+
+  await prisma.qRActivity.create({
+    data: { user_id: userId, action: 'regenerated', scanned_by: req.user!.id, ip_address: req.ip || '' }
+  });
+
+  sendSuccess(res, { qr_code_token: newToken }, 'QR code regenerated successfully');
+}));
+
+// DELETE /api/profile-access/expire/:userId  (authenticate, adminOnly)
+router.delete('/expire/:userId', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { userId } = req.params;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) { sendNotFound(res, 'User not found'); return; }
+
+  await prisma.user.update({ where: { id: userId }, data: { qr_code_token: null } });
+
+  await prisma.qRActivity.create({
+    data: { user_id: userId, action: 'expired', scanned_by: req.user!.id, ip_address: req.ip || '' }
+  });
+
+  sendSuccess(res, null, 'QR code expired successfully');
+}));
+
+// GET /api/profile-access/activity/:userId  (authenticate, authorize admin/agent)
+router.get('/activity/:userId', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { userId } = req.params;
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+
+  const [activities, total] = await Promise.all([
+    prisma.qRActivity.findMany({
+      where: { user_id: userId },
+      orderBy: { created_at: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.qRActivity.count({ where: { user_id: userId } }),
+  ]);
+
+  sendPaginatedResponse(res, activities, total, page, limit, 'QR activity retrieved');
 }));
 
 export default router;

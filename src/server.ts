@@ -40,6 +40,15 @@ import reportsRoutes from './routes/reports';
 import weatherRoutes from './routes/weather';
 import farmsRoutes from './routes/farms';
 import transactionsRoutes from './routes/transactions';
+import settingsRoutes from './routes/settings';
+import treesRoutes from './routes/trees';
+import diseasesRoutes from './routes/diseases';
+import forecastingRoutes from './routes/forecasting';
+import procurementRoutes from './routes/procurement';
+import trainingRoutes from './routes/training';
+import geographyRoutes from './routes/geography';
+import cartRoutes from './routes/cart';
+import visitsRoutes from './routes/visits';
 
 dotenv.config();
 
@@ -146,6 +155,15 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/weather', weatherRoutes);
 app.use('/api/farms', farmsRoutes);
 app.use('/api/transactions', transactionsRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/trees', treesRoutes);
+app.use('/api/diseases', diseasesRoutes);
+app.use('/api/forecasting', forecastingRoutes);
+app.use('/api/procurement', procurementRoutes);
+app.use('/api/training', trainingRoutes);
+app.use('/api/geography', geographyRoutes);
+app.use('/api/cart', cartRoutes);
+app.use('/api/visits', visitsRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

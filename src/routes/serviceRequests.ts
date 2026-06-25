@@ -6,6 +6,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { createNotification } from '../utils/notificationService';
 
 const router = Router();
 
@@ -85,6 +86,14 @@ router.post('/pest-management', authenticate, authorize('farmer'), validatePestM
     },
   });
 
+  // Notify admins (find all admins and notify them)
+  try {
+    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
+    await Promise.all(admins.map(admin =>
+      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
+    ));
+  } catch (_) {}
+
   sendCreated(res, serviceRequest, 'Pest management request submitted successfully');
 }));
 
@@ -140,6 +149,14 @@ router.post('/property-evaluation', authenticate, authorize('farmer'), asyncHand
     },
   });
 
+  // Notify admins (find all admins and notify them)
+  try {
+    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
+    await Promise.all(admins.map(admin =>
+      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
+    ));
+  } catch (_) {}
+
   sendCreated(res, serviceRequest, 'Property evaluation request submitted successfully');
 }));
 
@@ -188,6 +205,14 @@ router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarv
       notes: notes || '',
     },
   });
+
+  // Notify admins (find all admins and notify them)
+  try {
+    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
+    await Promise.all(admins.map(admin =>
+      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
+    ));
+  } catch (_) {}
 
   sendCreated(res, serviceRequest, 'Harvest request submitted successfully');
 }));
@@ -311,6 +336,18 @@ router.put('/:id/complete-harvest', authenticate, authorize('admin', 'agent'), v
       harvest_details: harvestDetails,
     },
   });
+
+  // Notify farmer of completion
+  try {
+    await createNotification(
+      updated.farmer_id,
+      'success',
+      'Service Request Completed',
+      'Your service request has been completed: ' + updated.title,
+      updated.id,
+      'service_request'
+    );
+  } catch (_) {}
 
   sendSuccess(res, updated, 'Harvest request completed successfully');
 }));
@@ -463,6 +500,27 @@ router.put('/:id/assign', authenticate, authorize('admin'), validateIdParam, asy
       scheduled_date: scheduled_date ? new Date(scheduled_date) : existing.scheduled_date,
     },
   });
+
+  // Notify agent of assignment
+  try {
+    await createNotification(
+      updated.agent_id!,
+      'info',
+      'New Service Request Assignment',
+      'You have been assigned a new service request: ' + updated.title,
+      updated.id,
+      'service_request'
+    );
+    // Notify farmer of agent assignment
+    await createNotification(
+      updated.farmer_id,
+      'info',
+      'Agent Assigned',
+      'An agent has been assigned to your service request: ' + updated.title,
+      updated.id,
+      'service_request'
+    );
+  } catch (_) {}
 
   sendSuccess(res, updated, 'Agent assigned successfully');
 }));

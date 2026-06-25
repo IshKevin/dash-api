@@ -29,31 +29,42 @@ function formatFarmerResponse(user: any, profile: any) {
 router.get('/', authenticate, authorize('admin', 'agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
-  const where: any = { role: 'farmer' };
 
-  if (req.query.status) where.status = req.query.status as any;
+  const profileWhere: any = {};
+  if (req.query.province) profileWhere.province = req.query.province as string;
+  if (req.query.district) profileWhere.district = req.query.district as string;
+  if (req.query.verification_status) profileWhere.verification_status = req.query.verification_status as string;
+
   if (req.query.search) {
     const s = req.query.search as string;
-    where.OR = [
-      { full_name: { contains: s, mode: 'insensitive' } },
-      { email: { contains: s, mode: 'insensitive' } },
+    profileWhere.OR = [
+      { id_number: { contains: s, mode: 'insensitive' } },
+      { user: { full_name: { contains: s, mode: 'insensitive' } } },
     ];
   }
 
-  const [farmers, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      include: { farmer_profile: true },
+  const userWhere: any = { role: 'farmer' };
+  if (req.query.status) userWhere.status = req.query.status as any;
+  profileWhere.user = { ...profileWhere.user, ...userWhere };
+
+  const [profiles, total] = await Promise.all([
+    prisma.farmerProfile.findMany({
+      where: profileWhere,
+      include: {
+        user: {
+          select: { id: true, email: true, full_name: true, phone: true, role: true, status: true, created_at: true },
+        },
+      },
       skip: (page - 1) * limit,
       take: limit,
       orderBy: { created_at: 'desc' },
     }),
-    prisma.user.count({ where }),
+    prisma.farmerProfile.count({ where: profileWhere }),
   ]);
 
-  const data = farmers.map(farmer => {
-    const { password, ...user } = farmer as any;
-    return formatFarmerResponse(user, (farmer as any).farmer_profile);
+  const data = profiles.map(profile => {
+    const { user, ...profileData } = profile as any;
+    return formatFarmerResponse(user, profileData);
   });
 
   sendPaginatedResponse(res, data, total, page, limit, 'Farmers retrieved successfully');
@@ -84,7 +95,19 @@ router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
 
   const user = await prisma.user.findUnique({
     where: { id: req.params.id },
-    include: { farmer_profile: true },
+    include: {
+      farmer_profile: {
+        select: {
+          id: true, user_id: true, age: true, id_number: true, gender: true,
+          marital_status: true, education_level: true, province: true, district: true,
+          sector: true, cell: true, village: true, farm_age: true, planted: true,
+          avocado_type: true, mixed_percentage: true, farm_size: true, tree_count: true,
+          upi_number: true, farm_province: true, farm_district: true, farm_sector: true,
+          farm_cell: true, farm_village: true, assistance: true, image: true,
+          verification_status: true, created_at: true, updated_at: true,
+        },
+      },
+    },
   });
 
   if (!user || user.role !== 'farmer') {
@@ -160,6 +183,32 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
   });
 
   sendSuccess(res, profile, 'Farmer profile updated successfully');
+}));
+
+// PUT /api/farmer-information/:id/verify
+router.put('/:id/verify', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { verification_status, notes } = req.body;
+
+  if (!verification_status || !['verified', 'rejected'].includes(verification_status)) {
+    sendError(res, 'verification_status must be "verified" or "rejected"', 400);
+    return;
+  }
+
+  const existing = await prisma.farmerProfile.findUnique({ where: { id: req.params.id } });
+  if (!existing) {
+    sendNotFound(res, 'Farmer profile not found');
+    return;
+  }
+
+  const updated = await prisma.farmerProfile.update({
+    where: { id: req.params.id },
+    data: {
+      verification_status,
+      ...(notes !== undefined ? { notes } : {}),
+    },
+  });
+
+  sendSuccess(res, updated, `Farmer profile ${verification_status} successfully`);
 }));
 
 export default router;

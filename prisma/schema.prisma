@@ -224,6 +224,64 @@ enum EducationLevel {
   None
 }
 
+enum FarmerVerificationStatus {
+  pending
+  verified
+  rejected
+}
+
+enum DiseaseSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+enum DiseaseCaseStatus {
+  active
+  treated
+  resolved
+  monitoring
+}
+
+enum OutbreakStatus {
+  active
+  contained
+  resolved
+  monitoring
+}
+
+enum PurchaseOrderStatus {
+  draft
+  submitted
+  approved
+  ordered
+  partially_received
+  fully_received
+  cancelled
+}
+
+enum TrainingContentType {
+  article
+  video
+  guide
+  checklist
+  faq
+}
+
+enum ContentStatus {
+  draft
+  published
+  archived
+}
+
+enum VisitStatus {
+  scheduled
+  in_progress
+  completed
+  cancelled
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model User {
@@ -252,6 +310,22 @@ model User {
   shops_created              Shop[]
   transactions_as_payer      Transaction[]     @relation("PayerTransactions")
   transactions_as_payee      Transaction[]     @relation("PayeeTransactions")
+  cart                       Cart?
+  farm_visits_as_agent       FarmVisit[]          @relation("VisitAgent")
+  tree_records_recorded      TreeRecord[]         @relation("TreeRecordRecorder")
+  tree_diseases_reported     TreeDisease[]        @relation("TreeDiseaseReporter")
+  disease_cases_reported     DiseaseCase[]        @relation("DiseaseCaseReporter")
+  outbreaks_reported         DiseaseOutbreak[]    @relation("OutbreakReporter")
+  forecasts_created          HarvestForecast[]    @relation("ForecastCreator")
+  purchase_orders_created    PurchaseOrder[]      @relation("POCreator")
+  purchase_orders_approved   PurchaseOrder[]      @relation("POApprover")
+  goods_receipts             GoodsReceipt[]       @relation("GoodsReceiver")
+  training_authored          TrainingContent[]    @relation("ContentAuthor")
+  content_accesses           ContentAccess[]      @relation("ContentAccessUser")
+  system_settings_updated    SystemSetting[]      @relation("SettingUpdater")
+  qr_activities              QRActivity[]
+  password_reset_tokens      PasswordResetToken[]
+  supplier_evaluations       SupplierEvaluation[] @relation("SupplierEvaluator")
 
   @@index([role, status])
   @@index([created_at])
@@ -279,6 +353,8 @@ model Product {
   supplier      Supplier        @relation(fields: [supplier_id], references: [id])
   stock_history StockHistory[]
   order_items   OrderItem[]
+  cart_items    CartItem[]
+  po_items      PurchaseOrderItem[]
 
   @@index([category, status])
   @@index([supplier_id, status])
@@ -312,6 +388,8 @@ model Supplier {
   updated_at        DateTime         @updatedAt
 
   products          Product[]
+  purchase_orders   PurchaseOrder[]
+  evaluations       SupplierEvaluation[]
 
   @@index([category, status])
   @@index([rating])
@@ -462,6 +540,14 @@ model Farm {
   updated_at       DateTime   @updatedAt
 
   farmer           User       @relation(fields: [farmer_id], references: [id])
+  latitude         Float?
+  longitude        Float?
+  archived_at      DateTime?
+  tree_records     TreeRecord[]
+  tree_diseases    TreeDisease[]
+  disease_cases    DiseaseCase[]
+  farm_visits      FarmVisit[]
+  forecasts        HarvestForecast[]
 
   @@index([farmer_id, status])
   @@index([crop_type, status])
@@ -670,7 +756,417 @@ model FarmerProfile {
   updated_at       DateTime        @updatedAt
 
   user             User            @relation(fields: [user_id], references: [id])
+  verification_status FarmerVerificationStatus @default(pending)
 
   @@index([province])
   @@index([district])
+}
+
+// ── Epic 20: Geographic Management ──────────────────────────────────────────
+
+model Province {
+  id         String     @id @default(uuid())
+  name       String     @unique
+  code       String?    @unique
+  districts  District[]
+  created_at DateTime   @default(now())
+  updated_at DateTime   @updatedAt
+}
+
+model District {
+  id          String    @id @default(uuid())
+  name        String
+  code        String?
+  province_id String
+  province    Province  @relation(fields: [province_id], references: [id])
+  sectors     Sector[]
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  @@unique([name, province_id])
+}
+
+model Sector {
+  id          String   @id @default(uuid())
+  name        String
+  district_id String
+  district    District @relation(fields: [district_id], references: [id])
+  cells       Cell[]
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([name, district_id])
+}
+
+model Cell {
+  id         String    @id @default(uuid())
+  name       String
+  sector_id  String
+  sector     Sector    @relation(fields: [sector_id], references: [id])
+  villages   Village[]
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  @@unique([name, sector_id])
+}
+
+model Village {
+  id         String   @id @default(uuid())
+  name       String
+  cell_id    String
+  cell       Cell     @relation(fields: [cell_id], references: [id])
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([name, cell_id])
+}
+
+// ── Epic 5: Tree Management ──────────────────────────────────────────────────
+
+model TreeRecord {
+  id             String   @id @default(uuid())
+  farm_id        String
+  farm           Farm     @relation(fields: [farm_id], references: [id])
+  record_date    DateTime @default(now())
+  total_trees    Int      @default(0)
+  age_0_2        Int      @default(0)
+  age_3_5        Int      @default(0)
+  age_6_10       Int      @default(0)
+  age_above_10   Int      @default(0)
+  healthy_count  Int      @default(0)
+  diseased_count Int      @default(0)
+  dead_count     Int      @default(0)
+  notes          String?
+  recorded_by    String?
+  recorder       User?    @relation("TreeRecordRecorder", fields: [recorded_by], references: [id])
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([farm_id])
+}
+
+model TreeDisease {
+  id              String          @id @default(uuid())
+  farm_id         String
+  farm            Farm            @relation(fields: [farm_id], references: [id])
+  disease_name    String
+  affected_count  Int             @default(0)
+  severity        DiseaseSeverity @default(low)
+  detected_date   DateTime        @default(now())
+  treated         Boolean         @default(false)
+  treatment_notes String?
+  notes           String?
+  reported_by     String?
+  reporter        User?           @relation("TreeDiseaseReporter", fields: [reported_by], references: [id])
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  @@index([farm_id])
+}
+
+// ── Epic 10: Disease & Risk Monitoring ──────────────────────────────────────
+
+model DiseaseRegistry {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  symptoms    String?
+  prevention  String?
+  treatment   String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+}
+
+model DiseaseCase {
+  id             String            @id @default(uuid())
+  case_number    String            @unique
+  disease_name   String
+  farm_id        String
+  farm           Farm              @relation(fields: [farm_id], references: [id])
+  severity       DiseaseSeverity   @default(low)
+  status         DiseaseCaseStatus @default(active)
+  affected_trees Int               @default(0)
+  detected_date  DateTime          @default(now())
+  resolved_date  DateTime?
+  symptoms       String?
+  treatment      String?
+  notes          String?
+  outbreak_id    String?
+  outbreak       DiseaseOutbreak?  @relation(fields: [outbreak_id], references: [id])
+  reported_by    String?
+  reporter       User?             @relation("DiseaseCaseReporter", fields: [reported_by], references: [id])
+  created_at     DateTime          @default(now())
+  updated_at     DateTime          @updatedAt
+
+  @@index([farm_id])
+  @@index([status])
+}
+
+model DiseaseOutbreak {
+  id              String          @id @default(uuid())
+  outbreak_number String          @unique
+  disease_name    String
+  severity        DiseaseSeverity @default(medium)
+  status          OutbreakStatus  @default(active)
+  start_date      DateTime        @default(now())
+  end_date        DateTime?
+  province        String?
+  district        String?
+  affected_farms  Int             @default(0)
+  description     String?
+  response_plan   String?
+  cases           DiseaseCase[]
+  reported_by     String?
+  reporter        User?           @relation("OutbreakReporter", fields: [reported_by], references: [id])
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  @@index([status])
+}
+
+// ── Epic 9: Harvest Forecasting ──────────────────────────────────────────────
+
+model HarvestForecast {
+  id              String   @id @default(uuid())
+  forecast_number String   @unique
+  farm_id         String?
+  farm            Farm?    @relation(fields: [farm_id], references: [id])
+  province        String?
+  district        String?
+  forecast_year   Int
+  forecast_season String?
+  predicted_kg    Float    @default(0)
+  confidence_pct  Float    @default(70)
+  actual_kg       Float?
+  variance_pct    Float?
+  basis           String?
+  notes           String?
+  created_by      String?
+  creator         User?    @relation("ForecastCreator", fields: [created_by], references: [id])
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([farm_id])
+  @@index([forecast_year])
+}
+
+// ── Epic 15: Procurement Management ─────────────────────────────────────────
+
+model PurchaseOrder {
+  id            String              @id @default(uuid())
+  po_number     String              @unique
+  supplier_id   String
+  supplier      Supplier            @relation(fields: [supplier_id], references: [id])
+  status        PurchaseOrderStatus @default(draft)
+  order_date    DateTime            @default(now())
+  expected_date DateTime?
+  received_date DateTime?
+  total_amount  Float               @default(0)
+  notes         String?
+  created_by    String?
+  creator       User?               @relation("POCreator", fields: [created_by], references: [id])
+  approved_by   String?
+  approver      User?               @relation("POApprover", fields: [approved_by], references: [id])
+  items         PurchaseOrderItem[]
+  receipts      GoodsReceipt[]
+  created_at    DateTime            @default(now())
+  updated_at    DateTime            @updatedAt
+
+  @@index([supplier_id])
+  @@index([status])
+}
+
+model PurchaseOrderItem {
+  id                String        @id @default(uuid())
+  purchase_order_id String
+  purchase_order    PurchaseOrder @relation(fields: [purchase_order_id], references: [id], onDelete: Cascade)
+  product_name      String
+  product_id        String?
+  product           Product?      @relation(fields: [product_id], references: [id])
+  quantity_ordered  Float
+  unit_price        Float
+  total_price       Float
+  quantity_received Float         @default(0)
+  created_at        DateTime      @default(now())
+
+  @@index([purchase_order_id])
+}
+
+model GoodsReceipt {
+  id                String             @id @default(uuid())
+  receipt_number    String             @unique
+  purchase_order_id String
+  purchase_order    PurchaseOrder      @relation(fields: [purchase_order_id], references: [id])
+  received_date     DateTime           @default(now())
+  received_by       String?
+  receiver          User?              @relation("GoodsReceiver", fields: [received_by], references: [id])
+  notes             String?
+  items             GoodsReceiptItem[]
+  created_at        DateTime           @default(now())
+  updated_at        DateTime           @updatedAt
+
+  @@index([purchase_order_id])
+}
+
+model GoodsReceiptItem {
+  id               String       @id @default(uuid())
+  goods_receipt_id String
+  goods_receipt    GoodsReceipt @relation(fields: [goods_receipt_id], references: [id], onDelete: Cascade)
+  product_name     String
+  product_id       String?
+  quantity         Float
+  unit_price       Float
+  notes            String?
+  created_at       DateTime     @default(now())
+
+  @@index([goods_receipt_id])
+}
+
+// ── Epic 17: Training & Knowledge Base ──────────────────────────────────────
+
+model TrainingContent {
+  id           String              @id @default(uuid())
+  title        String
+  description  String?
+  content      String
+  content_type TrainingContentType @default(article)
+  category     String?
+  tags         String[]            @default([])
+  status       ContentStatus       @default(draft)
+  published_at DateTime?
+  view_count   Int                 @default(0)
+  author_id    String?
+  author       User?               @relation("ContentAuthor", fields: [author_id], references: [id])
+  accesses     ContentAccess[]
+  created_at   DateTime            @default(now())
+  updated_at   DateTime            @updatedAt
+
+  @@index([status])
+  @@index([content_type])
+}
+
+model ContentAccess {
+  id          String          @id @default(uuid())
+  content_id  String
+  content     TrainingContent @relation(fields: [content_id], references: [id])
+  user_id     String?
+  user        User?           @relation("ContentAccessUser", fields: [user_id], references: [id])
+  accessed_at DateTime        @default(now())
+
+  @@index([content_id])
+}
+
+// ── Epic 23: System Administration ──────────────────────────────────────────
+
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  category    String?
+  data_type   String   @default("string")
+  is_editable Boolean  @default(true)
+  updated_by  String?
+  updater     User?    @relation("SettingUpdater", fields: [updated_by], references: [id])
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([category])
+}
+
+// ── Epic 13: Shopping Cart ───────────────────────────────────────────────────
+
+model Cart {
+  id         String     @id @default(uuid())
+  user_id    String     @unique
+  user       User       @relation(fields: [user_id], references: [id])
+  items      CartItem[]
+  created_at DateTime   @default(now())
+  updated_at DateTime   @updatedAt
+}
+
+model CartItem {
+  id         String   @id @default(uuid())
+  cart_id    String
+  cart       Cart     @relation(fields: [cart_id], references: [id], onDelete: Cascade)
+  product_id String
+  product    Product  @relation(fields: [product_id], references: [id])
+  quantity   Int      @default(1)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([cart_id, product_id])
+  @@index([cart_id])
+}
+
+// ── Epic 6: Farm Visits ──────────────────────────────────────────────────────
+
+model FarmVisit {
+  id              String      @id @default(uuid())
+  visit_number    String      @unique
+  farm_id         String
+  farm            Farm        @relation(fields: [farm_id], references: [id])
+  agent_id        String
+  agent           User        @relation("VisitAgent", fields: [agent_id], references: [id])
+  status          VisitStatus @default(scheduled)
+  scheduled_at    DateTime
+  completed_at    DateTime?
+  purpose         String?
+  findings        String?
+  recommendations String?
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  @@index([farm_id])
+  @@index([agent_id])
+}
+
+// ── Epic 3: QR Activity Tracking ────────────────────────────────────────────
+
+model QRActivity {
+  id          String   @id @default(uuid())
+  user_id     String
+  user        User     @relation(fields: [user_id], references: [id])
+  action      String
+  scanned_by  String?
+  ip_address  String?
+  created_at  DateTime @default(now())
+
+  @@index([user_id])
+}
+
+// ── Epic 1: Password Reset ───────────────────────────────────────────────────
+
+model PasswordResetToken {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id])
+  token      String   @unique
+  expires_at DateTime
+  is_used    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  @@index([user_id])
+  @@index([token, is_used])
+}
+
+// ── Epic 14: Supplier Evaluation ────────────────────────────────────────────
+
+model SupplierEvaluation {
+  id             String   @id @default(uuid())
+  supplier_id    String
+  supplier       Supplier @relation(fields: [supplier_id], references: [id])
+  evaluator_id   String
+  evaluator      User     @relation("SupplierEvaluator", fields: [evaluator_id], references: [id])
+  overall_score  Float
+  quality_score  Float?
+  delivery_score Float?
+  price_score    Float?
+  service_score  Float?
+  notes          String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([supplier_id])
 }

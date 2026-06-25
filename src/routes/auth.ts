@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import { Resend } from 'resend';
 import { prisma } from '../lib/prisma';
 import { generateToken } from '../utils/jwt';
 import { sendSuccess, sendError, sendCreated } from '../utils/responses';
@@ -178,6 +180,86 @@ router.post('/refresh', authenticate, asyncHandler(async (req: AuthenticatedRequ
 // GET /api/auth/verify
 router.get('/verify', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   sendSuccess(res, { user: req.user }, 'Token is valid');
+}));
+
+// POST /api/auth/forgot-password
+router.post('/forgot-password', asyncHandler(async (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email) {
+    sendError(res, 'Email is required', 400);
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  // Always return success to prevent email enumeration
+  if (!user) {
+    sendSuccess(res, null, 'If that email exists, a reset link has been sent');
+    return;
+  }
+
+  // Invalidate any existing tokens for this user
+  await prisma.passwordResetToken.updateMany({
+    where: { user_id: user.id, is_used: false },
+    data: { is_used: true },
+  });
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+  await prisma.passwordResetToken.create({
+    data: { user_id: user.id, token, expires_at: expiresAt },
+  });
+
+  // Attempt email send via Resend if API key is configured
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const resetUrl = (process.env.FRONTEND_URL || 'http://localhost:3000') + '/reset-password?token=' + token;
+      await resend.emails.send({
+        from: process.env.FROM_EMAIL || 'noreply@avocadodashboard.com',
+        to: user.email,
+        subject: 'Password Reset Request',
+        html: '<p>Click <a href="' + resetUrl + '">here</a> to reset your password. This link expires in 1 hour.</p><p>If you did not request this, ignore this email.</p>',
+      });
+    } catch (emailError) {
+      // Log but don't fail – token is still valid
+      console.error('Email send failed:', emailError);
+    }
+  }
+
+  sendSuccess(res, { token: process.env.NODE_ENV !== 'production' ? token : undefined }, 'If that email exists, a reset link has been sent');
+}));
+
+// POST /api/auth/reset-password
+router.post('/reset-password', asyncHandler(async (req: Request, res: Response) => {
+  const { token, newPassword } = req.body;
+  if (!token || !newPassword) {
+    sendError(res, 'Token and new password are required', 400);
+    return;
+  }
+  if (newPassword.length < 8) {
+    sendError(res, 'Password must be at least 8 characters', 400);
+    return;
+  }
+
+  const resetToken = await prisma.passwordResetToken.findUnique({
+    where: { token },
+    include: { user: true },
+  });
+
+  if (!resetToken || resetToken.is_used || resetToken.expires_at < new Date()) {
+    sendError(res, 'Invalid or expired reset token', 400);
+    return;
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
+
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: resetToken.user_id }, data: { password: hashedPassword } }),
+    prisma.passwordResetToken.update({ where: { id: resetToken.id }, data: { is_used: true } }),
+  ]);
+
+  sendSuccess(res, null, 'Password reset successfully');
 }));
 
 export default router;

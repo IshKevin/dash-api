@@ -121,4 +121,56 @@ router.post('/:id/attachments', authenticate, authorize('admin', 'agent'), valid
   sendSuccess(res, { attachments: attachmentUrls, report }, 'Attachments uploaded successfully');
 }));
 
+// GET /api/reports/export  (authenticate, authorize admin/agent)
+router.get('/export', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const where: any = {};
+  if (req.query.report_type) where.report_type = req.query.report_type as any;
+  if (req.query.status) where.status = req.query.status as any;
+  if (req.query.agent_id) where.agent_id = req.query.agent_id as string;
+  if (req.query.from || req.query.to) {
+    where.created_at = {};
+    if (req.query.from) where.created_at.gte = new Date(req.query.from as string);
+    if (req.query.to) where.created_at.lte = new Date(req.query.to as string);
+  }
+
+  const reports = await prisma.report.findMany({
+    where,
+    include: { agent: { select: { full_name: true, email: true } } },
+    orderBy: { created_at: 'desc' },
+    take: 1000,
+  });
+
+  const format = req.query.format || 'csv';
+
+  if (format === 'json') {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename=reports.json');
+    res.send(JSON.stringify(reports, null, 2));
+    return;
+  }
+
+  // CSV format
+  const headers = ['id', 'title', 'report_type', 'status', 'priority', 'agent_name', 'agent_email', 'farmer_id', 'scheduled_date', 'completed_date', 'findings', 'recommendations', 'created_at'];
+  const rows = reports.map(r => [
+    r.id,
+    '"' + (r.title || '').replace(/"/g, '""') + '"',
+    r.report_type,
+    r.status,
+    r.priority,
+    '"' + (r.agent?.full_name || '').replace(/"/g, '""') + '"',
+    r.agent?.email || '',
+    r.farmer_id || '',
+    r.scheduled_date?.toISOString() || '',
+    r.completed_date?.toISOString() || '',
+    '"' + (r.findings || '').replace(/"/g, '""') + '"',
+    '"' + (r.recommendations || '').replace(/"/g, '""') + '"',
+    r.created_at.toISOString(),
+  ].join(','));
+
+  const csv = [headers.join(','), ...rows].join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename=reports.csv');
+  res.send(csv);
+}));
+
 export default router;

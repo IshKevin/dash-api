@@ -145,4 +145,86 @@ router.get('/:id/products', authenticate, authorize('admin', 'shop_manager'), va
   sendPaginatedResponse(res, products, total, page, limit, 'Supplier products retrieved successfully');
 }));
 
+// POST /api/suppliers/:id/evaluations  (authenticate, authorize admin/shop_manager)
+router.post('/:id/evaluations', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const supplier = await prisma.supplier.findUnique({ where: { id: req.params.id } });
+  if (!supplier) { sendNotFound(res, 'Supplier not found'); return; }
+
+  const { overall_score, quality_score, delivery_score, price_score, service_score, notes } = req.body;
+  if (!overall_score || overall_score < 1 || overall_score > 5) {
+    sendError(res, 'overall_score must be between 1 and 5', 400);
+    return;
+  }
+
+  const evaluation = await prisma.supplierEvaluation.create({
+    data: {
+      supplier_id: req.params.id,
+      evaluator_id: req.user!.id,
+      overall_score,
+      quality_score,
+      delivery_score,
+      price_score,
+      service_score,
+      notes,
+    },
+  });
+
+  // Recalculate supplier average rating
+  const avgResult = await prisma.supplierEvaluation.aggregate({
+    where: { supplier_id: req.params.id },
+    _avg: { overall_score: true },
+  });
+  await prisma.supplier.update({
+    where: { id: req.params.id },
+    data: { rating: avgResult._avg.overall_score || 0 },
+  });
+
+  sendCreated(res, evaluation, 'Supplier evaluation submitted');
+}));
+
+// GET /api/suppliers/:id/evaluations  (authenticate, authorize admin/shop_manager)
+router.get('/:id/evaluations', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+
+  const [evaluations, total] = await Promise.all([
+    prisma.supplierEvaluation.findMany({
+      where: { supplier_id: req.params.id },
+      include: { evaluator: { select: { full_name: true, role: true } } },
+      orderBy: { created_at: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.supplierEvaluation.count({ where: { supplier_id: req.params.id } }),
+  ]);
+
+  sendPaginatedResponse(res, evaluations, total, page, limit, 'Evaluations retrieved');
+}));
+
+// GET /api/suppliers/:id/history  (authenticate, authorize admin/shop_manager)
+router.get('/:id/history', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const [purchaseOrders, evaluations] = await Promise.all([
+    prisma.purchaseOrder.findMany({
+      where: { supplier_id: req.params.id },
+      select: { id: true, po_number: true, status: true, total_amount: true, order_date: true },
+      orderBy: { order_date: 'desc' },
+      take: 20,
+    }),
+    prisma.supplierEvaluation.findMany({
+      where: { supplier_id: req.params.id },
+      select: { id: true, overall_score: true, created_at: true },
+      orderBy: { created_at: 'desc' },
+      take: 10,
+    }),
+  ]);
+
+  const stats = await prisma.purchaseOrder.aggregate({
+    where: { supplier_id: req.params.id, status: 'fully_received' },
+    _sum: { total_amount: true },
+    _count: { _all: true },
+  });
+
+  sendSuccess(res, { purchase_orders: purchaseOrders, evaluations, total_orders: stats._count._all, total_value: stats._sum.total_amount || 0 }, 'Supplier history retrieved');
+}));
+
 export default router;

@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, authorize } from '../middleware/auth';
+import { authenticate, authorize, adminOnly } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { Prisma } from '@prisma/client';
@@ -400,6 +400,101 @@ router.get('/orders/monthly', authenticate, authorize('admin', 'shop_manager'), 
   };
 
   sendSuccess(res, orderData, 'Monthly order trends retrieved successfully');
+}));
+
+// GET /api/analytics/regional  (authenticate, authorize admin/agent)
+router.get('/regional', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const year = req.query.year ? parseInt(req.query.year as string) : new Date().getFullYear();
+
+  // Get farm counts by province from FarmerProfile
+  const farmersByProvince = await prisma.farmerProfile.groupBy({
+    by: ['province'],
+    _count: { _all: true },
+    where: { province: { not: null } },
+  });
+
+  // Get service requests by province from location JSON
+  const allServiceRequests = await prisma.serviceRequest.findMany({
+    select: { location: true, status: true, service_type: true },
+  });
+
+  const provinceServiceMap: Record<string, number> = {};
+  allServiceRequests.forEach(sr => {
+    const loc = sr.location as any;
+    const prov = loc?.province || loc?.farm_province;
+    if (prov) {
+      provinceServiceMap[prov] = (provinceServiceMap[prov] || 0) + 1;
+    }
+  });
+
+  // Get forecasts by province
+  const forecastsByProvince = await prisma.harvestForecast.groupBy({
+    by: ['province'],
+    _sum: { predicted_kg: true, actual_kg: true },
+    where: { forecast_year: year, province: { not: null } },
+  });
+
+  const forecastMap: Record<string, any> = {};
+  forecastsByProvince.forEach(f => {
+    if (f.province) forecastMap[f.province] = { predicted_kg: f._sum.predicted_kg || 0, actual_kg: f._sum.actual_kg || 0 };
+  });
+
+  const regional = farmersByProvince.map(fp => ({
+    province: fp.province,
+    farmer_count: fp._count._all,
+    service_requests: provinceServiceMap[fp.province || ''] || 0,
+    forecast: forecastMap[fp.province || ''] || { predicted_kg: 0, actual_kg: 0 },
+  }));
+
+  sendSuccess(res, { year, regions: regional }, 'Regional analytics retrieved');
+}));
+
+// GET /api/analytics/agents  (authenticate, adminOnly)
+router.get('/agents', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const agents = await prisma.user.findMany({
+    where: { role: 'agent', status: 'active' },
+    select: { id: true, full_name: true, email: true, agent_profile: { select: { farmersAssisted: true, performance: true, province: true } } },
+  });
+
+  const agentStats = await Promise.all(agents.map(async (agent) => {
+    const [serviceRequests, completedRequests, visits, completedVisits, reports] = await Promise.all([
+      prisma.serviceRequest.count({ where: { agent_id: agent.id } }),
+      prisma.serviceRequest.count({ where: { agent_id: agent.id, status: 'completed' } }),
+      prisma.farmVisit.count({ where: { agent_id: agent.id } }),
+      prisma.farmVisit.count({ where: { agent_id: agent.id, status: 'completed' } }),
+      prisma.report.count({ where: { agent_id: agent.id } }),
+    ]);
+
+    const completionRate = serviceRequests > 0 ? Math.round((completedRequests / serviceRequests) * 100) : 0;
+
+    return {
+      ...agent,
+      stats: {
+        total_service_requests: serviceRequests,
+        completed_service_requests: completedRequests,
+        completion_rate_pct: completionRate,
+        total_visits: visits,
+        completed_visits: completedVisits,
+        total_reports: reports,
+      },
+    };
+  }));
+
+  sendSuccess(res, agentStats, 'Agent performance analytics retrieved');
+}));
+
+// GET /api/analytics/farmers (authenticate, authorize admin/agent)
+router.get('/farmers', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const [total, byVerification, byProvince] = await Promise.all([
+    prisma.farmerProfile.count(),
+    prisma.farmerProfile.groupBy({ by: ['verification_status'], _count: { _all: true } }),
+    prisma.farmerProfile.groupBy({ by: ['province'], _count: { _all: true }, where: { province: { not: null } }, orderBy: { _count: { province: 'desc' } }, take: 10 }),
+  ]);
+
+  const verificationCounts: Record<string, number> = {};
+  byVerification.forEach(v => { verificationCounts[v.verification_status] = v._count._all; });
+
+  sendSuccess(res, { total_farmers: total, by_verification_status: verificationCounts, top_provinces: byProvince }, 'Farmer analytics retrieved');
 }));
 
 export default router;

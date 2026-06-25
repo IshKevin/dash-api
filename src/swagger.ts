@@ -341,6 +341,222 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             assistance: { type: 'array', items: { type: 'string' } },
           },
         },
+        // ─── Trees ───────────────────────────────────────────────────────
+        TreeRecord: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            farm_id: { type: 'string' },
+            tree_number: { type: 'string', example: 'T-001' },
+            variety: { type: 'string', nullable: true },
+            planted_at: { type: 'string', format: 'date', nullable: true },
+            age_years: { type: 'number', nullable: true },
+            height_m: { type: 'number', nullable: true },
+            canopy_m: { type: 'number', nullable: true },
+            health_status: { type: 'string', enum: ['healthy', 'stressed', 'diseased', 'dead'], example: 'healthy' },
+            notes: { type: 'string', nullable: true },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        TreeDisease: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            tree_id: { type: 'string' },
+            farm_id: { type: 'string' },
+            disease_name: { type: 'string' },
+            severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            detected_at: { type: 'string', format: 'date' },
+            treated_at: { type: 'string', format: 'date', nullable: true },
+            treatment_notes: { type: 'string', nullable: true },
+            resolved: { type: 'boolean', default: false },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        // ─── Diseases ─────────────────────────────────────────────────────
+        DiseaseRegistry: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            description: { type: 'string', nullable: true },
+            symptoms: { type: 'string', nullable: true },
+            treatment: { type: 'string', nullable: true },
+            prevention: { type: 'string', nullable: true },
+            severity_default: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        DiseaseCase: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            farm_id: { type: 'string' },
+            disease_id: { type: 'string' },
+            reported_by: { type: 'string' },
+            severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            status: { type: 'string', enum: ['open', 'in_treatment', 'resolved', 'closed'] },
+            affected_trees: { type: 'integer' },
+            detected_at: { type: 'string', format: 'date' },
+            resolved_at: { type: 'string', format: 'date', nullable: true },
+            notes: { type: 'string', nullable: true },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        // ─── Forecasting ──────────────────────────────────────────────────
+        HarvestForecast: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            farm_id: { type: 'string' },
+            agent_id: { type: 'string' },
+            forecast_date: { type: 'string', format: 'date' },
+            forecast_kg: { type: 'number', example: 500 },
+            actual_kg: { type: 'number', nullable: true },
+            variety: { type: 'string', nullable: true },
+            notes: { type: 'string', nullable: true },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        // ─── Procurement ──────────────────────────────────────────────────
+        PurchaseOrder: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            supplier_id: { type: 'string' },
+            created_by: { type: 'string' },
+            status: { type: 'string', enum: ['draft', 'submitted', 'approved', 'received', 'cancelled'] },
+            expected_delivery: { type: 'string', format: 'date', nullable: true },
+            total_amount: { type: 'number' },
+            notes: { type: 'string', nullable: true },
+            items: { type: 'array', items: { $ref: '#/components/schemas/PurchaseOrderItem' } },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        PurchaseOrderItem: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            po_id: { type: 'string' },
+            product_id: { type: 'string' },
+            quantity: { type: 'integer' },
+            unit_price: { type: 'number' },
+            total_price: { type: 'number' },
+          },
+        },
+        GoodsReceipt: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            po_id: { type: 'string' },
+            received_by: { type: 'string' },
+            received_at: { type: 'string', format: 'date-time' },
+            notes: { type: 'string', nullable: true },
+            items: { type: 'array', items: { $ref: '#/components/schemas/GoodsReceiptItem' } },
+          },
+        },
+        GoodsReceiptItem: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            receipt_id: { type: 'string' },
+            product_id: { type: 'string' },
+            quantity_ordered: { type: 'integer' },
+            quantity_received: { type: 'integer' },
+          },
+        },
+        // ─── Training ────────────────────────────────────────────────────
+        TrainingContent: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            title: { type: 'string' },
+            description: { type: 'string', nullable: true },
+            content_type: { type: 'string', enum: ['article', 'video', 'pdf', 'quiz'] },
+            status: { type: 'string', enum: ['draft', 'published', 'archived'] },
+            content_url: { type: 'string', nullable: true },
+            thumbnail_url: { type: 'string', nullable: true },
+            tags: { type: 'array', items: { type: 'string' } },
+            created_by: { type: 'string' },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        // ─── Geography ───────────────────────────────────────────────────
+        Province: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string', example: 'Southern Province' },
+            code: { type: 'string', nullable: true, example: 'S' },
+          },
+        },
+        District: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string', example: 'Huye' },
+            province_id: { type: 'string' },
+            code: { type: 'string', nullable: true },
+          },
+        },
+        // ─── Settings ────────────────────────────────────────────────────
+        SystemSetting: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            key: { type: 'string', example: 'platform_name' },
+            value: { type: 'string', example: 'Avocado Dashboard' },
+            description: { type: 'string', nullable: true },
+            updated_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        // ─── Cart ────────────────────────────────────────────────────────
+        Cart: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            user_id: { type: 'string' },
+            items: { type: 'array', items: { $ref: '#/components/schemas/CartItem' } },
+            updated_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        CartItem: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            cart_id: { type: 'string' },
+            product_id: { type: 'string' },
+            quantity: { type: 'integer', example: 2 },
+            unit_price: { type: 'number' },
+          },
+        },
+        // ─── Visits ──────────────────────────────────────────────────────
+        FarmVisit: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            farm_id: { type: 'string' },
+            agent_id: { type: 'string' },
+            scheduled_at: { type: 'string', format: 'date-time' },
+            completed_at: { type: 'string', format: 'date-time', nullable: true },
+            status: { type: 'string', enum: ['scheduled', 'completed', 'cancelled'] },
+            purpose: { type: 'string', nullable: true },
+            notes: { type: 'string', nullable: true },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+        },
+        // ─── Supplier evaluation ─────────────────────────────────────────
+        SupplierEvaluation: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            supplier_id: { type: 'string' },
+            evaluated_by: { type: 'string' },
+            rating: { type: 'integer', minimum: 1, maximum: 5, example: 4 },
+            comment: { type: 'string', nullable: true },
+            evaluated_at: { type: 'string', format: 'date-time' },
+          },
+        },
       },
       parameters: {
         pageParam: { in: 'query', name: 'page', schema: { type: 'integer', default: 1 }, description: 'Page number' },
@@ -374,6 +590,15 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       { name: 'Logs', description: 'System logs (admin)' },
       { name: 'Monitoring', description: 'Health and system metrics' },
       { name: 'Welcome', description: 'Public platform overview' },
+      { name: 'Trees', description: 'Avocado tree records and tree-level disease tracking' },
+      { name: 'Diseases', description: 'Disease registry, cases, and outbreak management' },
+      { name: 'Forecasting', description: 'Harvest yield forecasting and actuals tracking' },
+      { name: 'Procurement', description: 'Purchase orders, approval workflow, and goods receipts' },
+      { name: 'Training', description: 'Training content library and farmer access tracking' },
+      { name: 'Geography', description: 'Rwanda administrative geography (Province → Village)' },
+      { name: 'Settings', description: 'System-wide configuration key-value settings' },
+      { name: 'Cart', description: 'Shopping cart and checkout for farmers' },
+      { name: 'Visits', description: 'Agent farm visit scheduling and reporting' },
     ],
     paths: {
 
@@ -2111,6 +2336,1025 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           summary: 'System resource information — CPU, memory, uptime (admin)',
           tags: ['Monitoring'],
           responses: { 200: { description: 'OS and process resource usage' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // AUTH — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/auth/forgot-password': {
+        post: {
+          summary: 'Request a password reset email',
+          tags: ['Auth'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['email'], properties: { email: { type: 'string', format: 'email' } } } } },
+          },
+          responses: { 200: { description: 'Reset link sent if email exists (always 200 to prevent enumeration)' } },
+        },
+      },
+      '/api/auth/reset-password': {
+        post: {
+          summary: 'Reset password with a valid token',
+          tags: ['Auth'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['token', 'newPassword'], properties: { token: { type: 'string' }, newPassword: { type: 'string', minLength: 8 } } },
+              },
+            },
+          },
+          responses: { 200: { description: 'Password reset successfully' }, 400: { description: 'Invalid or expired token' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // FARMS — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/farms/{id}/history': {
+        get: {
+          summary: 'Farm change history (service requests, visits, forecasts)',
+          tags: ['Farms'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Chronological history events' }, 404: { description: 'Farm not found' } },
+        },
+      },
+      '/api/farms/{id}/archive': {
+        put: {
+          summary: 'Archive (soft-delete) a farm',
+          tags: ['Farms'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Farm archived' }, 404: { description: 'Farm not found' } },
+        },
+      },
+      '/api/farms/{id}/assign-agent': {
+        put: {
+          summary: 'Assign an agent to a farm',
+          tags: ['Farms'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['agent_id'], properties: { agent_id: { type: 'string' } } } } },
+          },
+          responses: { 200: { description: 'Agent assigned' }, 404: { description: 'Farm or agent not found' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // FARMER INFORMATION — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/farmer-information/{id}/verify': {
+        put: {
+          summary: 'Verify or reject a farmer profile (admin)',
+          tags: ['FarmerInformation'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['verified', 'rejected'] }, reason: { type: 'string' } } },
+              },
+            },
+          },
+          responses: { 200: { description: 'Verification status updated' }, 404: { description: 'Farmer not found' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // PROFILE ACCESS — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/profile-access/regenerate/{userId}': {
+        post: {
+          summary: 'Regenerate QR code token for a user',
+          tags: ['ProfileAccess'],
+          parameters: [{ in: 'path', name: 'userId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'New token generated' }, 404: { description: 'User not found' } },
+        },
+      },
+      '/api/profile-access/expire/{userId}': {
+        delete: {
+          summary: 'Immediately expire a user\'s QR code token',
+          tags: ['ProfileAccess'],
+          parameters: [{ in: 'path', name: 'userId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Token expired' }, 404: { description: 'User not found' } },
+        },
+      },
+      '/api/profile-access/activity/{userId}': {
+        get: {
+          summary: 'QR scan activity log for a user',
+          tags: ['ProfileAccess'],
+          parameters: [{ in: 'path', name: 'userId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'List of QR scan events' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // SUPPLIERS — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/suppliers/{id}/evaluations': {
+        get: {
+          summary: 'List evaluations for a supplier',
+          tags: ['Suppliers'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Supplier evaluations' } },
+        },
+        post: {
+          summary: 'Submit a supplier evaluation',
+          tags: ['Suppliers'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['rating'], properties: { rating: { type: 'integer', minimum: 1, maximum: 5 }, comment: { type: 'string' } } },
+              },
+            },
+          },
+          responses: { 201: { description: 'Evaluation submitted and supplier rating recalculated' } },
+        },
+      },
+      '/api/suppliers/{id}/history': {
+        get: {
+          summary: 'Supplier order and procurement history',
+          tags: ['Suppliers'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Supplier history' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // REPORTS — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/reports/export': {
+        get: {
+          summary: 'Export reports as CSV or JSON',
+          tags: ['Reports'],
+          parameters: [
+            { in: 'query', name: 'format', schema: { type: 'string', enum: ['csv', 'json'], default: 'json' } },
+            { in: 'query', name: 'start_date', schema: { type: 'string', format: 'date' } },
+            { in: 'query', name: 'end_date', schema: { type: 'string', format: 'date' } },
+          ],
+          responses: { 200: { description: 'Report file download or JSON array' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // ANALYTICS — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/analytics/regional': {
+        get: {
+          summary: 'Farm and harvest stats broken down by province/district',
+          tags: ['Analytics'],
+          responses: { 200: { description: 'Regional analytics' } },
+        },
+      },
+      '/api/analytics/agents': {
+        get: {
+          summary: 'Per-agent performance metrics (visits, service requests, reports)',
+          tags: ['Analytics'],
+          responses: { 200: { description: 'Agent performance data' } },
+        },
+      },
+      '/api/analytics/farmers': {
+        get: {
+          summary: 'Farmer engagement stats (farm size, tree count, verification rate)',
+          tags: ['Analytics'],
+          responses: { 200: { description: 'Farmer analytics' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // TREES
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/trees/farm/{farmId}': {
+        get: {
+          summary: 'List all tree records for a farm',
+          tags: ['Trees'],
+          parameters: [{ in: 'path', name: 'farmId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Tree records', content: { 'application/json': { schema: { $ref: '#/components/schemas/SuccessResponse' } } } } },
+        },
+        post: {
+          summary: 'Add a tree record to a farm',
+          tags: ['Trees'],
+          parameters: [{ in: 'path', name: 'farmId', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['tree_number'],
+                  properties: {
+                    tree_number: { type: 'string' },
+                    variety: { type: 'string' },
+                    planted_at: { type: 'string', format: 'date' },
+                    age_years: { type: 'number' },
+                    height_m: { type: 'number' },
+                    canopy_m: { type: 'number' },
+                    health_status: { type: 'string', enum: ['healthy', 'stressed', 'diseased', 'dead'] },
+                    notes: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Tree record created' } },
+        },
+      },
+      '/api/trees/{id}': {
+        put: {
+          summary: 'Update a tree record',
+          tags: ['Trees'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/TreeRecord' } } } },
+          responses: { 200: { description: 'Tree updated' }, 404: { description: 'Tree not found' } },
+        },
+        delete: {
+          summary: 'Delete a tree record',
+          tags: ['Trees'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Tree deleted' }, 404: { description: 'Tree not found' } },
+        },
+      },
+      '/api/trees/farm/{farmId}/diseases': {
+        get: {
+          summary: 'List tree-level disease records for a farm',
+          tags: ['Trees'],
+          parameters: [{ in: 'path', name: 'farmId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Tree disease records' } },
+        },
+        post: {
+          summary: 'Report a tree-level disease',
+          tags: ['Trees'],
+          parameters: [{ in: 'path', name: 'farmId', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['tree_id', 'disease_name', 'severity'],
+                  properties: {
+                    tree_id: { type: 'string' },
+                    disease_name: { type: 'string' },
+                    severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+                    detected_at: { type: 'string', format: 'date' },
+                    treatment_notes: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Tree disease reported' } },
+        },
+      },
+      '/api/trees/diseases/{id}': {
+        put: {
+          summary: 'Update a tree disease record (mark treated/resolved)',
+          tags: ['Trees'],
+          parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/TreeDisease' } } } },
+          responses: { 200: { description: 'Tree disease updated' } },
+        },
+      },
+      '/api/trees/summary': {
+        get: {
+          summary: 'Platform-wide tree health summary',
+          tags: ['Trees'],
+          responses: { 200: { description: 'Aggregate tree health counts by status' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // DISEASES
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/diseases/registry': {
+        get: {
+          summary: 'List disease registry entries',
+          tags: ['Diseases'],
+          security: [],
+          responses: { 200: { description: 'Disease registry' } },
+        },
+        post: {
+          summary: 'Add a disease to the registry (admin)',
+          tags: ['Diseases'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['name'],
+                  properties: {
+                    name: { type: 'string' },
+                    description: { type: 'string' },
+                    symptoms: { type: 'string' },
+                    treatment: { type: 'string' },
+                    prevention: { type: 'string' },
+                    severity_default: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Disease created' } },
+        },
+      },
+      '/api/diseases/registry/{id}': {
+        put: {
+          summary: 'Update a disease registry entry (admin)',
+          tags: ['Diseases'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/DiseaseRegistry' } } } },
+          responses: { 200: { description: 'Disease updated' } },
+        },
+        delete: {
+          summary: 'Delete a disease registry entry (admin)',
+          tags: ['Diseases'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Disease deleted' } },
+        },
+      },
+      '/api/diseases/cases': {
+        get: {
+          summary: 'List all disease cases',
+          tags: ['Diseases'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'status', schema: { type: 'string', enum: ['open', 'in_treatment', 'resolved', 'closed'] } },
+            { in: 'query', name: 'farm_id', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'Paginated disease cases' } },
+        },
+        post: {
+          summary: 'Report a disease case on a farm',
+          tags: ['Diseases'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['farm_id', 'disease_id', 'severity'],
+                  properties: {
+                    farm_id: { type: 'string' },
+                    disease_id: { type: 'string' },
+                    severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+                    affected_trees: { type: 'integer' },
+                    detected_at: { type: 'string', format: 'date' },
+                    notes: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Disease case reported' } },
+        },
+      },
+      '/api/diseases/cases/{id}': {
+        put: {
+          summary: 'Update a disease case status',
+          tags: ['Diseases'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/DiseaseCase' } } } },
+          responses: { 200: { description: 'Case updated' } },
+        },
+      },
+      '/api/diseases/outbreaks': {
+        get: {
+          summary: 'List disease outbreaks',
+          tags: ['Diseases'],
+          responses: { 200: { description: 'Outbreaks list' } },
+        },
+        post: {
+          summary: 'Declare a disease outbreak (admin)',
+          tags: ['Diseases'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['disease_id', 'location', 'started_at'],
+                  properties: { disease_id: { type: 'string' }, location: { type: 'string' }, started_at: { type: 'string', format: 'date' }, notes: { type: 'string' } },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Outbreak declared' } },
+        },
+      },
+      '/api/diseases/statistics': {
+        get: {
+          summary: 'Disease statistics — case counts by status and severity',
+          tags: ['Diseases'],
+          responses: { 200: { description: 'Disease statistics' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // FORECASTING
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/forecasting': {
+        get: {
+          summary: 'List harvest forecasts',
+          tags: ['Forecasting'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'farm_id', schema: { type: 'string' } },
+            { in: 'query', name: 'year', schema: { type: 'integer' } },
+          ],
+          responses: { 200: { description: 'Harvest forecasts' } },
+        },
+        post: {
+          summary: 'Create a harvest forecast',
+          tags: ['Forecasting'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['farm_id', 'forecast_date', 'forecast_kg'],
+                  properties: {
+                    farm_id: { type: 'string' },
+                    forecast_date: { type: 'string', format: 'date' },
+                    forecast_kg: { type: 'number' },
+                    variety: { type: 'string' },
+                    notes: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Forecast created' } },
+        },
+      },
+      '/api/forecasting/{id}': {
+        put: {
+          summary: 'Update a forecast (including actual kg when harvested)',
+          tags: ['Forecasting'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/HarvestForecast' } } } },
+          responses: { 200: { description: 'Forecast updated' }, 404: { description: 'Forecast not found' } },
+        },
+        delete: {
+          summary: 'Delete a forecast',
+          tags: ['Forecasting'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Forecast deleted' } },
+        },
+      },
+      '/api/forecasting/regional': {
+        get: {
+          summary: 'Aggregated forecast vs actual by district/province',
+          tags: ['Forecasting'],
+          responses: { 200: { description: 'Regional forecast summary' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // PROCUREMENT
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/procurement/purchase-orders': {
+        get: {
+          summary: 'List purchase orders',
+          tags: ['Procurement'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'status', schema: { type: 'string', enum: ['draft', 'submitted', 'approved', 'received', 'cancelled'] } },
+          ],
+          responses: { 200: { description: 'Purchase orders' } },
+        },
+        post: {
+          summary: 'Create a draft purchase order',
+          tags: ['Procurement'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['supplier_id', 'items'],
+                  properties: {
+                    supplier_id: { type: 'string' },
+                    expected_delivery: { type: 'string', format: 'date' },
+                    notes: { type: 'string' },
+                    items: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['product_id', 'quantity', 'unit_price'],
+                        properties: { product_id: { type: 'string' }, quantity: { type: 'integer' }, unit_price: { type: 'number' } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Purchase order created' } },
+        },
+      },
+      '/api/procurement/purchase-orders/{id}': {
+        get: {
+          summary: 'Get a purchase order with items',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Purchase order detail' }, 404: { description: 'Not found' } },
+        },
+        put: {
+          summary: 'Update a draft purchase order',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/PurchaseOrder' } } } },
+          responses: { 200: { description: 'PO updated' } },
+        },
+      },
+      '/api/procurement/purchase-orders/{id}/submit': {
+        put: {
+          summary: 'Submit a draft PO for approval',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'PO submitted' } },
+        },
+      },
+      '/api/procurement/purchase-orders/{id}/approve': {
+        put: {
+          summary: 'Approve a submitted PO (admin)',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'PO approved' } },
+        },
+      },
+      '/api/procurement/purchase-orders/{id}/cancel': {
+        put: {
+          summary: 'Cancel a PO',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'PO cancelled' } },
+        },
+      },
+      '/api/procurement/purchase-orders/{id}/receive': {
+        post: {
+          summary: 'Record goods receipt for an approved PO',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['items'],
+                  properties: {
+                    notes: { type: 'string' },
+                    items: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['product_id', 'quantity_received'],
+                        properties: { product_id: { type: 'string' }, quantity_received: { type: 'integer' } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Goods receipt recorded and stock updated' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // TRAINING
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/training': {
+        get: {
+          summary: 'List training content (published only for farmers)',
+          tags: ['Training'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'content_type', schema: { type: 'string', enum: ['article', 'video', 'pdf', 'quiz'] } },
+            { in: 'query', name: 'status', schema: { type: 'string', enum: ['draft', 'published', 'archived'] } },
+          ],
+          responses: { 200: { description: 'Training content list' } },
+        },
+        post: {
+          summary: 'Create training content (admin)',
+          tags: ['Training'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['title', 'content_type'],
+                  properties: {
+                    title: { type: 'string' },
+                    description: { type: 'string' },
+                    content_type: { type: 'string', enum: ['article', 'video', 'pdf', 'quiz'] },
+                    content_url: { type: 'string' },
+                    thumbnail_url: { type: 'string' },
+                    tags: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Content created as draft' } },
+        },
+      },
+      '/api/training/{id}': {
+        get: {
+          summary: 'Get a training content item (records access for farmers)',
+          tags: ['Training'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Training content detail' }, 404: { description: 'Not found' } },
+        },
+        put: {
+          summary: 'Update training content (admin)',
+          tags: ['Training'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/TrainingContent' } } } },
+          responses: { 200: { description: 'Content updated' } },
+        },
+        delete: {
+          summary: 'Delete training content (admin)',
+          tags: ['Training'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Content deleted' } },
+        },
+      },
+      '/api/training/{id}/publish': {
+        put: {
+          summary: 'Publish a draft training item (admin)',
+          tags: ['Training'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Content published' } },
+        },
+      },
+      '/api/training/{id}/archive': {
+        put: {
+          summary: 'Archive a training item (admin)',
+          tags: ['Training'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Content archived' } },
+        },
+      },
+      '/api/training/{id}/access': {
+        get: {
+          summary: 'List who has accessed a training item (admin)',
+          tags: ['Training'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Access records' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // GEOGRAPHY
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/geography/provinces': {
+        get: {
+          summary: 'List all provinces',
+          tags: ['Geography'],
+          security: [],
+          responses: { 200: { description: 'Provinces with district count' } },
+        },
+        post: {
+          summary: 'Add a province (admin)',
+          tags: ['Geography'],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, code: { type: 'string' } } } } },
+          },
+          responses: { 201: { description: 'Province created' }, 409: { description: 'Name already exists' } },
+        },
+      },
+      '/api/geography/provinces/{id}': {
+        put: {
+          summary: 'Update a province (admin)',
+          tags: ['Geography'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/Province' } } } },
+          responses: { 200: { description: 'Province updated' } },
+        },
+        delete: {
+          summary: 'Delete a province — only if it has no districts (admin)',
+          tags: ['Geography'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Province deleted' }, 400: { description: 'Has existing districts' } },
+        },
+      },
+      '/api/geography/provinces/{provinceId}/districts': {
+        get: {
+          summary: 'List districts in a province',
+          tags: ['Geography'],
+          security: [],
+          parameters: [{ in: 'path', name: 'provinceId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Districts list' } },
+        },
+      },
+      '/api/geography/districts': {
+        post: {
+          summary: 'Add a district to a province (admin)',
+          tags: ['Geography'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object', required: ['name', 'province_id'],
+                  properties: { name: { type: 'string' }, province_id: { type: 'string' }, code: { type: 'string' } },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'District created' } },
+        },
+      },
+      '/api/geography/districts/{id}': {
+        put: {
+          summary: 'Update a district (admin)',
+          tags: ['Geography'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/District' } } } },
+          responses: { 200: { description: 'District updated' } },
+        },
+      },
+      '/api/geography/districts/{districtId}/sectors': {
+        get: {
+          summary: 'List sectors in a district',
+          tags: ['Geography'],
+          security: [],
+          parameters: [{ in: 'path', name: 'districtId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Sectors list' } },
+        },
+      },
+      '/api/geography/sectors': {
+        post: {
+          summary: 'Add a sector to a district (admin)',
+          tags: ['Geography'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['name', 'district_id'], properties: { name: { type: 'string' }, district_id: { type: 'string' } } },
+              },
+            },
+          },
+          responses: { 201: { description: 'Sector created' } },
+        },
+      },
+      '/api/geography/sectors/{sectorId}/cells': {
+        get: {
+          summary: 'List cells in a sector',
+          tags: ['Geography'],
+          security: [],
+          parameters: [{ in: 'path', name: 'sectorId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Cells list' } },
+        },
+      },
+      '/api/geography/cells': {
+        post: {
+          summary: 'Add a cell to a sector (admin)',
+          tags: ['Geography'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['name', 'sector_id'], properties: { name: { type: 'string' }, sector_id: { type: 'string' } } },
+              },
+            },
+          },
+          responses: { 201: { description: 'Cell created' } },
+        },
+      },
+      '/api/geography/cells/{cellId}/villages': {
+        get: {
+          summary: 'List villages in a cell',
+          tags: ['Geography'],
+          security: [],
+          parameters: [{ in: 'path', name: 'cellId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Villages list' } },
+        },
+      },
+      '/api/geography/villages': {
+        post: {
+          summary: 'Add a village to a cell (admin)',
+          tags: ['Geography'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['name', 'cell_id'], properties: { name: { type: 'string' }, cell_id: { type: 'string' } } },
+              },
+            },
+          },
+          responses: { 201: { description: 'Village created' } },
+        },
+      },
+      '/api/geography/full': {
+        get: {
+          summary: 'Full geography tree (Province → District → Sector → Cell → Village)',
+          tags: ['Geography'],
+          responses: { 200: { description: 'Complete hierarchy' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // SETTINGS
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/settings': {
+        get: {
+          summary: 'List all system settings (admin)',
+          tags: ['Settings'],
+          responses: { 200: { description: 'All settings key-value pairs' } },
+        },
+      },
+      '/api/settings/{key}': {
+        get: {
+          summary: 'Get a single setting by key',
+          tags: ['Settings'],
+          parameters: [{ in: 'path', name: 'key', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Setting value' }, 404: { description: 'Key not found' } },
+        },
+        put: {
+          summary: 'Set or update a setting value (admin)',
+          tags: ['Settings'],
+          parameters: [{ in: 'path', name: 'key', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { type: 'object', required: ['value'], properties: { value: { type: 'string' }, description: { type: 'string' } } },
+              },
+            },
+          },
+          responses: { 200: { description: 'Setting updated' } },
+        },
+        delete: {
+          summary: 'Delete a setting (admin)',
+          tags: ['Settings'],
+          parameters: [{ in: 'path', name: 'key', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Setting deleted' } },
+        },
+      },
+      '/api/settings/initialize': {
+        post: {
+          summary: 'Initialize default platform settings (admin)',
+          tags: ['Settings'],
+          responses: { 200: { description: 'Defaults seeded' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // CART
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/cart': {
+        get: {
+          summary: 'Get the current user\'s cart',
+          tags: ['Cart'],
+          responses: { 200: { description: 'Cart with items and totals', content: { 'application/json': { schema: { $ref: '#/components/schemas/Cart' } } } } },
+        },
+        delete: {
+          summary: 'Clear all items from the cart',
+          tags: ['Cart'],
+          responses: { 200: { description: 'Cart cleared' } },
+        },
+      },
+      '/api/cart/items': {
+        post: {
+          summary: 'Add a product to the cart (or increment quantity)',
+          tags: ['Cart'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['product_id', 'quantity'],
+                  properties: { product_id: { type: 'string' }, quantity: { type: 'integer', minimum: 1 } },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Item added to cart' } },
+        },
+      },
+      '/api/cart/items/{itemId}': {
+        put: {
+          summary: 'Update quantity of a cart item',
+          tags: ['Cart'],
+          parameters: [{ in: 'path', name: 'itemId', required: true, schema: { type: 'string' } }],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['quantity'], properties: { quantity: { type: 'integer', minimum: 0 } } } } },
+          },
+          responses: { 200: { description: 'Cart item updated (quantity 0 removes the item)' } },
+        },
+        delete: {
+          summary: 'Remove a single item from the cart',
+          tags: ['Cart'],
+          parameters: [{ in: 'path', name: 'itemId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Item removed' } },
+        },
+      },
+      '/api/cart/checkout': {
+        post: {
+          summary: 'Checkout — converts cart to an Order',
+          tags: ['Cart'],
+          requestBody: {
+            required: false,
+            content: { 'application/json': { schema: { type: 'object', properties: { notes: { type: 'string' } } } } },
+          },
+          responses: { 201: { description: 'Order created and cart cleared' }, 400: { description: 'Cart is empty or stock insufficient' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // VISITS
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/visits': {
+        get: {
+          summary: 'List farm visits (admin sees all; agents see their own)',
+          tags: ['Visits'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'status', schema: { type: 'string', enum: ['scheduled', 'completed', 'cancelled'] } },
+            { in: 'query', name: 'farm_id', schema: { type: 'string' } },
+            { in: 'query', name: 'agent_id', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'Paginated visits' } },
+        },
+        post: {
+          summary: 'Schedule a farm visit',
+          tags: ['Visits'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['farm_id', 'scheduled_at'],
+                  properties: {
+                    farm_id: { type: 'string' },
+                    scheduled_at: { type: 'string', format: 'date-time' },
+                    purpose: { type: 'string' },
+                    notes: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Visit scheduled' } },
+        },
+      },
+      '/api/visits/{id}': {
+        get: {
+          summary: 'Get a single farm visit',
+          tags: ['Visits'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Visit detail' }, 404: { description: 'Not found' } },
+        },
+        put: {
+          summary: 'Update visit details',
+          tags: ['Visits'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/FarmVisit' } } } },
+          responses: { 200: { description: 'Visit updated' } },
+        },
+      },
+      '/api/visits/{id}/complete': {
+        put: {
+          summary: 'Mark a visit as completed with notes',
+          tags: ['Visits'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: false,
+            content: { 'application/json': { schema: { type: 'object', properties: { notes: { type: 'string' } } } } },
+          },
+          responses: { 200: { description: 'Visit completed' } },
+        },
+      },
+      '/api/visits/{id}/cancel': {
+        put: {
+          summary: 'Cancel a scheduled visit',
+          tags: ['Visits'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: false,
+            content: { 'application/json': { schema: { type: 'object', properties: { reason: { type: 'string' } } } } },
+          },
+          responses: { 200: { description: 'Visit cancelled' } },
         },
       },
     },
