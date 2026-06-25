@@ -33,18 +33,20 @@ COPY prisma ./prisma
 RUN npx prisma generate
 
 COPY --from=builder /app/dist ./dist
+COPY entrypoint.sh ./entrypoint.sh
 
 # Create non-root user and give it ownership of the whole workdir
 # (needed so prisma migrate deploy can write at container startup)
 RUN addgroup -g 1001 -S nodejs \
     && adduser -S nodejs -u 1001 \
-    && chown -R nodejs:nodejs /app
+    && chown -R nodejs:nodejs /app \
+    && chmod +x /app/entrypoint.sh
 
 USER nodejs
 
 EXPOSE 5000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
   CMD wget -qO- http://localhost:5000/health || exit 1
 
-CMD ["node", "dist/src/server.js"]
+CMD ["/app/entrypoint.sh"]
