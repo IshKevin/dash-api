@@ -1,0 +1,1172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  admin
+  agent
+  farmer
+  shop_manager
+}
+
+enum UserStatus {
+  active
+  inactive
+}
+
+enum ProductCategory {
+  seeds
+  fertilizers
+  tools
+  irrigation
+  harvesting
+  containers
+  // stored as "pest-management" in DB to preserve existing API contract
+  pest_management @map("pest-management")
+  protection
+}
+
+enum ProductStatus {
+  available
+  out_of_stock
+  discontinued
+}
+
+enum ProductUnit {
+  kg
+  g
+  lb
+  oz
+  ton
+  liter
+  ml
+  gallon
+  piece
+  dozen
+  box
+  bag
+  bottle
+  can
+  packet
+}
+
+enum SupplierCategory {
+  seeds_supplier
+  fertilizer_supplier
+  equipment_supplier
+  produce_buyer
+  input_distributor
+  logistics_provider
+  financial_services
+  other
+}
+
+enum SupplierStatus {
+  active
+  inactive
+  pending_approval
+  suspended
+}
+
+enum CustomerStatus {
+  active
+  inactive
+}
+
+enum OrderStatus {
+  pending
+  confirmed
+  processing
+  shipped
+  delivered
+  cancelled
+  returned
+}
+
+enum PaymentStatus {
+  pending
+  paid
+  failed
+  refunded
+}
+
+enum PaymentMethod {
+  cash
+  mobile_money
+  bank_transfer
+  credit_card
+  debit_card
+  check
+}
+
+enum TransactionType {
+  payment
+  refund
+  adjustment
+  fee
+  commission
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  cancelled
+  processing
+}
+
+enum FarmStatus {
+  preparing
+  planted
+  growing
+  producing
+  harvesting
+  dormant
+}
+
+enum ServiceType {
+  harvest
+  planting
+  maintenance
+  consultation
+  pest_control
+  other
+}
+
+enum ServiceStatus {
+  pending
+  approved
+  rejected
+  assigned
+  in_progress
+  completed
+  cancelled
+}
+
+enum ServicePriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum NotificationType {
+  info
+  success
+  warning
+  error
+  order
+  system
+}
+
+enum RelatedEntityType {
+  order
+  service_request
+  product
+  system
+}
+
+enum StockHistoryReason {
+  restock
+  sale
+  adjustment
+  damage
+  return
+  other
+}
+
+enum ReportType {
+  inspection
+  audit
+  assessment
+  survey
+  other
+}
+
+enum ReportStatus {
+  pending
+  in_progress
+  completed
+  cancelled
+}
+
+enum ReportPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum Gender {
+  Male
+  Female
+  Other
+}
+
+enum MaritalStatus {
+  Single
+  Married
+  Divorced
+  Widowed
+}
+
+enum EducationLevel {
+  Primary
+  Secondary
+  University
+  None
+}
+
+enum FarmerVerificationStatus {
+  pending
+  verified
+  rejected
+}
+
+enum DiseaseSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+enum DiseaseCaseStatus {
+  active
+  treated
+  resolved
+  monitoring
+}
+
+enum OutbreakStatus {
+  active
+  contained
+  resolved
+  monitoring
+}
+
+enum PurchaseOrderStatus {
+  draft
+  submitted
+  approved
+  ordered
+  partially_received
+  fully_received
+  cancelled
+}
+
+enum TrainingContentType {
+  article
+  video
+  guide
+  checklist
+  faq
+}
+
+enum ContentStatus {
+  draft
+  published
+  archived
+}
+
+enum VisitStatus {
+  scheduled
+  in_progress
+  completed
+  cancelled
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id            String     @id @default(uuid())
+  email         String     @unique
+  password      String
+  full_name     String
+  phone         String?
+  role          UserRole   @default(farmer)
+  status        UserStatus @default(active)
+  /// Embedded profile object (age, gender, location, farm_details, etc.)
+  profile       Json?
+  qr_code_token String?    @unique
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @updatedAt
+
+  access_keys                AccessKey[]
+  notifications              Notification[]
+  farms                      Farm[]
+  service_requests_as_farmer ServiceRequest[]  @relation("FarmerRequests")
+  service_requests_as_agent  ServiceRequest[]  @relation("AgentRequests")
+  farmer_profile             FarmerProfile?
+  agent_profile              AgentProfile?
+  reports_as_agent           Report[]          @relation("AgentReports")
+  stock_history_created      StockHistory[]
+  shops_created              Shop[]
+  transactions_as_payer      Transaction[]     @relation("PayerTransactions")
+  transactions_as_payee      Transaction[]     @relation("PayeeTransactions")
+  cart                       Cart?
+  farm_visits_as_agent       FarmVisit[]          @relation("VisitAgent")
+  tree_records_recorded      TreeRecord[]         @relation("TreeRecordRecorder")
+  tree_diseases_reported     TreeDisease[]        @relation("TreeDiseaseReporter")
+  disease_cases_reported     DiseaseCase[]        @relation("DiseaseCaseReporter")
+  outbreaks_reported         DiseaseOutbreak[]    @relation("OutbreakReporter")
+  forecasts_created          HarvestForecast[]    @relation("ForecastCreator")
+  purchase_orders_created    PurchaseOrder[]      @relation("POCreator")
+  purchase_orders_approved   PurchaseOrder[]      @relation("POApprover")
+  goods_receipts             GoodsReceipt[]       @relation("GoodsReceiver")
+  training_authored          TrainingContent[]    @relation("ContentAuthor")
+  content_accesses           ContentAccess[]      @relation("ContentAccessUser")
+  system_settings_updated    SystemSetting[]      @relation("SettingUpdater")
+  qr_activities              QRActivity[]
+  password_reset_tokens      PasswordResetToken[]
+  supplier_evaluations       SupplierEvaluation[] @relation("SupplierEvaluator")
+
+  @@index([role, status])
+  @@index([created_at])
+}
+
+model Product {
+  id            String          @id @default(uuid())
+  name          String
+  category      ProductCategory
+  description   String?
+  price         Float
+  quantity      Int             @default(0)
+  unit          ProductUnit
+  supplier_id   String
+  status        ProductStatus   @default(available)
+  harvest_date  DateTime?
+  expiry_date   DateTime?
+  sku           String?         @unique
+  brand         String?
+  images        String[]
+  specifications Json?
+  created_at    DateTime        @default(now())
+  updated_at    DateTime        @updatedAt
+
+  supplier      Supplier        @relation(fields: [supplier_id], references: [id])
+  stock_history StockHistory[]
+  order_items   OrderItem[]
+  cart_items    CartItem[]
+  po_items      PurchaseOrderItem[]
+
+  @@index([category, status])
+  @@index([supplier_id, status])
+  @@index([quantity, status])
+  @@index([created_at])
+}
+
+model Supplier {
+  id                String           @id @default(uuid())
+  name              String
+  category          SupplierCategory
+  contact_person    String
+  email             String
+  phone             String
+  website           String?
+  /// SupplierAddress: {street_address, city, province, postal_code, country}
+  address           Json
+  business_license  String?
+  tax_id            String?
+  /// BankDetails: {bank_name, account_name, account_number, routing_number, swift_code}
+  bank_details      Json?
+  status            SupplierStatus   @default(pending_approval)
+  rating            Float            @default(0)
+  total_orders      Int              @default(0)
+  products_supplied String[]
+  services_offered  String[]
+  delivery_areas    String[]
+  payment_terms     String?
+  notes             String?
+  created_at        DateTime         @default(now())
+  updated_at        DateTime         @updatedAt
+
+  products          Product[]
+  purchase_orders   PurchaseOrder[]
+  evaluations       SupplierEvaluation[]
+
+  @@index([category, status])
+  @@index([rating])
+  @@index([created_at])
+}
+
+model Customer {
+  id              String         @id @default(uuid())
+  name            String
+  email           String
+  phone           String
+  address         String?
+  shop_id         String?
+  status          CustomerStatus @default(active)
+  total_orders    Int            @default(0)
+  total_spent     Float          @default(0)
+  last_order_date DateTime?
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  shop            Shop?          @relation(fields: [shop_id], references: [id])
+  orders          Order[]
+
+  @@index([shop_id, status])
+  @@index([total_spent])
+  @@index([created_at])
+}
+
+model Order {
+  id                     String        @id @default(uuid())
+  order_number           String        @unique
+  customer_id            String
+  subtotal               Float
+  tax_amount             Float         @default(0)
+  shipping_cost          Float         @default(0)
+  discount_amount        Float         @default(0)
+  total_amount           Float
+  status                 OrderStatus   @default(pending)
+  payment_status         PaymentStatus @default(pending)
+  payment_method         PaymentMethod @default(cash)
+  /// ShippingAddress: {full_name, phone, street_address, city, province, postal_code, country}
+  shipping_address       Json
+  billing_address        Json?
+  order_date             DateTime      @default(now())
+  expected_delivery_date DateTime?
+  delivered_date         DateTime?
+  notes                  String?
+  tracking_number        String?
+  created_at             DateTime      @default(now())
+  updated_at             DateTime      @updatedAt
+
+  customer               Customer      @relation(fields: [customer_id], references: [id])
+  items                  OrderItem[]
+  transactions           Transaction[]
+
+  @@index([customer_id, status])
+  @@index([status, payment_status])
+  @@index([order_date])
+  @@index([created_at])
+}
+
+model OrderItem {
+  id           String  @id @default(uuid())
+  order_id     String
+  product_id   String
+  product_name String
+  unit_price   Float
+  quantity     Int
+  total_price  Float
+
+  order        Order   @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  product      Product @relation(fields: [product_id], references: [id])
+
+  @@index([order_id])
+  @@index([product_id])
+}
+
+model Transaction {
+  id                 String            @id @default(uuid())
+  transaction_number String            @unique
+  order_id           String?
+  service_request_id String?
+  payer_id           String
+  payee_id           String
+  amount             Float
+  currency           String            @default("RWF")
+  type               TransactionType
+  status             TransactionStatus @default(pending)
+  payment_method     PaymentMethod
+  reference_number   String?
+  description        String?
+  fees               Float             @default(0)
+  net_amount         Float
+  processed_at       DateTime?
+  created_at         DateTime          @default(now())
+  updated_at         DateTime          @updatedAt
+
+  payer              User              @relation("PayerTransactions", fields: [payer_id], references: [id])
+  payee              User              @relation("PayeeTransactions", fields: [payee_id], references: [id])
+  order              Order?            @relation(fields: [order_id], references: [id])
+  service_request    ServiceRequest?   @relation(fields: [service_request_id], references: [id])
+
+  @@index([payer_id, status])
+  @@index([payee_id, status])
+  @@index([type, status])
+  @@index([created_at])
+}
+
+model Shop {
+  id           String     @id @default(uuid())
+  shop_number  Int        @unique @default(autoincrement())
+  shopName     String
+  description  String
+  province     String
+  district     String
+  ownerName    String
+  ownerEmail   String
+  ownerPhone   String
+  created_by   String
+  created_at   DateTime   @default(now())
+  updated_at   DateTime   @updatedAt
+
+  creator      User       @relation(fields: [created_by], references: [id])
+  customers    Customer[]
+
+  @@index([created_by])
+}
+
+model Farm {
+  id               String     @id @default(uuid())
+  farmName         String
+  farmerName       String
+  farmer_id        String
+  /// FarmLocation: {province, district, sector, cell, village, coordinates}
+  location         Json
+  crop_type        String     @default("avocado")
+  farm_size        Float
+  tree_count       Int
+  varieties        String[]
+  planting_date    DateTime
+  expected_harvest DateTime?
+  status           FarmStatus @default(planted)
+  organic_certified Boolean   @default(false)
+  irrigation_system String?
+  soil_type        String?
+  notes            String?
+  created_at       DateTime   @default(now())
+  updated_at       DateTime   @updatedAt
+
+  farmer           User       @relation(fields: [farmer_id], references: [id])
+  latitude         Float?
+  longitude        Float?
+  archived_at      DateTime?
+  tree_records     TreeRecord[]
+  tree_diseases    TreeDisease[]
+  disease_cases    DiseaseCase[]
+  farm_visits      FarmVisit[]
+  forecasts        HarvestForecast[]
+
+  @@index([farmer_id, status])
+  @@index([crop_type, status])
+  @@index([organic_certified])
+  @@index([expected_harvest])
+  @@index([created_at])
+}
+
+model ServiceRequest {
+  id                      String          @id @default(uuid())
+  farmer_id               String
+  agent_id                String?
+  service_type            ServiceType
+  title                   String
+  description             String
+  request_number          String          @unique
+  status                  ServiceStatus   @default(pending)
+  priority                ServicePriority @default(medium)
+  requested_date          DateTime        @default(now())
+  scheduled_date          DateTime?
+  started_at              DateTime?
+  completed_at            DateTime?
+  approved_at             DateTime?
+  rejected_at             DateTime?
+  approved_by             String?
+  rejected_by             String?
+  completed_by            String?
+  rejection_reason        String?
+  /// ServiceLocation: {farm_name, province, district, sector, ...}
+  location                Json
+  cost_estimate           Float?
+  final_cost              Float?
+  notes                   String?
+  start_notes             String?
+  completion_notes        String?
+  /// HarvestDetails: {workers_needed, equipment_needed, trees_to_harvest, ...}
+  harvest_details         Json?
+  /// PestManagementDetails: {pests_diseases, first_noticed, damage_observed, ...}
+  pest_management_details Json?
+  /// FarmerInfo: {name, phone, email, location}
+  farmer_info             Json?
+  attachments             String[]
+  /// ServiceFeedback: {rating, comment, submitted_at}
+  feedback                Json?
+  created_at              DateTime        @default(now())
+  updated_at              DateTime        @updatedAt
+
+  farmer                  User            @relation("FarmerRequests", fields: [farmer_id], references: [id])
+  agent                   User?           @relation("AgentRequests", fields: [agent_id], references: [id])
+  transactions            Transaction[]
+
+  @@index([farmer_id, status])
+  @@index([agent_id, status])
+  @@index([service_type, status])
+  @@index([created_at])
+}
+
+model AccessKey {
+  id         String   @id @default(uuid())
+  user_id    String
+  access_key String   @unique
+  is_used    Boolean  @default(false)
+  expires_at DateTime
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user       User     @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@index([access_key, is_used, expires_at])
+}
+
+model Notification {
+  id                  String             @id @default(uuid())
+  recipient_id        String
+  type                NotificationType   @default(info)
+  title               String
+  message             String
+  related_entity_id   String?
+  related_entity_type RelatedEntityType?
+  is_read             Boolean            @default(false)
+  created_at          DateTime           @default(now())
+
+  recipient           User               @relation(fields: [recipient_id], references: [id])
+
+  @@index([recipient_id, is_read])
+  @@index([created_at])
+}
+
+model Log {
+  id        String   @id @default(uuid())
+  level     String
+  message   String
+  meta      Json?
+  timestamp DateTime @default(now())
+
+  @@index([level])
+  @@index([timestamp])
+}
+
+model StockHistory {
+  id                String             @id @default(uuid())
+  product_id        String
+  shop_id           String?
+  previous_quantity Int
+  new_quantity      Int
+  change_amount     Int
+  reason            StockHistoryReason
+  notes             String?
+  created_by        String?
+  created_at        DateTime           @default(now())
+
+  product           Product            @relation(fields: [product_id], references: [id])
+  creator           User?              @relation(fields: [created_by], references: [id])
+
+  @@index([product_id])
+  @@index([created_at])
+}
+
+model Report {
+  id              String         @id @default(uuid())
+  title           String
+  description     String
+  report_type     ReportType
+  status          ReportStatus   @default(pending)
+  priority        ReportPriority @default(medium)
+  agent_id        String
+  farmer_id       String?
+  scheduled_date  DateTime
+  completed_date  DateTime?
+  /// ReportLocation: {lat, lng, address}
+  location        Json
+  attachments     String[]
+  findings        String?
+  recommendations String?
+  notes           String?
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  agent           User           @relation("AgentReports", fields: [agent_id], references: [id])
+
+  @@index([agent_id, status])
+  @@index([farmer_id, status])
+  @@index([report_type, priority])
+  @@index([scheduled_date])
+  @@index([created_at])
+}
+
+model AgentProfile {
+  id                String   @id @default(uuid())
+  user_id           String   @unique
+  agentId           String   @unique
+  province          String?
+  /// Territory[]: [{district, sector, isPrimary, assignedDate}]
+  territory         Json?
+  district          String?
+  sector            String?
+  cell              String?
+  village           String?
+  specialization    String?
+  experience        String?
+  certification     String?
+  /// Statistics: {farmersAssisted, totalTransactions, performance, activeFarmers, territoryUtilization}
+  statistics        Json?
+  farmersAssisted   Int      @default(0)
+  totalTransactions Int      @default(0)
+  performance       String?
+  profileImage      String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  user              User     @relation(fields: [user_id], references: [id])
+
+  @@index([agentId])
+  @@index([province])
+}
+
+model FarmerProfile {
+  id               String          @id @default(uuid())
+  user_id          String          @unique
+  age              Int?
+  id_number        String?
+  gender           Gender?
+  marital_status   MaritalStatus?
+  education_level  EducationLevel?
+  province         String?
+  district         String?
+  sector           String?
+  cell             String?
+  village          String?
+  farm_age         Int?
+  planted          String?
+  avocado_type     String?
+  mixed_percentage Float?
+  farm_size        Float?
+  tree_count       Int             @default(0)
+  upi_number       String?
+  farm_province    String?
+  farm_district    String?
+  farm_sector      String?
+  farm_cell        String?
+  farm_village     String?
+  assistance       String[]
+  image            String?
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @updatedAt
+
+  user             User            @relation(fields: [user_id], references: [id])
+  verification_status FarmerVerificationStatus @default(pending)
+
+  @@index([province])
+  @@index([district])
+}
+
+// ── Epic 20: Geographic Management ──────────────────────────────────────────
+
+model Province {
+  id         String     @id @default(uuid())
+  name       String     @unique
+  code       String?    @unique
+  districts  District[]
+  created_at DateTime   @default(now())
+  updated_at DateTime   @updatedAt
+}
+
+model District {
+  id          String    @id @default(uuid())
+  name        String
+  code        String?
+  province_id String
+  province    Province  @relation(fields: [province_id], references: [id])
+  sectors     Sector[]
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  @@unique([name, province_id])
+}
+
+model Sector {
+  id          String   @id @default(uuid())
+  name        String
+  district_id String
+  district    District @relation(fields: [district_id], references: [id])
+  cells       Cell[]
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([name, district_id])
+}
+
+model Cell {
+  id         String    @id @default(uuid())
+  name       String
+  sector_id  String
+  sector     Sector    @relation(fields: [sector_id], references: [id])
+  villages   Village[]
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+
+  @@unique([name, sector_id])
+}
+
+model Village {
+  id         String   @id @default(uuid())
+  name       String
+  cell_id    String
+  cell       Cell     @relation(fields: [cell_id], references: [id])
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([name, cell_id])
+}
+
+// ── Epic 5: Tree Management ──────────────────────────────────────────────────
+
+model TreeRecord {
+  id             String   @id @default(uuid())
+  farm_id        String
+  farm           Farm     @relation(fields: [farm_id], references: [id])
+  record_date    DateTime @default(now())
+  total_trees    Int      @default(0)
+  age_0_2        Int      @default(0)
+  age_3_5        Int      @default(0)
+  age_6_10       Int      @default(0)
+  age_above_10   Int      @default(0)
+  healthy_count  Int      @default(0)
+  diseased_count Int      @default(0)
+  dead_count     Int      @default(0)
+  notes          String?
+  recorded_by    String?
+  recorder       User?    @relation("TreeRecordRecorder", fields: [recorded_by], references: [id])
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([farm_id])
+}
+
+model TreeDisease {
+  id              String          @id @default(uuid())
+  farm_id         String
+  farm            Farm            @relation(fields: [farm_id], references: [id])
+  disease_name    String
+  affected_count  Int             @default(0)
+  severity        DiseaseSeverity @default(low)
+  detected_date   DateTime        @default(now())
+  treated         Boolean         @default(false)
+  treatment_notes String?
+  notes           String?
+  reported_by     String?
+  reporter        User?           @relation("TreeDiseaseReporter", fields: [reported_by], references: [id])
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  @@index([farm_id])
+}
+
+// ── Epic 10: Disease & Risk Monitoring ──────────────────────────────────────
+
+model DiseaseRegistry {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  symptoms    String?
+  prevention  String?
+  treatment   String?
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+}
+
+model DiseaseCase {
+  id             String            @id @default(uuid())
+  case_number    String            @unique
+  disease_name   String
+  farm_id        String
+  farm           Farm              @relation(fields: [farm_id], references: [id])
+  severity       DiseaseSeverity   @default(low)
+  status         DiseaseCaseStatus @default(active)
+  affected_trees Int               @default(0)
+  detected_date  DateTime          @default(now())
+  resolved_date  DateTime?
+  symptoms       String?
+  treatment      String?
+  notes          String?
+  outbreak_id    String?
+  outbreak       DiseaseOutbreak?  @relation(fields: [outbreak_id], references: [id])
+  reported_by    String?
+  reporter       User?             @relation("DiseaseCaseReporter", fields: [reported_by], references: [id])
+  created_at     DateTime          @default(now())
+  updated_at     DateTime          @updatedAt
+
+  @@index([farm_id])
+  @@index([status])
+}
+
+model DiseaseOutbreak {
+  id              String          @id @default(uuid())
+  outbreak_number String          @unique
+  disease_name    String
+  severity        DiseaseSeverity @default(medium)
+  status          OutbreakStatus  @default(active)
+  start_date      DateTime        @default(now())
+  end_date        DateTime?
+  province        String?
+  district        String?
+  affected_farms  Int             @default(0)
+  description     String?
+  response_plan   String?
+  cases           DiseaseCase[]
+  reported_by     String?
+  reporter        User?           @relation("OutbreakReporter", fields: [reported_by], references: [id])
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  @@index([status])
+}
+
+// ── Epic 9: Harvest Forecasting ──────────────────────────────────────────────
+
+model HarvestForecast {
+  id              String   @id @default(uuid())
+  forecast_number String   @unique
+  farm_id         String?
+  farm            Farm?    @relation(fields: [farm_id], references: [id])
+  province        String?
+  district        String?
+  forecast_year   Int
+  forecast_season String?
+  predicted_kg    Float    @default(0)
+  confidence_pct  Float    @default(70)
+  actual_kg       Float?
+  variance_pct    Float?
+  basis           String?
+  notes           String?
+  created_by      String?
+  creator         User?    @relation("ForecastCreator", fields: [created_by], references: [id])
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@index([farm_id])
+  @@index([forecast_year])
+}
+
+// ── Epic 15: Procurement Management ─────────────────────────────────────────
+
+model PurchaseOrder {
+  id            String              @id @default(uuid())
+  po_number     String              @unique
+  supplier_id   String
+  supplier      Supplier            @relation(fields: [supplier_id], references: [id])
+  status        PurchaseOrderStatus @default(draft)
+  order_date    DateTime            @default(now())
+  expected_date DateTime?
+  received_date DateTime?
+  total_amount  Float               @default(0)
+  notes         String?
+  created_by    String?
+  creator       User?               @relation("POCreator", fields: [created_by], references: [id])
+  approved_by   String?
+  approver      User?               @relation("POApprover", fields: [approved_by], references: [id])
+  items         PurchaseOrderItem[]
+  receipts      GoodsReceipt[]
+  created_at    DateTime            @default(now())
+  updated_at    DateTime            @updatedAt
+
+  @@index([supplier_id])
+  @@index([status])
+}
+
+model PurchaseOrderItem {
+  id                String        @id @default(uuid())
+  purchase_order_id String
+  purchase_order    PurchaseOrder @relation(fields: [purchase_order_id], references: [id], onDelete: Cascade)
+  product_name      String
+  product_id        String?
+  product           Product?      @relation(fields: [product_id], references: [id])
+  quantity_ordered  Float
+  unit_price        Float
+  total_price       Float
+  quantity_received Float         @default(0)
+  created_at        DateTime      @default(now())
+
+  @@index([purchase_order_id])
+}
+
+model GoodsReceipt {
+  id                String             @id @default(uuid())
+  receipt_number    String             @unique
+  purchase_order_id String
+  purchase_order    PurchaseOrder      @relation(fields: [purchase_order_id], references: [id])
+  received_date     DateTime           @default(now())
+  received_by       String?
+  receiver          User?              @relation("GoodsReceiver", fields: [received_by], references: [id])
+  notes             String?
+  items             GoodsReceiptItem[]
+  created_at        DateTime           @default(now())
+  updated_at        DateTime           @updatedAt
+
+  @@index([purchase_order_id])
+}
+
+model GoodsReceiptItem {
+  id               String       @id @default(uuid())
+  goods_receipt_id String
+  goods_receipt    GoodsReceipt @relation(fields: [goods_receipt_id], references: [id], onDelete: Cascade)
+  product_name     String
+  product_id       String?
+  quantity         Float
+  unit_price       Float
+  notes            String?
+  created_at       DateTime     @default(now())
+
+  @@index([goods_receipt_id])
+}
+
+// ── Epic 17: Training & Knowledge Base ──────────────────────────────────────
+
+model TrainingContent {
+  id           String              @id @default(uuid())
+  title        String
+  description  String?
+  content      String
+  content_type TrainingContentType @default(article)
+  category     String?
+  tags         String[]            @default([])
+  status       ContentStatus       @default(draft)
+  published_at DateTime?
+  view_count   Int                 @default(0)
+  author_id    String?
+  author       User?               @relation("ContentAuthor", fields: [author_id], references: [id])
+  accesses     ContentAccess[]
+  created_at   DateTime            @default(now())
+  updated_at   DateTime            @updatedAt
+
+  @@index([status])
+  @@index([content_type])
+}
+
+model ContentAccess {
+  id          String          @id @default(uuid())
+  content_id  String
+  content     TrainingContent @relation(fields: [content_id], references: [id])
+  user_id     String?
+  user        User?           @relation("ContentAccessUser", fields: [user_id], references: [id])
+  accessed_at DateTime        @default(now())
+
+  @@index([content_id])
+}
+
+// ── Epic 23: System Administration ──────────────────────────────────────────
+
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String
+  description String?
+  category    String?
+  data_type   String   @default("string")
+  is_editable Boolean  @default(true)
+  updated_by  String?
+  updater     User?    @relation("SettingUpdater", fields: [updated_by], references: [id])
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([category])
+}
+
+// ── Epic 13: Shopping Cart ───────────────────────────────────────────────────
+
+model Cart {
+  id         String     @id @default(uuid())
+  user_id    String     @unique
+  user       User       @relation(fields: [user_id], references: [id])
+  items      CartItem[]
+  created_at DateTime   @default(now())
+  updated_at DateTime   @updatedAt
+}
+
+model CartItem {
+  id         String   @id @default(uuid())
+  cart_id    String
+  cart       Cart     @relation(fields: [cart_id], references: [id], onDelete: Cascade)
+  product_id String
+  product    Product  @relation(fields: [product_id], references: [id])
+  quantity   Int      @default(1)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([cart_id, product_id])
+  @@index([cart_id])
+}
+
+// ── Epic 6: Farm Visits ──────────────────────────────────────────────────────
+
+model FarmVisit {
+  id              String      @id @default(uuid())
+  visit_number    String      @unique
+  farm_id         String
+  farm            Farm        @relation(fields: [farm_id], references: [id])
+  agent_id        String
+  agent           User        @relation("VisitAgent", fields: [agent_id], references: [id])
+  status          VisitStatus @default(scheduled)
+  scheduled_at    DateTime
+  completed_at    DateTime?
+  purpose         String?
+  findings        String?
+  recommendations String?
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  @@index([farm_id])
+  @@index([agent_id])
+}
+
+// ── Epic 3: QR Activity Tracking ────────────────────────────────────────────
+
+model QRActivity {
+  id          String   @id @default(uuid())
+  user_id     String
+  user        User     @relation(fields: [user_id], references: [id])
+  action      String
+  scanned_by  String?
+  ip_address  String?
+  created_at  DateTime @default(now())
+
+  @@index([user_id])
+}
+
+// ── Epic 1: Password Reset ───────────────────────────────────────────────────
+
+model PasswordResetToken {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id])
+  token      String   @unique
+  expires_at DateTime
+  is_used    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  @@index([user_id])
+  @@index([token, is_used])
+}
+
+// ── Epic 14: Supplier Evaluation ────────────────────────────────────────────
+
+model SupplierEvaluation {
+  id             String   @id @default(uuid())
+  supplier_id    String
+  supplier       Supplier @relation(fields: [supplier_id], references: [id])
+  evaluator_id   String
+  evaluator      User     @relation("SupplierEvaluator", fields: [evaluator_id], references: [id])
+  overall_score  Float
+  quality_score  Float?
+  delivery_score Float?
+  price_score    Float?
+  service_score  Float?
+  notes          String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@index([supplier_id])
+}

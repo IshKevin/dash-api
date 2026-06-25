@@ -1,7 +1,7 @@
 {
   "name": "dashboard-avocado-backend",
-  "version": "1.0.0",
-  "description": "Backend API for Dashboard Avocado Agricultural Management System",
+  "version": "2.0.0",
+  "description": "Backend API for Dashboard Avocado Agricultural Management System (PostgreSQL)",
   "main": "dist/server.js",
   "scripts": {
     "start": "node dist/src/server.js",
@@ -14,32 +14,34 @@
     "test:unit": "mocha -r ts-node/register \"test/simpleAuth.test.ts\" --timeout 5000 --exit",
     "test:e2e": "mocha -r ts-node/register \"test/api.test.ts\" --timeout 10000 --exit",
     "test:watch": "nodemon --exec \"npm test\"",
-    "lint": "echo 'Linting not configured yet'",
-    "format": "echo 'Formatting not configured yet'",
-    "health-check": "curl -f http://localhost:5000/health || exit 1",
-    "cleanup": "node -e \"require('./dist/scripts/cleanup.js')\"",
-    "seed": "ts-node src/scripts/seed.ts"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/IshKevin/dash-api.git"
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:prod": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "db:seed": "ts-node src/scripts/seed.ts",
+    "db:reset": "prisma migrate reset",
+    "docker:up": "docker compose up -d postgres",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f postgres",
+    "setup": "npm install && npm run docker:up && sleep 3 && npm run db:migrate && npm run db:seed",
+    "health-check": "curl -f http://localhost:5000/health || exit 1"
   },
   "keywords": [
     "nodejs",
     "express",
-    "mongodb",
+    "postgresql",
+    "prisma",
     "typescript",
     "agriculture",
     "dashboard"
   ],
   "author": "",
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/IshKevin/dash-api/issues"
-  },
-  "homepage": "https://github.com/IshKevin/dash-api#readme",
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "@types/qrcode": "^1.5.6",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
     "axios": "^1.11.0",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^1.41.3",
@@ -47,18 +49,19 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "express-mongo-sanitize": "^2.2.0",
     "express-rate-limit": "^8.2.1",
     "express-validator": "^7.0.1",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^7.8.7",
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "multer-storage-cloudinary": "^4.0.0",
     "qrcode": "^1.5.4",
     "resend": "^6.5.2",
+    "swagger-jsdoc": "^6.3.0",
+    "swagger-ui-express": "^5.0.1",
     "winston": "^3.19.0",
+    "winston-transport": "^4.7.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -75,6 +78,7 @@
     "chai": "^6.0.1",
     "mocha": "^11.7.2",
     "nodemon": "^3.1.10",
+    "prisma": "^5.22.0",
     "rimraf": "^6.0.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"

@@ -1,361 +1,263 @@
 import { Router, Request, Response } from 'express';
-import { Product } from '../models/Product';
-import { StockHistory } from '../models/StockHistory';
-import {
-  validateIdParam,
-  validateProductCreation,
-  validatePagination,
-} from '../middleware/validation';
+import { prisma } from '../lib/prisma';
+import { validateIdParam, validateProductCreation, validatePagination } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
-import { CreateProductRequest, UpdateProductRequest, StockUpdateRequest } from '../types/product';
 import { AuthenticatedRequest } from '../types/auth';
+import { ProductCategory } from '@prisma/client';
 
 const router = Router();
 
-// Valid categories for the e-commerce app
-const VALID_CATEGORIES = ['irrigation', 'harvesting', 'containers', 'pest-management'];
+// Convert API "pest-management" string to Prisma enum value
+function toCategory(cat: string): ProductCategory {
+  if (cat === 'pest-management') return ProductCategory.pest_management;
+  return cat as ProductCategory;
+}
 
-// Middleware to validate category
-const validateCategory = (req: Request, res: Response, next: Function): void => {
-  const category = req.query.category as string;
-  if (category && !VALID_CATEGORIES.includes(category.toLowerCase())) {
-    sendError(res, `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}`, 400);
+// Convert Prisma enum back to API string
+function fromCategory(cat: string): string {
+  if (cat === 'pest_management') return 'pest-management';
+  return cat;
+}
+
+function formatProduct(p: any) {
+  return { ...p, category: fromCategory(p.category) };
+}
+
+function buildProductWhere(req: Request): any {
+  const where: any = {};
+
+  if (req.query.status) {
+    where.status = req.query.status;
+  } else {
+    where.status = { not: 'discontinued' };
+  }
+
+  if (req.query.category) {
+    where.category = toCategory(req.query.category as string);
+  }
+
+  if (req.query.supplier_id) {
+    where.supplier_id = req.query.supplier_id as string;
+  }
+
+  if (req.query.price_min || req.query.price_max) {
+    where.price = {};
+    if (req.query.price_min) where.price.gte = parseFloat(req.query.price_min as string);
+    if (req.query.price_max) where.price.lte = parseFloat(req.query.price_max as string);
+  }
+
+  if (req.query.in_stock === 'true') {
+    where.quantity = { gt: 0 };
+    where.status = 'available';
+  } else if (req.query.in_stock === 'false') {
+    where.OR = [{ quantity: 0 }, { status: 'out_of_stock' }];
+  }
+
+  if (req.query.search) {
+    const s = req.query.search as string;
+    where.OR = [
+      { name: { contains: s, mode: 'insensitive' } },
+      { description: { contains: s, mode: 'insensitive' } },
+      { brand: { contains: s, mode: 'insensitive' } },
+    ];
+  }
+
+  return where;
+}
+
+// GET /api/products
+router.get('/', validatePagination, asyncHandler(async (req: Request, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+  const where = buildProductWhere(req);
+
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.product.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, products.map(formatProduct), total, page, limit, 'Products retrieved successfully');
+}));
+
+// GET /api/products/:id
+router.get('/:id', validateIdParam, asyncHandler(async (req: Request, res: Response) => {
+  const product = await prisma.product.findUnique({ where: { id: req.params.id } });
+
+  if (!product) {
+    sendNotFound(res, 'Product not found');
     return;
   }
-  next();
-};
 
-/**
- * @route   GET /api/products
- * @desc    Get all products with filters and pagination
- * @access  Public
- */
-router.get(
-  '/',
-  validatePagination,
-  validateCategory,
-  asyncHandler(async (req: Request, res: Response) => {
-    try {
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 20;
-      const skip = (page - 1) * limit;
+  sendSuccess(res, formatProduct(product), 'Product retrieved successfully');
+}));
 
-      // Build filter object
-      const filter: any = { status: { $ne: 'discontinued' } };
+// POST /api/products
+router.post('/', authenticate, authorize('admin', 'shop_manager', 'agent'), validateProductCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { name, category, description, price, quantity, unit, supplier_id, brand, images, specifications } = req.body;
 
-      // Add category filter if provided
-      if (req.query.category) {
-        filter.category = req.query.category;
-      }
+  const existing = await prisma.product.findFirst({ where: { name } });
+  if (existing) {
+    sendError(res, 'Product name already exists', 400);
+    return;
+  }
 
-      // Add supplier filter if provided
-      if (req.query.supplier_id) {
-        filter.supplier_id = req.query.supplier_id;
-      }
+  const categoryCode = (category as string).substring(0, 3).toUpperCase();
+  const nameCode = name.substring(0, 3).toUpperCase().replace(/[^A-Z]/g, '');
+  const timestamp = Date.now().toString().slice(-6);
+  const sku = `${categoryCode}-${nameCode}-${timestamp}`;
 
-      // Add status filter if provided (override default)
-      if (req.query.status) {
-        filter.status = req.query.status;
-      }
+  const productStatus = quantity <= 0 ? 'out_of_stock' : 'available';
 
-      // Add price range filters if provided
-      if (req.query.price_min || req.query.price_max) {
-        filter.price = {};
-        if (req.query.price_min) {
-          filter.price.$gte = parseFloat(req.query.price_min as string);
-        }
-        if (req.query.price_max) {
-          filter.price.$lte = parseFloat(req.query.price_max as string);
-        }
-      }
+  const product = await prisma.product.create({
+    data: {
+      name,
+      category: toCategory(category),
+      description,
+      price,
+      quantity: quantity || 0,
+      unit: unit as any,
+      supplier_id,
+      status: productStatus as any,
+      brand,
+      images: images || [],
+      specifications: specifications || {},
+      sku,
+    },
+  });
 
-      // Add in_stock filter
-      if (req.query.in_stock === 'true') {
-        filter.quantity = { $gt: 0 };
-        filter.status = 'available';
-      } else if (req.query.in_stock === 'false') {
-        filter.$or = [{ quantity: 0 }, { status: 'out_of_stock' }];
-      }
+  // Record initial stock
+  if (product.quantity > 0) {
+    await prisma.stockHistory.create({
+      data: {
+        product_id: product.id,
+        shop_id: product.supplier_id,
+        previous_quantity: 0,
+        new_quantity: product.quantity,
+        change_amount: product.quantity,
+        reason: 'restock',
+        notes: 'Initial stock creation',
+        created_by: req.user?.id,
+      },
+    });
+  }
 
-      // Add search filter if provided
-      if (req.query.search) {
-        const searchRegex = new RegExp(req.query.search as string, 'i');
-        filter.$or = [
-          { name: searchRegex },
-          { description: searchRegex },
-          { brand: searchRegex },
-        ];
-      }
+  sendCreated(res, formatProduct(product), 'Product created successfully');
+}));
 
-      // Get products with pagination
-      const products = await Product.find(filter)
-        .skip(skip)
-        .limit(limit)
-        .sort({ created_at: -1 });
+// PUT /api/products/:id
+router.put('/:id', authenticate, authorize('admin', 'shop_manager', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const productId = req.params.id;
+  const { name, category, ...rest } = req.body;
 
-      // Get total count for pagination
-      const total = await Product.countDocuments(filter);
-
-      // Transform products to public JSON
-      const productData = products.map((product) => product.toPublicJSON());
-
-      sendPaginatedResponse(res, productData, total, page, limit, 'Products retrieved successfully');
-      return;
-    } catch (error) {
-      sendError(res, 'Failed to retrieve products', 500);
+  if (name) {
+    const existing = await prisma.product.findFirst({ where: { name, id: { not: productId } } });
+    if (existing) {
+      sendError(res, 'Product name already exists', 400);
       return;
     }
-  })
-);
+  }
 
-/**
- * @route   GET /api/products/:id
- * @desc    Get product by ID
- * @access  Public
- */
-router.get(
-  '/:id',
-  validateIdParam,
-  asyncHandler(async (req: Request, res: Response) => {
-    try {
-      const productId = req.params.id;
+  const updateData: any = { ...rest };
+  if (name) updateData.name = name;
+  if (category) updateData.category = toCategory(category);
+  if (rest.unit) updateData.unit = rest.unit as any;
 
-      const product = await Product.findById(productId);
-      if (!product) {
-        sendNotFound(res, 'Product not found');
-        return;
-      }
+  // Auto-update status based on quantity
+  if (rest.quantity !== undefined) {
+    if (rest.quantity <= 0) updateData.status = 'out_of_stock';
+    else if (!rest.status) updateData.status = 'available';
+  }
 
-      sendSuccess(res, product.toPublicJSON(), 'Product retrieved successfully');
-      return;
-    } catch (error) {
-      sendError(res, 'Failed to retrieve product', 500);
-      return;
-    }
-  })
-);
+  const product = await prisma.product.update({
+    where: { id: productId },
+    data: updateData,
+  }).catch(() => null);
 
-/**
- * @route   POST /api/products
- * @desc    Create new product (admin, shop managers, and agents)
- * @access  Private (Admin, shop managers, and agents)
- */
-router.post(
-  '/',
-  authenticate,
-  authorize('admin', 'shop_manager', 'agent'),
-  validateProductCreation,
-  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const productData: CreateProductRequest = req.body;
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
 
-      // Check for duplicate product name
-      const existingProduct = await Product.findOne({ name: productData.name });
-      if (existingProduct) {
-        sendError(res, 'Product name already exists', 400);
-        return;
-      }
+  sendSuccess(res, formatProduct(product), 'Product updated successfully');
+}));
 
-      // Create product
-      const product = new Product(productData);
-      await product.save();
+// DELETE /api/products/:id (marks as discontinued)
+router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const product = await prisma.product.update({
+    where: { id: req.params.id },
+    data: { status: 'discontinued' },
+  }).catch(() => null);
 
-      // Initial Stock History
-      if (product.quantity > 0) {
-        await StockHistory.create({
-          product_id: product._id,
-          shop_id: product.supplier_id,
-          previous_quantity: 0,
-          new_quantity: product.quantity,
-          change_amount: product.quantity,
-          reason: 'restock', // Initial stock
-          notes: 'Initial stock creation',
-          created_by: req.user?.id
-        });
-      }
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
 
-      sendCreated(res, product.toPublicJSON(), 'Product created successfully');
-      return;
-    } catch (error) {
-      sendError(res, 'Failed to create product', 500);
-      return;
-    }
-  })
-);
+  sendSuccess(res, formatProduct(product), 'Product discontinued successfully');
+}));
 
-/**
- * @route   PUT /api/products/:id
- * @desc    Update product (admin, shop managers, and agents)
- * @access  Private (Admin, shop managers, and agents)
- */
-router.put(
-  '/:id',
-  authenticate,
-  authorize('admin', 'shop_manager', 'agent'),
-  validateIdParam,
-  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const productId = req.params.id;
-      const updateData: UpdateProductRequest = req.body;
+// PUT /api/products/:id/stock
+router.put('/:id/stock', authenticate, authorize('admin', 'shop_manager', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const productId = req.params.id;
+  const { quantity, reason = 'adjustment', notes } = req.body;
 
-      // Check for duplicate name (if updated)
-      if (updateData.name) {
-        const existingProduct = await Product.findOne({
-          name: updateData.name,
-          _id: { $ne: productId },
-        });
-        if (existingProduct) {
-          sendError(res, 'Product name already exists', 400);
-          return;
-        }
-      }
+  if (!Number.isInteger(quantity) || quantity < 0) {
+    sendError(res, 'Quantity must be a non-negative integer', 400);
+    return;
+  }
 
-      // Update product
-      const product = await Product.findByIdAndUpdate(productId, updateData, {
-        new: true,
-        runValidators: true,
-      });
+  const product = await prisma.product.findUnique({ where: { id: productId } });
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
 
-      if (!product) {
-        sendNotFound(res, 'Product not found');
-        return;
-      }
+  const previousQuantity = product.quantity;
+  const changeAmount = quantity - previousQuantity;
 
-      sendSuccess(res, product.toPublicJSON(), 'Product updated successfully');
-      return;
-    } catch (error) {
-      sendError(res, 'Failed to update product', 500);
-      return;
-    }
-  })
-);
+  const updated = await prisma.product.update({
+    where: { id: productId },
+    data: { quantity, status: quantity > 0 ? 'available' : 'out_of_stock' },
+  });
 
-/**
- * @route   DELETE /api/products/:id
- * @desc    Delete product (admin only)
- * @access  Private (Admin only)
- */
-router.delete(
-  '/:id',
-  authenticate,
-  authorize('admin'),
-  validateIdParam,
-  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const productId = req.params.id;
+  if (changeAmount !== 0) {
+    await prisma.stockHistory.create({
+      data: {
+        product_id: productId,
+        shop_id: product.supplier_id,
+        previous_quantity: previousQuantity,
+        new_quantity: quantity,
+        change_amount: changeAmount,
+        reason: reason as any,
+        notes: notes || 'Manual stock update',
+        created_by: req.user?.id,
+      },
+    });
+  }
 
-      // Instead of deleting, mark as discontinued
-      const product = await Product.findByIdAndUpdate(
-        productId,
-        { status: 'discontinued' },
-        { new: true }
-      );
+  sendSuccess(res, formatProduct(updated), 'Product stock updated successfully');
+}));
 
-      if (!product) {
-        sendNotFound(res, 'Product not found');
-        return;
-      }
+// GET /api/products/:id/stock-history
+router.get('/:id/stock-history', authenticate, authorize('admin', 'shop_manager'), validateIdParam, validatePagination, asyncHandler(async (req: Request, res: Response) => {
+  const productId = req.params.id;
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
 
-      sendSuccess(res, product.toPublicJSON(), 'Product discontinued successfully');
-      return;
-    } catch (error) {
-      sendError(res, 'Failed to discontinue product', 500);
-      return;
-    }
-  })
-);
+  const [history, total] = await Promise.all([
+    prisma.stockHistory.findMany({
+      where: { product_id: productId },
+      include: { creator: { select: { full_name: true, email: true } } },
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { created_at: 'desc' },
+    }),
+    prisma.stockHistory.count({ where: { product_id: productId } }),
+  ]);
 
-/**
- * @route   PUT /api/products/:id/stock
- * @desc    Update product stock (admin, shop managers, and agents)
- * @access  Private (Admin, shop managers, and agents)
- */
-router.put(
-  '/:id/stock',
-  authenticate,
-  authorize('admin', 'shop_manager', 'agent'),
-  validateIdParam,
-  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      const productId = req.params.id;
-      const { quantity, reason = 'adjustment', notes }: StockUpdateRequest & { reason?: string, notes?: string } = req.body;
-
-      // Validate quantity
-      if (!Number.isInteger(quantity) || quantity < 0) {
-        sendError(res, 'Quantity must be a non-negative integer', 400);
-        return;
-      }
-
-      const product = await Product.findById(productId);
-      if (!product) {
-        sendNotFound(res, 'Product not found');
-        return;
-      }
-
-      const previousQuantity = product.quantity;
-      const changeAmount = quantity - previousQuantity;
-
-      // Update product stock
-      product.quantity = quantity;
-      product.status = quantity > 0 ? 'available' : 'out_of_stock';
-      await product.save();
-
-      // Record Stock History
-      if (changeAmount !== 0) {
-        await StockHistory.create({
-          product_id: product._id,
-          shop_id: product.supplier_id,
-          previous_quantity: previousQuantity,
-          new_quantity: quantity,
-          change_amount: changeAmount,
-          reason: reason,
-          notes: notes || 'Manual stock update',
-          created_by: req.user?.id
-        });
-      }
-
-      sendSuccess(res, product.toPublicJSON(), 'Product stock updated successfully');
-      return;
-    } catch (error) {
-      sendError(res, 'Failed to update product stock', 500);
-      return;
-    }
-  })
-);
-
-/**
- * @route   GET /api/products/:id/stock-history
- * @desc    Get product stock history
- * @access  Private (Admin, shop managers)
- */
-router.get(
-  '/:id/stock-history',
-  authenticate,
-  authorize('admin', 'shop_manager'),
-  validateIdParam,
-  validatePagination,
-  asyncHandler(async (req: Request, res: Response) => {
-    try {
-      const productId = req.params.id;
-      const page = parseInt(req.query.page as string) || 1;
-      const limit = parseInt(req.query.limit as string) || 20;
-      const skip = (page - 1) * limit;
-
-      const history = await StockHistory.find({ product_id: productId })
-        .sort({ created_at: -1 })
-        .skip(skip)
-        .limit(limit)
-        .populate('created_by', 'full_name email');
-
-      const total = await StockHistory.countDocuments({ product_id: productId });
-
-      sendPaginatedResponse(res, history, total, page, limit, 'Stock history retrieved successfully');
-    } catch (error) {
-      sendError(res, 'Failed to retrieve stock history', 500);
-    }
-  })
-);
+  sendPaginatedResponse(res, history, total, page, limit, 'Stock history retrieved successfully');
+}));
 
 export default router;

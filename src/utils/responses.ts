@@ -20,7 +20,7 @@ export const sendSuccess = <T>(
   res: Response,
   data: T,
   message: string = 'Request successful',
-  statusCode: HttpStatusCode = HttpStatusCode.OK
+  statusCode: number = HttpStatusCode.OK
 ): Response => {
   const response: SuccessResponse<T> = {
     success: true,
@@ -46,7 +46,7 @@ export const sendSuccess = <T>(
 export const sendError = (
   res: Response,
   message: string = 'An error occurred',
-  statusCode: HttpStatusCode = HttpStatusCode.INTERNAL_SERVER_ERROR,
+  statusCode: number = HttpStatusCode.INTERNAL_SERVER_ERROR,
   errors?: ValidationError[]
 ): Response => {
   const response: ErrorResponse = {
@@ -58,12 +58,6 @@ export const sendError = (
       version: env.APP_VERSION,
     }
   };
-
-  // For development, include stack trace
-  if (env.NODE_ENV === 'development' && statusCode === HttpStatusCode.INTERNAL_SERVER_ERROR) {
-    // In a real application, you might want to log the error here
-    console.error('Server Error:', message);
-  }
 
   return res.status(statusCode).json(response);
 };

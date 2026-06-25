@@ -1,5 +1,3 @@
-import { Document } from 'mongoose';
-
 // Supplier Status
 export type SupplierStatus = 'active' | 'inactive' | 'pending_approval' | 'suspended';
 
@@ -15,7 +13,7 @@ export type SupplierCategory =
   | 'other';
 
 // Base Supplier Interface
-export interface ISupplier extends Document {
+export interface ISupplier {
   _id: string;
   name: string;
   category: SupplierCategory;
@@ -67,7 +65,7 @@ export type TransactionStatus = 'pending' | 'completed' | 'failed' | 'cancelled'
 export type PaymentMethod = 'cash' | 'mobile_money' | 'bank_transfer' | 'credit_card' | 'debit_card' | 'check';
 
 // Base Transaction Interface
-export interface ITransaction extends Document {
+export interface ITransaction {
   _id: string;
   transaction_number: string;
   order_id?: string;

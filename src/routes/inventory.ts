@@ -1,198 +1,143 @@
 import { Router, Response } from 'express';
-import { Product } from '../models/Product';
-import { StockHistory } from '../models/StockHistory';
+import { prisma } from '../lib/prisma';
+import { validateIdParam, validatePagination } from '../middleware/validation';
+import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
-import { asyncHandler } from '../utils/asyncHandler';
-import { sendSuccess, sendError, sendPaginatedResponse, sendNotFound } from '../utils/responses';
+import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
 
-/**
- * @route   GET /api/inventory
- * @desc    Get all inventory (Admin only)
- * @access  Private (Admin)
- */
-router.get('/', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
-        const skip = (page - 1) * limit;
+// GET /api/inventory
+router.get('/', authenticate, authorize('admin'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
 
-        const products = await Product.find()
-            .skip(skip)
-            .limit(limit)
-            .sort({ created_at: -1 });
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({ skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.product.count(),
+  ]);
 
-        const total = await Product.countDocuments();
-        const inventoryData = products.map(p => ({
-            ...p.toPublicJSON(),
-            stockStatus: (p as any).stockStatus // Use virtual
-        }));
-
-        sendPaginatedResponse(res, inventoryData, total, page, limit, 'Inventory retrieved successfully');
-    } catch (error) {
-        sendError(res, 'Failed to retrieve inventory', 500);
-    }
+  sendPaginatedResponse(res, products, total, page, limit, 'Inventory retrieved successfully');
 }));
 
-/**
- * @route   GET /api/inventory/low-stock
- * @desc    Get low stock items
- * @access  Private (Admin, Shop Manager)
- */
+// GET /api/inventory/low-stock
 router.get('/low-stock', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const threshold = parseInt(req.query.threshold as string) || 10;
+  const threshold = parseInt(req.query.threshold as string) || 10;
+  const where: any = {
+    quantity: { lte: threshold, gt: 0 },
+    status: 'available',
+  };
 
-        // If shop manager, filter by their shop
-        const query: any = {
-            quantity: { $lte: threshold, $gt: 0 },
-            status: 'available'
-        };
+  if (req.query.shopId) where.supplier_id = req.query.shopId;
 
-        // Note: Assuming shop manager can only see their own low stock if logic requires
-        // But spec says "Admin, Shop Manager" - general endpoint? 
-        // Usually Shop Manager should only see their own.
-        // However, Product.supplier_id is string. 
-        // If we want to strictly filter for Shop Manager:
-        /* 
-        if (req.user?.role === 'shop_manager') {
-           // Need to find shop ID associated with user or assume filtering by query param?
-           // For now, returning all low stock for Admin, but Shop Manager might see all?
-           // Let's implement filtering if supplier_id query param matches?
-           // Strict implementation:
-           // query.supplier_id = <shop_id associated with user>
-        }
-        */
+  const products = await prisma.product.findMany({ where, orderBy: { quantity: 'asc' } });
 
-        if (req.query.shopId) {
-            query.supplier_id = req.query.shopId;
-        }
-
-        const products = await Product.find(query).sort({ quantity: 1 });
-
-        sendSuccess(res, products.map(p => p.toPublicJSON()), 'Low stock items retrieved');
-    } catch (error) {
-        sendError(res, 'Failed to retrieve low stock items', 500);
-    }
+  sendSuccess(res, products, 'Low stock items retrieved');
 }));
 
-/**
- * @route   GET /api/inventory/out-of-stock
- * @desc    Get out of stock items
- * @access  Private (Admin, Shop Manager)
- */
+// GET /api/inventory/out-of-stock
 router.get('/out-of-stock', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const query: any = {
-            $or: [
-                { quantity: 0 },
-                { status: 'out_of_stock' }
-            ]
-        };
+  const products = await prisma.product.findMany({
+    where: { OR: [{ quantity: 0 }, { status: 'out_of_stock' }] },
+    orderBy: { updated_at: 'desc' },
+  });
 
-        if (req.query.shopId) {
-            query.supplier_id = req.query.shopId;
-        }
-
-        const products = await Product.find(query).sort({ updated_at: -1 });
-
-        sendSuccess(res, products.map(p => p.toPublicJSON()), 'Out of stock items retrieved');
-    } catch (error) {
-        sendError(res, 'Failed to retrieve out of stock items', 500);
-    }
+  sendSuccess(res, products, 'Out of stock items retrieved');
 }));
 
-/**
- * @route   POST /api/inventory/stock-adjustment
- * @desc    Adjust stock (Admin, Shop Manager)
- * @access  Private (Admin, Shop Manager)
- */
-router.post('/stock-adjustment', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { productId, quantity, reason, notes } = req.body;
+// GET /api/inventory/summary — must be defined BEFORE /:id to avoid route shadowing
+router.get('/summary', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
+  const [total, available, outOfStock, lowStock, discontinued] = await Promise.all([
+    prisma.product.count(),
+    prisma.product.count({ where: { status: 'available' } }),
+    prisma.product.count({ where: { status: 'out_of_stock' } }),
+    prisma.product.count({ where: { quantity: { lte: 10, gt: 0 }, status: 'available' } }),
+    prisma.product.count({ where: { status: 'discontinued' } }),
+  ]);
 
-        if (!productId || typeof quantity !== 'number') {
-            sendError(res, 'Product ID and quantity are required', 400);
-            return;
-        }
+  const totalValue = await prisma.product.aggregate({
+    _sum: { price: true, quantity: true },
+    where: { status: { not: 'discontinued' } },
+  });
 
-        const product = await Product.findById(productId);
-        if (!product) {
-            sendNotFound(res, 'Product not found');
-            return;
-        }
-
-        // Logic: quantity is the CHANGE amount or NEW amount?
-        // Spec says "Adjust stock". Usually implies +/- or set.
-        // Let's assume input 'quantity' is the CHANGE (+10 or -5).
-        // Or we can support 'operation' field.
-        // Let's assume 'quantity' is the new absolute value to match `products.ts` PUT /stock logic?
-        // Actually, `POST` usually implies an action.
-        // Let's implement delta adjustment here to be different/useful.
-        // "adjustment" usually means + / -.
-
-        const previousQuantity = product.quantity;
-        const newQuantity = previousQuantity + quantity;
-
-        if (newQuantity < 0) {
-            sendError(res, 'Adjustment would result in negative stock', 400);
-            return;
-        }
-
-        product.quantity = newQuantity;
-        product.status = newQuantity > 0 ? 'available' : 'out_of_stock';
-        await product.save();
-
-        // Record history
-        await StockHistory.create({
-            product_id: product._id,
-            shop_id: product.supplier_id,
-            previous_quantity: previousQuantity,
-            new_quantity: newQuantity,
-            change_amount: quantity,
-            reason: reason || 'adjustment',
-            notes: notes || 'Manual adjustment via inventory',
-            created_by: req.user?.id
-        });
-
-        sendSuccess(res, product.toPublicJSON(), 'Stock adjusted successfully');
-    } catch (error) {
-        sendError(res, 'Failed to adjust stock', 500);
-    }
+  sendSuccess(res, {
+    total_products: total,
+    available: available,
+    out_of_stock: outOfStock,
+    low_stock: lowStock,
+    discontinued: discontinued,
+    total_value: (totalValue._sum.price || 0) * (totalValue._sum.quantity || 0),
+  }, 'Inventory summary retrieved successfully');
 }));
 
-/**
- * @route   GET /api/inventory/valuation
- * @desc    Get inventory valuation
- * @access  Private (Admin, Shop Manager)
- */
-router.get('/valuation', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const query: any = { status: { $ne: 'discontinued' } };
+// GET /api/inventory/:id
+router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const product = await prisma.product.findUnique({ where: { id: req.params.id } });
 
-        if (req.query.shopId) {
-            query.supplier_id = req.query.shopId;
-        }
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
 
-        const products = await Product.find(query);
+  sendSuccess(res, product, 'Product retrieved successfully');
+}));
 
-        const valuation = products.reduce((acc, curr) => {
-            return acc + (curr.price * curr.quantity);
-        }, 0);
+// PUT /api/inventory/:id/restock
+router.put('/:id/restock', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { quantity, notes } = req.body;
+  const productId = req.params.id;
 
-        const totalItems = products.reduce((acc, curr) => acc + curr.quantity, 0);
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    sendError(res, 'Restock quantity must be a positive integer', 400);
+    return;
+  }
 
-        sendSuccess(res, {
-            totalValue: valuation,
-            totalAttributes: products.length,
-            totalItems: totalItems,
-            currency: 'RWF' // Assuming currency
-        }, 'Inventory valuation retrieved');
-    } catch (error) {
-        sendError(res, 'Failed to retrieve valuation', 500);
-    }
+  const product = await prisma.product.findUnique({ where: { id: productId } });
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
+
+  const newQuantity = product.quantity + quantity;
+
+  const [updated] = await Promise.all([
+    prisma.product.update({
+      where: { id: productId },
+      data: { quantity: newQuantity, status: 'available' },
+    }),
+    prisma.stockHistory.create({
+      data: {
+        product_id: productId,
+        previous_quantity: product.quantity,
+        new_quantity: newQuantity,
+        change_amount: quantity,
+        reason: 'restock',
+        notes: notes || 'Manual restock',
+        created_by: req.user?.id,
+      },
+    }),
+  ]);
+
+  sendSuccess(res, updated, 'Product restocked successfully');
+}));
+
+// GET /api/inventory/:id/history
+router.get('/:id/history', authenticate, authorize('admin', 'shop_manager'), validateIdParam, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+
+  const [history, total] = await Promise.all([
+    prisma.stockHistory.findMany({
+      where: { product_id: req.params.id },
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { created_at: 'desc' },
+    }),
+    prisma.stockHistory.count({ where: { product_id: req.params.id } }),
+  ]);
+
+  sendPaginatedResponse(res, history, total, page, limit, 'Stock history retrieved successfully');
 }));
 
 export default router;

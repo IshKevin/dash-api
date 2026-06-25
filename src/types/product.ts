@@ -1,5 +1,3 @@
-import { Document } from 'mongoose';
-
 // Product Status
 export type ProductStatus = 'available' | 'out_of_stock' | 'discontinued';
 
@@ -12,7 +10,7 @@ export type ProductCategory =
   | 'protection';
 
 // Base Product Interface
-export interface IProduct extends Document {
+export interface IProduct {
   _id: string;
   name: string;
   category: ProductCategory;

@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { sendError, sendNotFound } from '../utils/responses';
 import { HttpStatusCode } from '../types/api';
+import { Prisma } from '@prisma/client';
+import logger from '../config/logger';
 
 /**
  * Handle 404 errors
@@ -25,44 +27,39 @@ export const errorHandler = (
   res: Response,
   _next: NextFunction
 ): void => {
-  // Log error for debugging (in production, use a proper logging solution)
-  console.error('Error occurred:', {
+  logger.error('Unhandled error', {
     message: err.message,
     stack: err.stack,
     url: _req.url,
     method: _req.method,
     ip: _req.ip,
-    userAgent: _req.get('User-Agent')
+    userAgent: _req.get('User-Agent'),
   });
 
-  // Mongoose validation error
-  if (err.name === 'ValidationError') {
-    const errors = Object.values(err.errors).map((e: any) => ({
-      field: e.path,
-      message: e.message,
-      value: e.value
-    }));
-    
-    sendError(res, 'Validation failed', HttpStatusCode.BAD_REQUEST, errors);
-    return;
-  }
-
-  // Mongoose duplicate key error
-  if (err.code === 11000) {
-    const fieldKeys = Object.keys(err.keyValue);
-    const field = fieldKeys.length > 0 ? fieldKeys[0] : 'field';
-    if (field) {
+  // Prisma unique constraint violation
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === 'P2002') {
+      const fields = (err.meta?.target as string[]) ?? [];
+      const field = fields[0] ?? 'field';
       const message = `${field.charAt(0).toUpperCase() + field.slice(1)} already exists`;
       sendError(res, message, HttpStatusCode.CONFLICT);
-    } else {
-      sendError(res, 'Duplicate key error', HttpStatusCode.CONFLICT);
+      return;
     }
+    if (err.code === 'P2025') {
+      sendError(res, 'Record not found', HttpStatusCode.NOT_FOUND);
+      return;
+    }
+    if (err.code === 'P2003') {
+      sendError(res, 'Invalid reference: related record not found', HttpStatusCode.BAD_REQUEST);
+      return;
+    }
+    sendError(res, 'Database error', HttpStatusCode.INTERNAL_SERVER_ERROR);
     return;
   }
 
-  // Mongoose cast error (invalid ID format)
-  if (err.name === 'CastError') {
-    sendError(res, 'Invalid ID format', HttpStatusCode.BAD_REQUEST);
+  // Prisma validation error
+  if (err instanceof Prisma.PrismaClientValidationError) {
+    sendError(res, 'Invalid data provided', HttpStatusCode.BAD_REQUEST);
     return;
   }
 
@@ -102,34 +99,16 @@ export const asyncHandler = (fn: Function) => {
  * @param err - Error object
  */
 export const handleDatabaseError = (err: any): void => {
-  console.error('Database connection error:', err);
-  
-  // In a real application, you might want to:
-  // 1. Send alerts to monitoring systems
-  // 2. Attempt to reconnect
-  // 3. Gracefully shut down the application
-  // 4. Notify administrators
+  logger.error('Database connection error', { error: err });
 };
 
-/**
- * Handle unhandled promise rejections
- */
 export const handleUnhandledRejection = (reason: any, promise: Promise<any>): void => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  
-  // Application specific logging, throwing an error, or other logic here
-  console.error('Unhandled promise rejection detected. Shutting down...');
+  logger.error('Unhandled promise rejection', { promise, reason });
   process.exit(1);
 };
 
-/**
- * Handle uncaught exceptions
- */
 export const handleUncaughtException = (err: Error): void => {
-  console.error('Uncaught Exception:', err);
-  
-  // Application specific logging, throwing an error, or other logic here
-  console.error('Uncaught exception detected. Shutting down...');
+  logger.error('Uncaught exception', { error: err });
   process.exit(1);
 };
 

@@ -1,4 +1,3 @@
-import { Document } from 'mongoose';
 import { UserRole as AuthUserRole, UserStatus as AuthUserStatus, UserProfile as AuthUserProfile } from './auth';
 
 // Re-export the types with proper names
@@ -7,7 +6,7 @@ export type UserStatus = AuthUserStatus;
 export type UserProfile = AuthUserProfile;
 
 // Base User Interface
-export interface IUser extends Document {
+export interface IUser {
   _id: string;
   email: string;
   password: string;

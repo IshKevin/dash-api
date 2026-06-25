@@ -1,5 +1,3 @@
-import { Document } from 'mongoose';
-
 // Service Request Status
 export type ServiceRequestStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'cancelled' | 'on_hold';
 
@@ -24,7 +22,7 @@ export type ServiceType =
   | 'other';
 
 // Base Service Request Interface
-export interface IServiceRequest extends Document {
+export interface IServiceRequest {
   _id: string;
   request_number: string;
   farmer_id: string;

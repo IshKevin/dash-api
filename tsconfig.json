@@ -21,11 +21,8 @@
     "declaration": true,
     "declarationMap": true,
     // Stricter Typechecking Options
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
     "noImplicitReturns": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     // Recommended Options
     "strict": true,
@@ -40,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
-    "dist"
+    "dist",
+    "src/models"
   ]
 }

@@ -1,789 +1,356 @@
 import { Router, Response } from 'express';
-import { User } from '../models/User';
-import { 
-  validateIdParam, 
+import bcrypt from 'bcryptjs';
+import { prisma } from '../lib/prisma';
+import {
+  validateIdParam,
   validateUserProfileUpdate,
   validatePagination,
-  validateFarmerProfile
+  validateFarmerProfile,
 } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize, adminOnly, simpleAuth, simpleAdminOnly } from '../middleware/auth';
 import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
-import { UpdateUserRequest, UserRole, UserStatus } from '../types/user';
 import { AuthenticatedRequest } from '../types/auth';
+import { env } from '../config/environment';
 
 const router = Router();
 
-/**
- * Helper function to transform user profile to match frontend expectations
- */
-function transformUserProfileForResponse(user: any) {
-  if (!user.profile) {
-    return user;
+const userSelect = {
+  id: true, email: true, full_name: true, phone: true,
+  role: true, status: true, profile: true,
+  qr_code_token: true, created_at: true, updated_at: true,
+};
+
+function buildSearchWhere(req: any, baseWhere: any = {}) {
+  const where: any = { ...baseWhere };
+
+  if (req.query.role) where.role = req.query.role;
+  if (req.query.status) where.status = req.query.status;
+
+  if (req.query.search) {
+    const s = req.query.search as string;
+    where.OR = [
+      { full_name: { contains: s, mode: 'insensitive' } },
+      { email: { contains: s, mode: 'insensitive' } },
+    ];
   }
 
-  // Create flattened structure for farmers
-  if (user.role === 'farmer') {
-    return {
-      ...user,
-      profile: {
-        ...user.profile,
-        // Ensure flattened farm details are available
-        farm_age: user.profile.farm_age || user.profile.farm_details?.farm_age,
-        planted: user.profile.planted || user.profile.farm_details?.planted,
-        avocado_type: user.profile.avocado_type || user.profile.farm_details?.avocado_type,
-        mixed_percentage: user.profile.mixed_percentage || user.profile.farm_details?.mixed_percentage,
-        farm_size: user.profile.farm_size || user.profile.farm_details?.farm_size,
-        tree_count: user.profile.tree_count || user.profile.farm_details?.tree_count,
-        upi_number: user.profile.upi_number || user.profile.farm_details?.upi_number,
-        assistance: user.profile.assistance || user.profile.farm_details?.assistance,
-        // Ensure flattened farm location
-        farm_province: user.profile.farm_province || user.profile.farm_details?.farm_location?.province,
-        farm_district: user.profile.farm_district || user.profile.farm_details?.farm_location?.district,
-        farm_sector: user.profile.farm_sector || user.profile.farm_details?.farm_location?.sector,
-        farm_cell: user.profile.farm_cell || user.profile.farm_details?.farm_location?.cell,
-        farm_village: user.profile.farm_village || user.profile.farm_details?.farm_location?.village,
-      }
-    };
-  }
-
-  return user;
+  return where;
 }
 
-/**
- * @route   GET /api/users
- * @desc    Get all users (admin only)
- * @access  Private (Admin only)
- */
+// GET /api/users
 router.get('/', simpleAuth, simpleAdminOnly, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Build filter object
-    const filter: any = {};
-    
-    // Add role filter if provided
-    if (req.query.role) {
-      filter.role = req.query.role;
-    }
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add search filter if provided
-    if (req.query.search) {
-      const searchRegex = new RegExp(req.query.search as string, 'i');
-      filter.$or = [
-        { full_name: searchRegex },
-        { email: searchRegex },
-      ];
-    }
-    
-    // Get users with pagination
-    const users = await User.find(filter)
-      .select('-password')
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await User.countDocuments(filter);
-    
-    // Transform users to public JSON
-    const userData = users.map(user => user.toPublicJSON());
-    
-    sendPaginatedResponse(res, userData, total, page, limit, 'Users retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve users', 500);
-    return;
-  }
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const where = buildSearchWhere(req);
+
+  const [users, total] = await Promise.all([
+    prisma.user.findMany({ where, select: userSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.user.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, users, total, page, limit, 'Users retrieved successfully');
 }));
 
-/**
- * @route   GET /api/users/farmers
- * @desc    Get all farmers (admin and agents only)
- * @access  Private (Admin and agents)
- */
+// GET /api/users/farmers
 router.get('/farmers', authenticate, authorize('admin', 'agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Build filter for farmers
-    const filter: any = { role: 'farmer' };
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add search filter if provided
-    if (req.query.search) {
-      const searchRegex = new RegExp(req.query.search as string, 'i');
-      filter.$or = [
-        { full_name: searchRegex },
-        { email: searchRegex },
-      ];
-    }
-    
-    // Get farmers with pagination
-    const farmers = await User.find(filter)
-      .select('-password')
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await User.countDocuments(filter);
-    
-    // Transform farmers to public JSON
-    const farmerData = farmers.map(user => user.toPublicJSON());
-    
-    sendPaginatedResponse(res, farmerData, total, page, limit, 'Farmers retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve farmers', 500);
-    return;
-  }
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const where = buildSearchWhere(req, { role: 'farmer' });
+
+  const [farmers, total] = await Promise.all([
+    prisma.user.findMany({ where, select: userSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.user.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, farmers, total, page, limit, 'Farmers retrieved successfully');
 }));
 
-/**
- * @route   POST /api/users/farmers
- * @desc    Create new farmer (admin only)
- * @access  Private (Admin only)
- */
+// POST /api/users/farmers
 router.post('/farmers', authenticate, adminOnly, validateFarmerProfile, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const {
-      full_name,
-      email,
-      age,
-      phone,
-      gender,
-      marital_status,
-      education_level,
-      // Personal location
-      province,
-      district,
-      sector,
-      cell,
-      village,
-      // Farm location
-      farm_province,
-      farm_district,
-      farm_sector,
-      farm_cell,
-      farm_village,
-      // Farm details
-      farm_age,
-      planted,
-      avocado_type,
-      mixed_percentage,
-      farm_size,
-      tree_count,
-      upi_number,
-      assistance
-    } = req.body;
-    
-    // Validate required fields
-    if (!full_name || !email || !gender) {
-      sendError(res, 'Full name, email, and gender are required', 400);
-      return;
-    }
-    
-    // Check if user with this email already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      sendError(res, 'User with this email already exists', 400);
-      return;
-    }
-    
-    // Create farmer with default password
-    const defaultPassword = 'FarmerPass123!';
-    
-    const farmerData = {
-      email: email.toLowerCase().trim(),
-      password: defaultPassword,
-      full_name: full_name.trim(),
-      phone: phone?.trim() || undefined,
-      role: 'farmer' as UserRole,
-      status: 'active' as UserStatus,
-      profile: {
-        age: age || undefined,
-        gender: gender,
-        marital_status: marital_status || undefined,
-        education_level: education_level || undefined,
-        // Personal location
-        province: province?.trim() || undefined,
-        district: district?.trim() || undefined,
-        sector: sector?.trim() || undefined,
-        cell: cell?.trim() || undefined,
-        village: village?.trim() || undefined,
-        // Flattened farm details for easier frontend access
-        farm_age: farm_age || undefined,
-        planted: planted || undefined,
-        avocado_type: avocado_type || undefined,
-        mixed_percentage: mixed_percentage || undefined,
-        farm_size: farm_size || undefined,
-        tree_count: tree_count || undefined,
-        upi_number: upi_number?.trim() || undefined,
-        assistance: assistance || undefined,
-        // Farm location (flattened)
-        farm_province: farm_province?.trim() || undefined,
-        farm_district: farm_district?.trim() || undefined,
-        farm_sector: farm_sector?.trim() || undefined,
-        farm_cell: farm_cell?.trim() || undefined,
-        farm_village: farm_village?.trim() || undefined,
-        // Keep nested structure for backward compatibility
-        farm_details: {
-          farm_location: {
-            province: farm_province?.trim() || undefined,
-            district: farm_district?.trim() || undefined,
-            sector: farm_sector?.trim() || undefined,
-            cell: farm_cell?.trim() || undefined,
-            village: farm_village?.trim() || undefined,
-          },
-          farm_age: farm_age || undefined,
-          planted: planted || undefined,
-          avocado_type: avocado_type || undefined,
-          mixed_percentage: mixed_percentage || undefined,
-          farm_size: farm_size || undefined,
-          tree_count: tree_count || undefined,
-          upi_number: upi_number?.trim() || undefined,
-          assistance: assistance || undefined
-        }
-      }
-    };
-    
-    // Create new farmer
-    const farmer = new User(farmerData);
-    await farmer.save();
-    
-    // Return success response with farmer data (excluding password)
-    sendSuccess(res, {
-      ...farmer.toPublicJSON(),
-      default_password: defaultPassword // Include default password in response for admin
-    }, 'Farmer created successfully');
-    return;
-    
-  } catch (error: any) {
-    // Handle validation errors
-    if (error.name === 'ValidationError') {
-      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
-      sendError(res, `Validation error: ${validationErrors.join(', ')}`, 400);
-      return;
-    }
-    
-    // Handle duplicate email error
-    if (error.code === 11000 && error.keyPattern?.email) {
-      sendError(res, 'User with this email already exists', 400);
-      return;
-    }
-    
-    console.error('Error creating farmer:', error);
-    sendError(res, 'Failed to create farmer', 500);
+  const {
+    full_name, email, age, phone, gender, marital_status, education_level,
+    province, district, sector, cell, village,
+    farm_province, farm_district, farm_sector, farm_cell, farm_village,
+    farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number, assistance,
+  } = req.body;
+
+  if (!full_name || !email || !gender) {
+    sendError(res, 'Full name, email, and gender are required', 400);
     return;
   }
+
+  const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  if (existing) {
+    sendError(res, 'User with this email already exists', 400);
+    return;
+  }
+
+  const defaultPassword = 'FarmerPass123!';
+  const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
+
+  const profile = {
+    age, gender, marital_status, education_level,
+    province, district, sector, cell, village,
+    farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number, assistance,
+    farm_province, farm_district, farm_sector, farm_cell, farm_village,
+    farm_details: {
+      farm_location: { province: farm_province, district: farm_district, sector: farm_sector, cell: farm_cell, village: farm_village },
+      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number, assistance,
+    },
+  };
+
+  const farmer = await prisma.user.create({
+    data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: 'farmer', status: 'active', profile },
+    select: userSelect,
+  });
+
+  sendSuccess(res, { ...farmer, default_password: defaultPassword }, 'Farmer created successfully');
 }));
 
-/**
- * @route   GET /api/users/agents
- * @desc    Get all agents (admin only)
- * @access  Private (Admin only)
- */
+// GET /api/users/agents
 router.get('/agents', authenticate, authorize('admin'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Build filter for agents
-    const filter: any = { role: 'agent' };
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add search filter if provided
-    if (req.query.search) {
-      const searchRegex = new RegExp(req.query.search as string, 'i');
-      filter.$or = [
-        { full_name: searchRegex },
-        { email: searchRegex },
-      ];
-    }
-    
-    // Get agents with pagination
-    const agents = await User.find(filter)
-      .select('-password')
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await User.countDocuments(filter);
-    
-    // Transform agents to public JSON
-    const agentData = agents.map(user => user.toPublicJSON());
-    
-    sendPaginatedResponse(res, agentData, total, page, limit, 'Agents retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve agents', 500);
-    return;
-  }
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const where = buildSearchWhere(req, { role: 'agent' });
+
+  const [agents, total] = await Promise.all([
+    prisma.user.findMany({ where, select: userSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.user.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, agents, total, page, limit, 'Agents retrieved successfully');
 }));
 
-/**
- * @route   GET /api/users/shop-managers
- * @desc    Get all shop managers (admin only)
- * @access  Private (Admin only)
- */
+// POST /api/users/agents
+router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { full_name, email, phone, province, district, sector } = req.body;
+
+  if (!full_name || !email) {
+    sendError(res, 'Full name and email are required', 400);
+    return;
+  }
+
+  const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  if (existing) {
+    sendError(res, 'User with this email already exists', 400);
+    return;
+  }
+
+  const defaultPassword = 'AgentPass123!';
+  const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
+
+  const agent = await prisma.user.create({
+    data: {
+      email: email.toLowerCase(), password: hashed, full_name, phone, role: 'agent', status: 'active',
+      profile: { province, district, service_areas: sector ? [sector] : [] },
+    },
+    select: userSelect,
+  });
+
+  sendSuccess(res, { ...agent, default_password: defaultPassword }, 'Agent created successfully');
+}));
+
+// GET /api/users/shop-managers
 router.get('/shop-managers', authenticate, authorize('admin'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
-    
-    // Build filter for shop managers
-    const filter: any = { role: 'shop_manager' };
-    
-    // Add status filter if provided
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-    
-    // Add search filter if provided
-    if (req.query.search) {
-      const searchRegex = new RegExp(req.query.search as string, 'i');
-      filter.$or = [
-        { full_name: searchRegex },
-        { email: searchRegex },
-      ];
-    }
-    
-    // Get shop managers with pagination
-    const shopManagers = await User.find(filter)
-      .select('-password')
-      .skip(skip)
-      .limit(limit)
-      .sort({ created_at: -1 });
-    
-    // Get total count for pagination
-    const total = await User.countDocuments(filter);
-    
-    // Transform shop managers to public JSON
-    const shopManagerData = shopManagers.map(user => user.toPublicJSON());
-    
-    sendPaginatedResponse(res, shopManagerData, total, page, limit, 'Shop managers retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve shop managers', 500);
-    return;
-  }
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const where = buildSearchWhere(req, { role: 'shop_manager' });
+
+  const [managers, total] = await Promise.all([
+    prisma.user.findMany({ where, select: userSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.user.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, managers, total, page, limit, 'Shop managers retrieved successfully');
 }));
 
-// IMPORTANT: All specific routes (like /agents, /farmers) must come BEFORE parameterized routes (like /:id)
-
-/**
- * @route   GET /api/users/me
- * @desc    Get current user profile
- * @access  Private
- */
+// GET /api/users/me
 router.get('/me', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const user = await User.findById(req.user?.id).select('-password');
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
+  const user = await prisma.user.findUnique({ where: { id: req.user?.id }, select: userSelect });
 
-    // Transform the response to match frontend expectations
-    const transformedProfile = transformUserProfileForResponse(user.toPublicJSON());
-    sendSuccess(res, transformedProfile, 'Profile retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve profile', 500);
+  if (!user) {
+    sendNotFound(res, 'User not found');
     return;
   }
+
+  sendSuccess(res, user, 'Profile retrieved successfully');
 }));
 
-/**
- * @route   PUT /api/users/me
- * @desc    Update current user profile
- * @access  Private
- */
+// PUT /api/users/me
 router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.user?.id;
-    const updateData = req.body;
-    
-    // Remove sensitive fields that shouldn't be updated via this endpoint
+  const userId = req.user?.id;
+  const updateData = req.body;
+
+  delete updateData.role;
+  delete updateData.status;
+  delete updateData.password;
+  delete updateData.email;
+
+  const existing = await prisma.user.findUnique({ where: { id: userId }, select: { profile: true } });
+
+  const data: any = {};
+  if (updateData.full_name) data.full_name = updateData.full_name.trim();
+  if (updateData.phone) data.phone = updateData.phone.trim();
+
+  if (req.user?.role === 'farmer') {
+    data.profile = {
+      ...(existing?.profile as any || {}),
+      age: updateData.age,
+      gender: updateData.gender,
+      marital_status: updateData.marital_status,
+      education_level: updateData.education_level,
+      id_number: updateData.id_number,
+      province: updateData.province,
+      district: updateData.district,
+      sector: updateData.sector,
+      cell: updateData.cell,
+      village: updateData.village,
+      farm_age: updateData.farm_age,
+      planted: updateData.planted,
+      avocado_type: updateData.avocado_type,
+      mixed_percentage: updateData.mixed_percentage,
+      farm_size: updateData.farm_size,
+      tree_count: updateData.tree_count,
+      upi_number: updateData.upi_number,
+      assistance: updateData.assistance,
+      farm_province: updateData.farm_province,
+      farm_district: updateData.farm_district,
+      farm_sector: updateData.farm_sector,
+      farm_cell: updateData.farm_cell,
+      farm_village: updateData.farm_village,
+    };
+  } else {
+    if (updateData.profile) {
+      data.profile = { ...(existing?.profile as any || {}), ...updateData.profile };
+    }
+  }
+
+  const user = await prisma.user.update({ where: { id: userId }, data, select: userSelect });
+
+  sendSuccess(res, user, 'Profile updated successfully');
+}));
+
+// GET /api/users/:id
+router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const user = await prisma.user.findUnique({ where: { id: req.params.id }, select: userSelect });
+
+  if (!user) {
+    sendNotFound(res, 'User not found');
+    return;
+  }
+
+  sendSuccess(res, user, 'User retrieved successfully');
+}));
+
+// PUT /api/users/:id
+router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.params.id;
+  const updateData = req.body;
+
+  if (req.user?.id !== userId && req.user?.role !== 'admin') {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
+  if (req.user?.role !== 'admin') {
     delete updateData.role;
     delete updateData.status;
-    delete updateData.password;
-    delete updateData.email; // Email changes should go through a separate verification process
-    
-    // Structure the profile data correctly
-    if (req.user?.role === 'farmer') {
-      const profileData = {
-        full_name: updateData.full_name?.trim(),
-        phone: updateData.phone?.trim(),
-        profile: {
-          age: updateData.age,
-          gender: updateData.gender,
-          marital_status: updateData.marital_status,
-          education_level: updateData.education_level,
-          id_number: updateData.id_number?.trim(),
-          image: updateData.image,
-          // Personal location
-          province: updateData.province?.trim(),
-          district: updateData.district?.trim(),
-          sector: updateData.sector?.trim(),
-          cell: updateData.cell?.trim(),
-          village: updateData.village?.trim(),
-          // Flattened farm details for easier frontend access
-          farm_age: updateData.farm_age,
-          planted: updateData.planted,
-          avocado_type: updateData.avocado_type,
-          mixed_percentage: updateData.mixed_percentage,
-          farm_size: updateData.farm_size,
-          tree_count: updateData.tree_count,
-          upi_number: updateData.upi_number?.trim(),
-          assistance: updateData.assistance,
-          // Farm location (flattened)
-          farm_province: updateData.farm_province?.trim(),
-          farm_district: updateData.farm_district?.trim(),
-          farm_sector: updateData.farm_sector?.trim(),
-          farm_cell: updateData.farm_cell?.trim(),
-          farm_village: updateData.farm_village?.trim(),
-          // Keep nested structure for backward compatibility
-          farm_details: {
-            farm_location: {
-              province: updateData.farm_province?.trim() || undefined,
-              district: updateData.farm_district?.trim() || undefined,
-              sector: updateData.farm_sector?.trim() || undefined,
-              cell: updateData.farm_cell?.trim() || undefined,
-              village: updateData.farm_village?.trim() || undefined,
-            },
-            farm_age: updateData.farm_age || undefined,
-            planted: updateData.planted || undefined,
-            avocado_type: updateData.avocado_type || undefined,
-            mixed_percentage: updateData.mixed_percentage || undefined,
-            farm_size: updateData.farm_size || undefined,
-            tree_count: updateData.tree_count || undefined,
-            upi_number: updateData.upi_number?.trim() || undefined,
-            assistance: updateData.assistance || undefined
-          }
-        }
-      };
-      
-      const user = await User.findByIdAndUpdate(
-        userId,
-        profileData,
-        { new: true, runValidators: true }
-      ).select('-password');
-      
-      if (!user) {
-        sendNotFound(res, 'User not found');
-        return;
-      }
+  }
 
-      // Transform the response to match frontend expectations
-      const transformedProfile = transformUserProfileForResponse(user.toPublicJSON());
-      sendSuccess(res, transformedProfile, 'Profile updated successfully');
-      return;
-    } else {
-      // For non-farmer users, update basic profile
-      const user = await User.findByIdAndUpdate(
-        userId,
-        {
-          full_name: updateData.full_name?.trim(),
-          phone: updateData.phone?.trim(),
-          profile: {
-            ...updateData.profile
-          }
-        },
-        { new: true, runValidators: true }
-      ).select('-password');
-      
-      if (!user) {
-        sendNotFound(res, 'User not found');
-        return;
-      }
+  delete updateData.password;
 
-      sendSuccess(res, user.toPublicJSON(), 'Profile updated successfully');
-      return;
-    }
-  } catch (error: any) {
-    console.error('Error updating profile:', error);
-    
-    // Handle validation errors
-    if (error.name === 'ValidationError') {
-      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
-      sendError(res, `Validation error: ${validationErrors.join(', ')}`, 400);
-      return;
-    }
-    
-    sendError(res, 'Failed to update profile', 500);
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: updateData,
+    select: userSelect,
+  }).catch(() => null);
+
+  if (!user) {
+    sendNotFound(res, 'User not found');
     return;
   }
+
+  sendSuccess(res, user, 'User updated successfully');
 }));
 
-/**
- * @route   GET /api/users/:id
- * @desc    Get user by ID
- * @access  Private (Admin or self)
- */
-router.get('/:id', simpleAuth, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    
-    // With simplified auth, any token holder can access any user
-    const user = await User.findById(userId).select('-password');
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
-
-    sendSuccess(res, user.toPublicJSON(), 'User retrieved successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to retrieve user', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/users/:id
- * @desc    Update user (admin or self)
- * @access  Private (Admin or self)
- */
-router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    const updateData: UpdateUserRequest = req.body;
-    
-    // Check permissions
-    if (req.user?.id !== userId && req.user?.role !== 'admin') {
-      sendError(res, 'Access denied', 403);
-      return;
-    }
-    
-    // Prevent role/status changes by non-admin users
-    if (req.user?.role !== 'admin') {
-      delete updateData.role;
-      delete updateData.status;
-    }
-    
-    // Update user
-    const user = await User.findByIdAndUpdate(
-      userId,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
-    
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
-
-    sendSuccess(res, user.toPublicJSON(), 'User updated successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update user', 500);
-    return;
-  }
-}));
-
-/**
- * @route   POST /api/users/agents
- * @desc    Create new agent (admin only)
- * @access  Private (Admin only)
- */
-router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { full_name, email, phone, province, district, sector } = req.body;
-    
-    // Validate required fields
-    if (!full_name || !email) {
-      sendError(res, 'Full name and email are required', 400);
-      return;
-    }
-    
-    // Check if user with this email already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      sendError(res, 'User with this email already exists', 400);
-      return;
-    }
-    
-    // Create agent with default password
-    const defaultPassword = 'AgentPass123!'; // You can customize this default password
-    
-    const agentData = {
-      email: email.toLowerCase().trim(),
-      password: defaultPassword,
-      full_name: full_name.trim(),
-      phone: phone?.trim() || undefined,
-      role: 'agent' as UserRole,
-      status: 'active' as UserStatus,
-      profile: {
-        province: province?.trim() || undefined,
-        district: district?.trim() || undefined,
-        ...(sector && { service_areas: [sector.trim()] }) // Using service_areas for agent's sector
-      }
-    };
-    
-    // Create new agent
-    const agent = new User(agentData);
-    await agent.save();
-    
-    // Return success response with agent data (excluding password)
-    sendSuccess(res, {
-      ...agent.toPublicJSON(),
-      default_password: defaultPassword // Include default password in response for admin
-    }, 'Agent created successfully');
-    return;
-    
-  } catch (error: any) {
-    // Handle validation errors
-    if (error.name === 'ValidationError') {
-      const validationErrors = Object.values(error.errors).map((err: any) => err.message);
-      sendError(res, `Validation error: ${validationErrors.join(', ')}`, 400);
-      return;
-    }
-    
-    // Handle duplicate email error
-    if (error.code === 11000 && error.keyPattern?.email) {
-      sendError(res, 'User with this email already exists', 400);
-      return;
-    }
-    
-    console.error('Error creating agent:', error);
-    sendError(res, 'Failed to create agent', 500);
-    return;
-  }
-}));
-
-/**
- * @route   PUT /api/users/:id/status
- * @desc    Update user status (admin only)
- * @access  Private (Admin only)
- */
+// PUT /api/users/:id/status
 router.put('/:id/status', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    const { status } = req.body;
-    
-    // Validate status
-    if (!['active', 'inactive'].includes(status)) {
-      sendError(res, 'Invalid status value', 400);
-      return;
-    }
-    
-    // Update user status
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { status },
-      { new: true, runValidators: true }
-    ).select('-password');
-    
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
+  const userId = req.params.id;
+  const { status } = req.body;
 
-    sendSuccess(res, user.toPublicJSON(), `User status updated to ${status}`);
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update user status', 500);
+  if (!['active', 'inactive'].includes(status)) {
+    sendError(res, 'Invalid status value', 400);
     return;
   }
+
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { status },
+    select: userSelect,
+  }).catch(() => null);
+
+  if (!user) {
+    sendNotFound(res, 'User not found');
+    return;
+  }
+
+  sendSuccess(res, user, `User status updated to ${status}`);
 }));
 
-/**
- * @route   PUT /api/users/:id/role
- * @desc    Update user role (admin only)
- * @access  Private (Admin only)
- */
+// PUT /api/users/:id/role
 router.put('/:id/role', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    const { role } = req.body;
-    
-    // Validate role
-    const validRoles = ['admin', 'agent', 'farmer', 'shop_manager'];
-    if (!validRoles.includes(role)) {
-      sendError(res, 'Invalid role value', 400);
-      return;
-    }
-    
-    // Prevent changing the role of the last admin
-    if (role !== 'admin') {
-      const adminCount = await User.countDocuments({ role: 'admin', status: 'active' });
-      const user = await User.findById(userId);
-      
-      if (user?.role === 'admin' && adminCount <= 1) {
+  const userId = req.params.id;
+  const { role } = req.body;
+
+  const validRoles = ['admin', 'agent', 'farmer', 'shop_manager'];
+  if (!validRoles.includes(role)) {
+    sendError(res, 'Invalid role value', 400);
+    return;
+  }
+
+  if (role !== 'admin') {
+    const existing = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+    if (existing?.role === 'admin') {
+      const adminCount = await prisma.user.count({ where: { role: 'admin', status: 'active' } });
+      if (adminCount <= 1) {
         sendError(res, 'Cannot remove the last admin user', 400);
         return;
       }
     }
-    
-    // Update user role
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { role },
-      { new: true, runValidators: true }
-    ).select('-password');
-    
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
+  }
 
-    sendSuccess(res, user.toPublicJSON(), `User role updated to ${role}`);
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to update user role', 500);
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { role: role as any },
+    select: userSelect,
+  }).catch(() => null);
+
+  if (!user) {
+    sendNotFound(res, 'User not found');
     return;
   }
+
+  sendSuccess(res, user, `User role updated to ${role}`);
 }));
 
-/**
- * @route   DELETE /api/users/:id
- * @desc    Delete user (admin only)
- * @access  Private (Admin only)
- */
+// DELETE /api/users/:id
 router.delete('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const userId = req.params.id;
-    
-    // Prevent users from deleting themselves
-    if (req.user?.id === userId) {
-      sendError(res, 'Cannot delete your own account', 400);
-      return;
-    }
-    
-    const user = await User.findByIdAndDelete(userId);
-    if (!user) {
-      sendNotFound(res, 'User not found');
-      return;
-    }
+  const userId = req.params.id;
 
-    sendSuccess(res, null, 'User deleted successfully');
-    return;
-  } catch (error) {
-    sendError(res, 'Failed to delete user', 500);
+  if (req.user?.id === userId) {
+    sendError(res, 'Cannot delete your own account', 400);
     return;
   }
+
+  const user = await prisma.user.delete({ where: { id: userId } }).catch(() => null);
+
+  if (!user) {
+    sendNotFound(res, 'User not found');
+    return;
+  }
+
+  sendSuccess(res, null, 'User deleted successfully');
 }));
 
 export default router;
