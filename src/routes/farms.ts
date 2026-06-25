@@ -1,368 +1,209 @@
 import { Router, Response } from 'express';
-import { asyncHandler } from '../utils/asyncHandler';
+import { prisma } from '../lib/prisma';
+import { validateIdParam, validatePagination } from '../middleware/validation';
+import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
-import { sendSuccess, sendError, sendPaginatedResponse } from '../utils/responses';
+import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import Farm from '../models/Farm';
 
 const router = Router();
 
-/**
- * @route   GET /api/farms
- * @desc    Get all farms with pagination and filters
- * @access  Private (Admin, Agent)
- */
-router.get('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { 
-            page = 1, 
-            limit = 20, 
-            crop_type, 
-            province, 
-            district, 
-            sector, 
-            status 
-        } = req.query;
+// GET /api/farms
+router.get('/', authenticate, authorize('admin', 'agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+  const where: any = {};
 
-        const query: any = {};
-        
-        if (crop_type) query.crop_type = crop_type;
-        if (province) query['location.province'] = province;
-        if (district) query['location.district'] = district;
-        if (sector) query['location.sector'] = sector;
-        if (status) query.status = status;
+  if (req.query.status) where.status = req.query.status as any;
+  if (req.query.farmer_id) where.farmer_id = req.query.farmer_id;
 
-        const farms = await Farm.find(query)
-            .populate('farmer_id', 'full_name email phone')
-            .sort({ created_at: -1 })
-            .limit(Number(limit))
-            .skip((Number(page) - 1) * Number(limit));
+  const locationFilters: any = {};
+  if (req.query.province) locationFilters.province = req.query.province;
+  if (req.query.district) locationFilters.district = req.query.district;
+  if (req.query.sector) locationFilters.sector = req.query.sector;
 
-        const total = await Farm.countDocuments(query);
+  if (Object.keys(locationFilters).length > 0) {
+    where.location = { path: Object.keys(locationFilters), equals: locationFilters };
+  }
 
-        return sendPaginatedResponse(res, farms, total, Number(page), Number(limit), 'Farms retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farms error:', error);
-        return sendError(res, 'Failed to retrieve farms', 500);
-    }
+  const [farms, total] = await Promise.all([
+    prisma.farm.findMany({
+      where,
+      include: { farmer: { select: { full_name: true, email: true, phone: true } } },
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { created_at: 'desc' },
+    }),
+    prisma.farm.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, farms, total, page, limit, 'Farms retrieved successfully');
 }));
 
-/**
- * @route   GET /api/farms/:id
- * @desc    Get farm by ID
- * @access  Private (Admin, Agent, Farmer - own farm)
- */
-router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farm = await Farm.findById(req.params.id)
-            .populate('farmer_id', 'full_name email phone');
-        
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
-
-        // If user is a farmer, ensure they can only access their own farm
-        if (req.user?.role === 'farmer' && farm.farmer_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
-
-        return sendSuccess(res, farm, 'Farm retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farm error:', error);
-        return sendError(res, 'Failed to retrieve farm', 500);
-    }
-}));
-
-/**
- * @route   GET /api/farms/:id/details
- * @desc    Get detailed farm information
- * @access  Private (Admin, Agent, Farmer - own farm)
- */
-router.get('/:id/details', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farm = await Farm.findById(req.params.id)
-            .populate('farmer_id', 'full_name email phone');
-        
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
-
-        // If user is a farmer, ensure they can only access their own farm
-        if (req.user?.role === 'farmer' && farm.farmer_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
-
-        // Get additional details
-        const harvestSchedule = farm.getHarvestSchedule();
-        const productionStats = farm.getProductionStats();
-
-        const detailedFarm = {
-            ...farm.toObject(),
-            harvest_schedule: harvestSchedule,
-            production_stats: productionStats,
-            is_harvest_ready: farm.isHarvestReady()
-        };
-
-        return sendSuccess(res, detailedFarm, 'Detailed farm information retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farm details error:', error);
-        return sendError(res, 'Failed to retrieve farm details', 500);
-    }
-}));
-
-/**
- * @route   GET /api/farms/:id/harvest-schedule
- * @desc    Get farm harvest schedule
- * @access  Private (Admin, Agent, Farmer - own farm)
- */
-router.get('/:id/harvest-schedule', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farm = await Farm.findById(req.params.id);
-        
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
-
-        // If user is a farmer, ensure they can only access their own farm
-        if (req.user?.role === 'farmer' && farm.farmer_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
-
-        const harvestSchedule = farm.getHarvestSchedule();
-        const estimatedYield = `${(farm.tree_count * 0.01).toFixed(1)} tons`;
-
-        const response = {
-            farm_id: farm._id,
-            farm_name: farm.farmName,
-            next_harvest: farm.expected_harvest,
-            estimated_yield: estimatedYield,
-            harvest_windows: harvestSchedule
-        };
-
-        return sendSuccess(res, response, 'Farm harvest schedule retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farm harvest schedule error:', error);
-        return sendError(res, 'Failed to retrieve farm harvest schedule', 500);
-    }
-}));
-
-/**
- * @route   POST /api/farms/:id/purchase-orders
- * @desc    Create purchase order from farm
- * @access  Private (Admin, Agent)
- */
-router.post('/:id/purchase-orders', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farm = await Farm.findById(req.params.id);
-        
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
-
-        const { quantity, variety, price_per_kg, delivery_date, buyer_info } = req.body;
-
-        // Create a purchase order (simplified - in reality this would be more complex)
-        const purchaseOrder = {
-            farm_id: farm._id,
-            farm_name: farm.farmName,
-            farmer_id: farm.farmer_id,
-            quantity,
-            variety,
-            price_per_kg,
-            total_amount: quantity * price_per_kg,
-            delivery_date: new Date(delivery_date),
-            buyer_info,
-            status: 'pending',
-            created_by: req.user?.id,
-            created_at: new Date()
-        };
-
-        // In a real implementation, you would save this to a PurchaseOrder model
-        return sendSuccess(res, purchaseOrder, 'Purchase order created successfully', 201);
-    } catch (error: any) {
-        console.error('Create purchase order error:', error);
-        if (error.name === 'ValidationError') {
-            return sendError(res, error.message, 400);
-        }
-        return sendError(res, 'Failed to create purchase order', 500);
-    }
-}));
-
-/**
- * @route   GET /api/farms/by-location
- * @desc    Get farms by location
- * @access  Private (Admin, Agent)
- */
-router.get('/by-location', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { province, district, sector } = req.query;
-
-        if (!province) {
-            return sendError(res, 'Province parameter is required', 400);
-        }
-
-        const farms = await Farm.findByLocation(
-            province as string, 
-            district as string, 
-            sector as string
-        );
-
-        return sendSuccess(res, farms, 'Farms by location retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farms by location error:', error);
-        return sendError(res, 'Failed to retrieve farms by location', 500);
-    }
-}));
-
-/**
- * @route   GET /api/farms/harvest-ready
- * @desc    Get farms ready for harvest
- * @access  Private (Admin, Agent)
- */
-router.get('/harvest-ready', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { variety, date_range } = req.query;
-
-        const farms = await Farm.findHarvestReady(variety as string);
-
-        // Filter by date range if provided
-        let filteredFarms = farms;
-        if (date_range) {
-            const [startDate, endDate] = (date_range as string).split(',');
-            filteredFarms = farms.filter((farm: any) => {
-                if (!farm.expected_harvest) return false;
-                const harvestDate = new Date(farm.expected_harvest);
-                return harvestDate >= new Date(startDate!) && harvestDate <= new Date(endDate!);
-            });
-        }
-
-        return sendSuccess(res, filteredFarms, 'Harvest-ready farms retrieved successfully');
-    } catch (error: any) {
-        console.error('Get harvest-ready farms error:', error);
-        return sendError(res, 'Failed to retrieve harvest-ready farms', 500);
-    }
-}));
-
-/**
- * @route   GET /api/farms/:id/production-stats
- * @desc    Get farm production statistics
- * @access  Private (Admin, Agent, Farmer - own farm)
- */
-router.get('/:id/production-stats', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { period = '30d' } = req.query;
-        
-        const farm = await Farm.findById(req.params.id);
-        
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
-
-        // If user is a farmer, ensure they can only access their own farm
-        if (req.user?.role === 'farmer' && farm.farmer_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
-
-        const productionStats = farm.getProductionStats(period as string);
-
-        return sendSuccess(res, productionStats, 'Farm production statistics retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farm production stats error:', error);
-        return sendError(res, 'Failed to retrieve farm production statistics', 500);
-    }
-}));
-
-/**
- * @route   GET /api/farms/overview
- * @desc    Get farms overview/summary
- * @access  Private (Admin, Agent)
- */
+// GET /api/farms/overview
 router.get('/overview', authenticate, authorize('admin', 'agent'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
-    try {
-        const overview = await Farm.getOverview();
+  const [total, byStatus] = await Promise.all([
+    prisma.farm.count(),
+    prisma.farm.groupBy({ by: ['status'], _count: { _all: true } }),
+  ]);
 
-        return sendSuccess(res, overview, 'Farms overview retrieved successfully');
-    } catch (error: any) {
-        console.error('Get farms overview error:', error);
-        return sendError(res, 'Failed to retrieve farms overview', 500);
-    }
+  const statusCounts: Record<string, number> = {};
+  byStatus.forEach(s => { statusCounts[s.status] = s._count._all; });
+
+  const [treesAgg, areaAgg] = await Promise.all([
+    prisma.farm.aggregate({ _sum: { tree_count: true } }),
+    prisma.farm.aggregate({ _sum: { farm_size: true } }),
+  ]);
+
+  sendSuccess(res, {
+    total_farms: total,
+    by_status: statusCounts,
+    total_trees: treesAgg._sum.tree_count || 0,
+    total_area: areaAgg._sum.farm_size || 0,
+  }, 'Farms overview retrieved successfully');
 }));
 
-/**
- * @route   POST /api/farms
- * @desc    Create new farm
- * @access  Private (Admin, Agent)
- */
+// GET /api/farms/:id
+router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const farm = await prisma.farm.findUnique({
+    where: { id: req.params.id },
+    include: { farmer: { select: { full_name: true, email: true, phone: true } } },
+  });
+
+  if (!farm) {
+    sendNotFound(res, 'Farm not found');
+    return;
+  }
+
+  if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
+  sendSuccess(res, farm, 'Farm retrieved successfully');
+}));
+
+// GET /api/farms/:id/details
+router.get('/:id/details', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const farm = await prisma.farm.findUnique({
+    where: { id: req.params.id },
+    include: { farmer: { select: { full_name: true, email: true, phone: true } } },
+  });
+
+  if (!farm) {
+    sendNotFound(res, 'Farm not found');
+    return;
+  }
+
+  if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
+  const estimatedYield = `${((farm.tree_count || 0) * 0.01).toFixed(1)} tons`;
+  const isHarvestReady = farm.expected_harvest ? new Date(farm.expected_harvest) <= new Date() : false;
+
+  sendSuccess(res, {
+    ...farm,
+    estimated_yield: estimatedYield,
+    is_harvest_ready: isHarvestReady,
+  }, 'Detailed farm information retrieved successfully');
+}));
+
+// GET /api/farms/:id/production-stats
+router.get('/:id/production-stats', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const farm = await prisma.farm.findUnique({ where: { id: req.params.id } });
+
+  if (!farm) {
+    sendNotFound(res, 'Farm not found');
+    return;
+  }
+
+  if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
+  const stats = {
+    farm_id: farm.id,
+    farm_name: farm.farmName,
+    tree_count: farm.tree_count,
+    farm_size: farm.farm_size,
+    varieties: farm.varieties,
+    expected_harvest: farm.expected_harvest,
+    estimated_annual_yield: `${((farm.tree_count || 0) * 0.01 * 2).toFixed(1)} tons`,
+  };
+
+  sendSuccess(res, stats, 'Farm production statistics retrieved successfully');
+}));
+
+// POST /api/farms
 router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farmData = req.body;
+  const { farmer_id, farm_name, farm_size, location, varieties, tree_count, planting_date, expected_harvest, status, notes, crop_type } = req.body;
 
-        const farm = new Farm(farmData);
-        await farm.save();
-        
-        await farm.populate('farmer_id', 'full_name email phone');
+  if (!farmer_id || !farm_name) {
+    sendError(res, 'farmer_id and farm_name are required', 400);
+    return;
+  }
 
-        return sendSuccess(res, farm, 'Farm created successfully', 201);
-    } catch (error: any) {
-        console.error('Create farm error:', error);
-        if (error.name === 'ValidationError') {
-            return sendError(res, error.message, 400);
-        }
-        return sendError(res, 'Failed to create farm', 500);
-    }
+  const farmer = await prisma.user.findUnique({ where: { id: farmer_id } });
+  if (!farmer || farmer.role !== 'farmer') {
+    sendError(res, 'Invalid farmer_id', 400);
+    return;
+  }
+
+  const farm = await prisma.farm.create({
+    data: {
+      farmer_id,
+      farmName: farm_name,
+      farmerName: farmer.full_name,
+      farm_size: farm_size || 0,
+      location: location || {},
+      varieties: varieties || [],
+      tree_count: tree_count || 0,
+      planting_date: planting_date ? new Date(planting_date) : new Date(),
+      expected_harvest: expected_harvest ? new Date(expected_harvest) : null,
+      crop_type: crop_type || 'avocado',
+      status: (status || 'planted') as any,
+      notes,
+    },
+    include: { farmer: { select: { full_name: true, email: true, phone: true } } },
+  });
+
+  sendCreated(res, farm, 'Farm created successfully');
 }));
 
-/**
- * @route   PUT /api/farms/:id
- * @desc    Update farm
- * @access  Private (Admin, Agent, Farmer - own farm)
- */
-router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farm = await Farm.findById(req.params.id);
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
+// PUT /api/farms/:id
+router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const existing = await prisma.farm.findUnique({ where: { id: req.params.id } });
+  if (!existing) { sendNotFound(res, 'Farm not found'); return; }
 
-        // If user is a farmer, ensure they can only update their own farm
-        if (req.user?.role === 'farmer' && farm.farmer_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
+  if (req.user?.role === 'farmer' && existing.farmer_id !== req.user.id) {
+    sendError(res, 'Access denied', 403); return;
+  }
 
-        const updatedFarm = await Farm.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            { new: true, runValidators: true }
-        ).populate('farmer_id', 'full_name email phone');
+  const { farmer_id, farm_name, farm_size, planting_date, expected_harvest, ...rest } = req.body;
+  const updateData: any = { ...rest };
+  if (farm_name) updateData.farmName = farm_name;
+  if (farm_size !== undefined) updateData.farm_size = farm_size;
+  if (planting_date) updateData.planting_date = new Date(planting_date);
+  if (expected_harvest) updateData.expected_harvest = new Date(expected_harvest);
 
-        return sendSuccess(res, updatedFarm, 'Farm updated successfully');
-    } catch (error: any) {
-        console.error('Update farm error:', error);
-        if (error.name === 'ValidationError') {
-            return sendError(res, error.message, 400);
-        }
-        return sendError(res, 'Failed to update farm', 500);
-    }
+  const farm = await prisma.farm.update({
+    where: { id: req.params.id },
+    data: updateData,
+    include: { farmer: { select: { full_name: true, email: true, phone: true } } },
+  });
+
+  sendSuccess(res, farm, 'Farm updated successfully');
 }));
 
-/**
- * @route   DELETE /api/farms/:id
- * @desc    Delete farm
- * @access  Private (Admin only)
- */
-router.delete('/:id', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const farm = await Farm.findById(req.params.id);
-        if (!farm) {
-            return sendError(res, 'Farm not found', 404);
-        }
+// DELETE /api/farms/:id
+router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const farm = await prisma.farm.delete({ where: { id: req.params.id } }).catch(() => null);
+  if (!farm) { sendNotFound(res, 'Farm not found'); return; }
 
-        await Farm.findByIdAndDelete(req.params.id);
-        return sendSuccess(res, null, 'Farm deleted successfully');
-    } catch (error: any) {
-        console.error('Delete farm error:', error);
-        return sendError(res, 'Failed to delete farm', 500);
-    }
+  sendSuccess(res, null, 'Farm deleted successfully');
 }));
 
 export default router;

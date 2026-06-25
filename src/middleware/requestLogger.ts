@@ -23,7 +23,6 @@ export const requestLogger = (req: AuthenticatedRequest, res: Response, next: Ne
             userAgent: req.headers['user-agent']
         };
 
-        // Use winston logger which we configured to save to MongoDB
         logger.info(`Request: ${req.method} ${req.originalUrl}`, logData);
     });
 

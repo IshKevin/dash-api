@@ -1,243 +1,181 @@
 import { Router, Request, Response } from 'express';
-import { User } from '../models/User';
+import bcrypt from 'bcryptjs';
+import { prisma } from '../lib/prisma';
 import { generateToken } from '../utils/jwt';
 import { sendSuccess, sendError, sendCreated } from '../utils/responses';
 import { AuthResponse, RegisterRequest, LoginRequest, PasswordChangeRequest } from '../types/auth';
-import { 
-  validateUserRegistration, 
+import {
+  validateUserRegistration,
   validateUserLogin,
-  validatePasswordChange
+  validatePasswordChange,
 } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types/auth';
+import { env } from '../config/environment';
 
 const router = Router();
 
-/**
- * @route   POST /api/auth/register
- * @desc    Register a new user
- * @access  Public
- */
+// POST /api/auth/register
 router.post('/register', validateUserRegistration, asyncHandler(async (req: Request, res: Response) => {
   const { email, password, full_name, phone, role, profile }: RegisterRequest = req.body;
 
-  // Check if user already exists
-  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
   if (existingUser) {
     sendError(res, 'User with this email already exists', 409);
     return;
   }
 
-  // Create user (password will be automatically hashed by the pre-save middleware)
-  const user = new User({
-    email: email.toLowerCase(),
-    password,
-    full_name,
-    phone,
-    role: role || 'farmer',
-    profile: profile || {},
+  const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+
+  const user = await prisma.user.create({
+    data: {
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      full_name,
+      phone,
+      role: (role || 'farmer') as any,
+      profile: (profile || {}) as any,
+    },
+    select: { id: true, email: true, full_name: true, role: true, status: true },
   });
 
-  // Save user
-  await user.save();
+  const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
 
-  // Generate JWT token
-  const token = generateToken({
-    id: user._id.toString(),
-    email: user.email,
-    role: user.role,
-  });
-
-  // Prepare response data
   const responseData: AuthResponse = {
     token,
-    user: {
-      id: user._id.toString(),
-      email: user.email,
-      full_name: user.full_name,
-      role: user.role,
-      status: user.status,
-    }
+    user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status },
   };
 
   sendCreated(res, responseData, 'User registered successfully');
 }));
 
-/**
- * @route   POST /api/auth/login
- * @desc    Login user
- * @access  Public
- */
+// POST /api/auth/login
 router.post('/login', validateUserLogin, asyncHandler(async (req: Request, res: Response) => {
   const { email, password }: LoginRequest = req.body;
 
-  // Find user by email and include password for comparison
-  const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+  const user = await prisma.user.findUnique({
+    where: { email: email.toLowerCase() },
+  });
+
   if (!user) {
     sendError(res, 'Invalid credentials', 401);
     return;
   }
 
-  // Check if user is active
   if (user.status !== 'active') {
     sendError(res, 'Account is inactive', 401);
     return;
   }
 
-  // Compare passwords using the instance method
-  const isMatch = await user.comparePassword(password);
+  const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) {
     sendError(res, 'Invalid credentials', 401);
     return;
   }
 
-  // Generate JWT token
-  const token = generateToken({
-    id: user._id.toString(),
-    email: user.email,
-    role: user.role,
-  });
+  const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
 
-  // Prepare response data
   const responseData: AuthResponse = {
     token,
-    user: {
-      id: user._id.toString(),
-      email: user.email,
-      full_name: user.full_name,
-      role: user.role,
-      status: user.status,
-    }
+    user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status },
   };
 
   sendSuccess(res, responseData, 'Login successful');
 }));
 
-/**
- * @route   POST /api/auth/logout
- * @desc    Logout user (client-side token invalidation)
- * @access  Private
- */
+// POST /api/auth/logout
 router.post('/logout', authenticate, asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
-  // In a real application, you might want to:
-  // 1. Add the token to a blacklist/redis cache
-  // 2. Track user sessions
-  // 3. Clear any server-side sessions
-  
-  // For JWT-based auth, logout is primarily handled client-side
-  // by removing the token from storage
-  
   sendSuccess(res, null, 'Logout successful');
 }));
 
-/**
- * @route   GET /api/auth/profile
- * @desc    Get current user profile
- * @access  Private
- */
+// GET /api/auth/profile
 router.get('/profile', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const user = await User.findById(req.user?.id).select('-password');
+  const user = await prisma.user.findUnique({
+    where: { id: req.user?.id },
+    select: {
+      id: true, email: true, full_name: true, phone: true,
+      role: true, status: true, profile: true,
+      qr_code_token: true, created_at: true, updated_at: true,
+    },
+  });
+
   if (!user) {
     sendError(res, 'User not found', 404);
     return;
   }
 
-  sendSuccess(res, user.toPublicJSON(), 'Profile retrieved successfully');
+  sendSuccess(res, user, 'Profile retrieved successfully');
 }));
 
-/**
- * @route   PUT /api/auth/profile
- * @desc    Update current user profile
- * @access  Private
- */
+// PUT /api/auth/profile
 router.put('/profile', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { full_name, phone, profile } = req.body;
-  
-  // Build update object with only provided fields
+
   const updateData: any = {};
   if (full_name !== undefined) updateData.full_name = full_name;
   if (phone !== undefined) updateData.phone = phone;
+
   if (profile !== undefined) {
-    // Merge with existing profile data
-    const existingUser = await User.findById(req.user?.id);
-    updateData.profile = { ...existingUser?.profile, ...profile };
+    const existing = await prisma.user.findUnique({
+      where: { id: req.user?.id },
+      select: { profile: true },
+    });
+    updateData.profile = { ...(existing?.profile as any || {}), ...profile };
   }
-  
+
   if (Object.keys(updateData).length === 0) {
     sendError(res, 'No valid fields provided for update', 400);
     return;
   }
-  
-  const user = await User.findByIdAndUpdate(
-    req.user?.id,
-    updateData,
-    { new: true, runValidators: true }
-  ).select('-password');
-  
-  if (!user) {
-    sendError(res, 'User not found', 404);
-    return;
-  }
 
-  sendSuccess(res, user.toPublicJSON(), 'Profile updated successfully');
+  const user = await prisma.user.update({
+    where: { id: req.user?.id },
+    data: updateData,
+    select: {
+      id: true, email: true, full_name: true, phone: true,
+      role: true, status: true, profile: true,
+      qr_code_token: true, created_at: true, updated_at: true,
+    },
+  });
+
+  sendSuccess(res, user, 'Profile updated successfully');
 }));
 
-/**
- * @route   PUT /api/auth/password
- * @desc    Change user password
- * @access  Private
- */
+// PUT /api/auth/password
 router.put('/password', authenticate, validatePasswordChange, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { currentPassword, newPassword }: PasswordChangeRequest = req.body;
-  
-  // Find user with password
-  const user = await User.findById(req.user?.id).select('+password');
+
+  const user = await prisma.user.findUnique({ where: { id: req.user?.id } });
   if (!user) {
     sendError(res, 'User not found', 404);
     return;
   }
 
-  // Verify current password using the instance method
-  const isMatch = await user.comparePassword(currentPassword);
+  const isMatch = await bcrypt.compare(currentPassword, user.password);
   if (!isMatch) {
     sendError(res, 'Current password is incorrect', 400);
     return;
   }
 
-  // Update password (will be automatically hashed by pre-save middleware)
-  user.password = newPassword;
-  await user.save();
+  const hashedPassword = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
+  await prisma.user.update({ where: { id: user.id }, data: { password: hashedPassword } });
 
   sendSuccess(res, null, 'Password changed successfully');
 }));
 
-/**
- * @route   POST /api/auth/refresh
- * @desc    Refresh JWT token
- * @access  Private
- */
+// POST /api/auth/refresh
 router.post('/refresh', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  // Generate new token with current user data
   const token = generateToken({
     id: req.user!.id,
     email: req.user!.email,
     role: req.user!.role,
   });
 
-  const responseData = {
-    token,
-    user: req.user,
-  };
-
-  sendSuccess(res, responseData, 'Token refreshed successfully');
+  sendSuccess(res, { token, user: req.user }, 'Token refreshed successfully');
 }));
 
-/**
- * @route   GET /api/auth/verify
- * @desc    Verify if current token is valid
- * @access  Private
- */
+// GET /api/auth/verify
 router.get('/verify', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   sendSuccess(res, { user: req.user }, 'Token is valid');
 }));

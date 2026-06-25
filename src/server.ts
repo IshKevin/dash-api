@@ -1,17 +1,21 @@
-import express, { Application, Request, Response } from 'express';
+import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import helmet from 'helmet';
 import compression from 'compression';
-import mongoSanitize from 'express-mongo-sanitize';
 import rateLimit from 'express-rate-limit';
 import morgan from 'morgan';
+import swaggerUi from 'swagger-ui-express';
+import swaggerJsdoc from 'swagger-jsdoc';
+import { swaggerOptions } from './swagger';
 import { database } from './config/database';
 import { env } from './config/environment';
 import logger from './config/logger';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import { sendSuccess } from './utils/responses';
 import { requestLogger } from './middleware/requestLogger';
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -30,61 +34,51 @@ import logRoutes from './routes/logs';
 import profileAccessRoutes from './routes/profile-access';
 import monitoringRoutes from './routes/monitoring';
 import welcomeRoutes from './routes/welcome';
-import apiDocsRoutes from './routes/api-docs';
 import customersRoutes from './routes/customers';
 import suppliersRoutes from './routes/suppliers';
 import reportsRoutes from './routes/reports';
 import weatherRoutes from './routes/weather';
 import farmsRoutes from './routes/farms';
+import transactionsRoutes from './routes/transactions';
 
-// Load environment variables
 dotenv.config();
 
 const app: Application = express();
 
 // Security Middleware
-app.use(helmet()); // Set security HTTP headers
-app.use(mongoSanitize()); // Data sanitization against NoSQL query injection
-app.use(compression()); // Gzip compression
+app.use(helmet());
+app.use(compression());
 
 // Rate Limiting
 const limiter = rateLimit({
-  windowMs: env.RATE_LIMIT_WINDOW_MS, // Configurable window
-  max: env.RATE_LIMIT_MAX_REQUESTS, // Configurable max requests
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  windowMs: env.RATE_LIMIT_WINDOW_MS,
+  max: env.RATE_LIMIT_MAX_REQUESTS,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again later',
-    error: 'Rate limit exceeded'
-  }
+    error: 'Rate limit exceeded',
+  },
 });
 app.use('/api', limiter);
 
 // HTTP Request Logging
 const morganFormat = env.NODE_ENV === 'development' ? 'dev' : 'combined';
-app.use(morgan(morganFormat, {
-  stream: {
-    write: (message) => logger.http(message.trim()),
-  },
-}));
+app.use(
+  morgan(morganFormat, {
+    stream: { write: (message) => logger.http(message.trim()) },
+  })
+);
 
-// Custom Request Logging for Monitoring
+// Custom Request Logging
 app.use(requestLogger);
 
 // CORS Configuration
 if (env.CORS_PUBLIC) {
-  // Public CORS - allow requests from any origin
-  app.use(cors({
-    origin: '*', // Allow requests from any origin
-    credentials: false // Disable credentials for public API
-  }));
+  app.use(cors({ origin: '*', credentials: false }));
 } else {
-  // Restricted CORS - allow requests only from specified origin
-  app.use(cors({
-    origin: env.CORS_ORIGIN,
-    credentials: true
-  }));
+  app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 }
 
 app.use(express.json({ limit: '10mb' }));
@@ -92,21 +86,45 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
-  sendSuccess(res, {
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: {
-      used: process.memoryUsage().heapUsed,
-      total: process.memoryUsage().heapTotal,
-      percentage: Math.round((process.memoryUsage().heapUsed / process.memoryUsage().heapTotal) * 100)
-    }
-  }, 'Service is healthy');
+  sendSuccess(
+    res,
+    {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      database: 'postgresql',
+      memory: {
+        used: process.memoryUsage().heapUsed,
+        total: process.memoryUsage().heapTotal,
+        percentage: Math.round(
+          (process.memoryUsage().heapUsed / process.memoryUsage().heapTotal) * 100
+        ),
+      },
+    },
+    'Service is healthy'
+  );
 });
 
 // API Routes
 app.use('/api/welcome', welcomeRoutes);
-app.use('/api-docs', apiDocsRoutes);
+
+// Swagger UI — override helmet's CSP for this path so the UI scripts/styles load
+app.use(
+  '/api-docs',
+  (_req: Request, res: Response, next: NextFunction) => {
+    res.removeHeader('Content-Security-Policy');
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:"
+    );
+    next();
+  },
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'Dashboard Avocado API',
+    swaggerOptions: { persistAuthorization: true, docExpansion: 'none' },
+  })
+);
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/products', productRoutes);
@@ -127,76 +145,66 @@ app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/weather', weatherRoutes);
 app.use('/api/farms', farmsRoutes);
+app.use('/api/transactions', transactionsRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
-  sendSuccess(res, {
-    message: 'Dashboard Avocado Backend API',
-    version: env.APP_VERSION,
-    documentation: '/api-docs'
-  }, 'Welcome to the Dashboard Avocado Backend API');
+  sendSuccess(
+    res,
+    {
+      message: 'Dashboard Avocado Backend API',
+      version: env.APP_VERSION,
+      database: 'PostgreSQL',
+      documentation: '/api-docs',
+    },
+    'Welcome to the Dashboard Avocado Backend API'
+  );
 });
 
-// 404 handler
 app.use(notFoundHandler);
-
-// Global error handler
 app.use(errorHandler);
 
-// Function to start the server
 const startServer = async (): Promise<void> => {
   try {
-    // Connect to database
     await database.connect();
     logger.info('✅ Database connection established');
 
-    // Start server
     const server = app.listen(env.PORT, () => {
       logger.info(`🚀 Server running on port ${env.PORT}`);
+      logger.info(`📚 API Docs: http://localhost:${env.PORT}/api-docs`);
       logger.info(`🌍 Environment: ${env.NODE_ENV}`);
-
-      // Log CORS configuration
+      logger.info(`🗄️  Database: PostgreSQL`);
       if (env.CORS_PUBLIC) {
-        logger.info(`🔓 CORS: Public (allowing requests from any origin)`);
+        logger.info('🔓 CORS: Public (all origins)');
       } else {
         logger.info(`🔒 CORS: Restricted to ${env.CORS_ORIGIN}`);
       }
     });
 
-    // Handle graceful shutdown
     process.on('SIGINT', async () => {
       logger.info('🔄 Shutting down server...');
       server.close(async () => {
         logger.info('🛑 Server closed');
         await database.disconnect();
-        logger.info('🔌 Database connection closed');
         process.exit(0);
       });
     });
 
-    // Handle unhandled promise rejections
     process.on('unhandledRejection', (reason, promise) => {
       logger.error(`🚨 Unhandled Rejection at: ${promise}, reason: ${reason}`);
-      server.close(() => {
-        process.exit(1);
-      });
+      server.close(() => process.exit(1));
     });
 
-    // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
       logger.error(`🚨 Uncaught Exception: ${error}`);
-      server.close(() => {
-        process.exit(1);
-      });
+      server.close(() => process.exit(1));
     });
-
   } catch (error) {
     logger.error(`❌ Failed to start server: ${error}`);
     process.exit(1);
   }
 };
 
-// Start the server if this file is run directly
 if (require.main === module) {
   startServer();
 }

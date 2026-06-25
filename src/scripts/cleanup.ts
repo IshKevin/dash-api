@@ -1,59 +1,45 @@
-import mongoose from 'mongoose';
-import { env } from '../config/environment';
+import { prisma } from '../lib/prisma';
 import logger from '../config/logger';
-import AccessKey from '../models/AccessKey';
-import Log from '../models/Log';
 
-/**
- * Cleanup script for removing expired data
- * Run this periodically in production
- */
 async function cleanup() {
   try {
-    // Connect to database
-    await mongoose.connect(env.MONGODB_URI);
-    logger.info('Connected to database for cleanup');
+    logger.info('Starting cleanup...');
 
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
     // Remove expired access keys
-    const expiredKeys = await AccessKey.deleteMany({
-      expires_at: { $lt: new Date() }
-    });
-
-    // Remove old logs (keep last 30 days)
-    const oldLogs = await Log.deleteMany({
-      timestamp: { $lt: thirtyDaysAgo }
+    const expiredKeys = await prisma.accessKey.deleteMany({
+      where: { expires_at: { lt: now } },
     });
 
     // Remove used access keys older than 7 days
-    const oldUsedKeys = await AccessKey.deleteMany({
-      is_used: true,
-      updated_at: { $lt: sevenDaysAgo }
+    const oldUsedKeys = await prisma.accessKey.deleteMany({
+      where: { is_used: true, updated_at: { lt: sevenDaysAgo } },
+    });
+
+    // Remove old logs (keep last 30 days)
+    const oldLogs = await prisma.log.deleteMany({
+      where: { timestamp: { lt: thirtyDaysAgo } },
     });
 
     logger.info(`Cleanup completed:
-      - Expired access keys removed: ${expiredKeys.deletedCount}
-      - Old logs removed: ${oldLogs.deletedCount}
-      - Old used access keys removed: ${oldUsedKeys.deletedCount}
+      - Expired access keys removed: ${expiredKeys.count}
+      - Old used access keys removed: ${oldUsedKeys.count}
+      - Old logs removed: ${oldLogs.count}
     `);
-
-    await mongoose.disconnect();
-    process.exit(0);
 
   } catch (error) {
     logger.error('Cleanup failed:', error);
-    process.exit(1);
+    throw error;
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
-// Run cleanup if this file is executed directly
-if (require.main === module) {
-  cleanup();
-}
+cleanup()
+  .then(() => process.exit(0))
+  .catch(() => process.exit(1));
 
 export default cleanup;

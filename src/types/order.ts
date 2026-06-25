@@ -1,5 +1,3 @@
-import { Document } from 'mongoose';
-
 // Order Status
 export type OrderStatus = 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'returned';
 
@@ -32,7 +30,7 @@ export interface IShippingAddress {
 }
 
 // Base Order 
-export interface IOrder extends Document {
+export interface IOrder {
   _id: string;
   order_number: string;
   customer_id: string;

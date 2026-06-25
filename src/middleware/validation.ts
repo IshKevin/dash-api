@@ -530,9 +530,10 @@ export const validateHarvestRequestCreation = (req: Request, res: Response, next
 
 export const validateIdParam = [
   param('id')
-    .isMongoId()
+    .isString()
+    .notEmpty()
     .withMessage('Invalid ID format'),
-  
+
   validate
 ];
 

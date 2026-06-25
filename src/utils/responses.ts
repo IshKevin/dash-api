@@ -59,12 +59,6 @@ export const sendError = (
     }
   };
 
-  // For development, include stack trace
-  if (env.NODE_ENV === 'development' && statusCode === HttpStatusCode.INTERNAL_SERVER_ERROR) {
-    // In a real application, you might want to log the error here
-    console.error('Server Error:', message);
-  }
-
   return res.status(statusCode).json(response);
 };
 

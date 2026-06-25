@@ -1,131 +1,133 @@
 import { Router, Response } from 'express';
-import { asyncHandler } from '../utils/asyncHandler';
+import { prisma } from '../lib/prisma';
+import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import User from '../models/User';
-import FarmerProfile from '../models/FarmerProfile';
-import AgentProfile from '../models/AgentProfile';
-import AccessKey from '../models/AccessKey';
 import QRCode from 'qrcode';
 import { generateAccessKey, generateQRToken, isValidAccessKeyFormat } from '../utils/accessKey';
 import multer from 'multer';
 import * as XLSX from 'xlsx';
+import bcrypt from 'bcryptjs';
+import logger from '../config/logger';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ─── Routes ───────────────────────────────────────────────────────────────────
+
 /**
  * @route   GET /api/profile-access/qr/:userId
- * @desc    Generate QR code for a user
+ * @desc    Generate QR code for a user (token-based scan QR)
  * @access  Private (Agent/Admin)
  */
 router.get('/qr/:userId', authenticate, authorize('agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { userId } = req.params;
+  const { userId } = req.params;
 
-        // Find user
-        const user = await User.findById(userId);
-        if (!user) {
-            sendError(res, 'User not found', 404);
-            return;
-        }
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    sendError(res, 'User not found', 404);
+    return;
+  }
 
-        // Check/Create QR token
-        if (!user.qr_code_token) {
-            user.qr_code_token = generateQRToken();
-            await user.save();
-        }
+  // Ensure a QR token exists — create one if missing
+  let qrToken = user.qr_code_token;
+  if (!qrToken) {
+    qrToken = generateQRToken();
+    await prisma.user.update({
+      where: { id: userId },
+      data:  { qr_code_token: qrToken },
+    });
+  }
 
-        // Generate QR Code data URL
-        // The data encoded is the token. The frontend scan app will use this token to query the scan endpoint.
-        const qrData = user.qr_code_token;
-        const qrImage = await QRCode.toDataURL(qrData);
+  const qrImage = await QRCode.toDataURL(qrToken);
 
-        sendSuccess(res, {
-            userId: user._id,
-            qr_code_token: user.qr_code_token,
-            qr_image: qrImage
-        }, 'QR Code generated successfully');
-    } catch (error: any) {
-        console.error('QR Generate error:', error);
-        sendError(res, 'Failed to generate QR code', 500);
-    }
+  sendSuccess(res, {
+    userId:        user.id,
+    qr_code_token: qrToken,
+    qr_image:      qrImage,
+  }, 'QR Code generated successfully');
 }));
 
 /**
  * @route   GET /api/profile-access/scan/:token
  * @desc    Get user info by scanning QR token
- * @access  Public (or semi-private if app requires login first)
+ * @access  Public
  */
 router.get('/scan/:token', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { token } = req.params;
+  const { token } = req.params;
 
-        const user = await User.findOne({ qr_code_token: token }).select('-password -__v');
+  const user = await prisma.user.findUnique({
+    where: { qr_code_token: token },
+    select: {
+      id:            true,
+      email:         true,
+      full_name:     true,
+      phone:         true,
+      role:          true,
+      status:        true,
+      profile:       true,
+      qr_code_token: true,
+      created_at:    true,
+      updated_at:    true,
+      farmer_profile: true,
+      agent_profile:  true,
+    },
+  });
 
-        if (!user) {
-            sendError(res, 'Invalid QR code or user not found', 404);
-            return;
-        }
+  if (!user) {
+    sendError(res, 'Invalid QR code or user not found', 404);
+    return;
+  }
 
-        let profile = null;
-        if (user.role === 'farmer') {
-            profile = await FarmerProfile.findOne({ user_id: user._id });
-        } else if (user.role === 'agent') {
-            profile = await AgentProfile.findOne({ user_id: user._id });
-        }
+  // Surface the appropriate profile record
+  let profile: unknown = user.profile; // fallback: embedded JSON profile
+  if (user.role === 'farmer' && user.farmer_profile) {
+    profile = user.farmer_profile;
+  } else if (user.role === 'agent' && user.agent_profile) {
+    profile = user.agent_profile;
+  }
 
-        sendSuccess(res, {
-            user,
-            profile
-        }, 'User profile found');
+  const { farmer_profile: _fp, agent_profile: _ap, ...userWithoutRelations } = user;
 
-    } catch (error: any) {
-        console.error('Scan error:', error);
-        sendError(res, 'Failed to scan QR code', 500);
-    }
+  sendSuccess(res, { user: userWithoutRelations, profile }, 'User profile found');
 }));
 
 /**
  * @route   PUT /api/profile-access/scan/:token
  * @desc    Update user info by scanning QR token
- * @access  Private (Agent/Admin) - assuming the person scanning is an agent/admin
+ * @access  Private (Agent/Admin)
  */
 router.put('/scan/:token', authenticate, authorize('agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { token } = req.params;
-        const updateData = req.body;
+  const { token }    = req.params;
+  const updateData   = req.body;
 
-        const user = await User.findOne({ qr_code_token: token });
+  const user = await prisma.user.findUnique({ where: { qr_code_token: token } });
+  if (!user) {
+    sendError(res, 'Invalid QR code or user not found', 404);
+    return;
+  }
 
-        if (!user) {
-            sendError(res, 'Invalid QR code or user not found', 404);
-            return;
-        }
+  // Update basic user fields
+  const userUpdate: Record<string, unknown> = {};
+  if (updateData.full_name) userUpdate.full_name = updateData.full_name;
+  if (updateData.phone)     userUpdate.phone     = updateData.phone;
+  if (updateData.email)     userUpdate.email     = updateData.email;
 
-        // Update basic info
-        if (updateData.full_name) user.full_name = updateData.full_name;
-        if (updateData.phone) user.phone = updateData.phone;
-        if (updateData.email) user.email = updateData.email;
-        await user.save();
+  if (Object.keys(userUpdate).length > 0) {
+    await prisma.user.update({ where: { id: user.id }, data: userUpdate });
+  }
 
-        // Update Profile if farmer
-        if (user.role === 'farmer' && updateData.profile) {
-            const profileFields = updateData.profile;
-            await FarmerProfile.findOneAndUpdate(
-                { user_id: user._id },
-                profileFields,
-                { new: true, upsert: true }
-            );
-        }
+  // Upsert farmer profile if applicable
+  if (user.role === 'farmer' && updateData.profile) {
+    await prisma.farmerProfile.upsert({
+      where:  { user_id: user.id },
+      update: updateData.profile,
+      create: { user_id: user.id, ...updateData.profile },
+    });
+  }
 
-        sendSuccess(res, { userId: user._id }, 'User updated successfully');
-
-    } catch (error: any) {
-        console.error('Scan update error:', error);
-        sendError(res, 'Failed to update user via scan', 500);
-    }
+  sendSuccess(res, { userId: user.id }, 'User updated successfully');
 }));
 
 /**
@@ -134,291 +136,290 @@ router.put('/scan/:token', authenticate, authorize('agent', 'admin'), asyncHandl
  * @access  Private (Admin)
  */
 router.post('/bulk-import', authenticate, authorize('admin'), upload.single('file'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        let userData: any[] = [];
+  let userData: any[] = [];
 
-        if (req.file) {
-            // Handle Excel file
-            const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-            const sheetName = workbook.SheetNames[0];
-
-            if (!sheetName) {
-                return sendError(res, 'The uploaded Excel file contains no sheets.', 400);
-            }
-            
-            const sheet = workbook.Sheets[sheetName];
-            if (!sheet) {
-                return sendError(res, 'Could not find the first sheet in the Excel file.', 400);
-            }
-
-            userData = XLSX.utils.sheet_to_json(sheet);
-        } else if (req.body.users && Array.isArray(req.body.users)) {
-            // Handle JSON data
-            userData = req.body.users;
-        } else {
-            return sendError(res, 'No file uploaded or users data provided', 400);
-        }
-
-        const result = {
-            total: userData.length,
-            imported: 0,
-            failed: 0,
-            errors: [] as any[],
-            access_keys: [] as any[]
-        };
-
-        console.log(`Starting import of ${userData.length} records...`);
-
-        for (const row of userData) {
-            try {
-                // Basic validation
-                if (!row.full_name) {
-                    result.failed++;
-                    result.errors.push({ row, error: 'Missing full_name' });
-                    continue;
-                }
-
-                // Generate unique email if not provided
-                const email = row.email?.trim() || `user_${Date.now()}_${Math.random().toString(36).substring(7)}@temp.local`;
-
-                // Check if user already exists
-                const existingUser = await User.findOne({ email });
-                if (existingUser) {
-                    result.failed++;
-                    result.errors.push({ email, error: 'User already exists' });
-                    continue;
-                }
-
-                // Create user with temporary password
-                const tempPassword = `temp_${Math.random().toString(36).substring(7)}`;
-                const newUser = new User({
-                    full_name: row.full_name,
-                    email: email,
-                    phone: row.phone,
-                    password: tempPassword,
-                    role: row.role || 'farmer',
-                    status: 'active',
-                    qr_code_token: generateQRToken(),
-                    profile: {
-                        age: row.age,
-                        gender: row.gender,
-                        marital_status: row.marital_status,
-                        education_level: row.education_level,
-                        province: row.province,
-                        district: row.district,
-                        sector: row.sector,
-                        cell: row.cell,
-                        village: row.village,
-                        service_areas: row.service_areas ? row.service_areas.split(',').map((s: string) => s.trim()) : [],
-                        farm_details: row.farm_size ? {
-                            farm_location: {
-                                province: row.province,
-                                district: row.district,
-                                sector: row.sector,
-                                cell: row.cell,
-                                village: row.village
-                            },
-                            farm_age: row.farm_age,
-                            planted: row.planted,
-                            avocado_type: row.avocado_type,
-                            mixed_percentage: row.mixed_percentage,
-                            farm_size: row.farm_size,
-                            tree_count: row.tree_count,
-                            upi_number: row.upi_number,
-                            assistance: row.assistance
-                        } : undefined
-                    }
-                });
-
-                await newUser.save();
-
-                // Generate access key
-                const accessKey = generateAccessKey();
-                const expiresAt = new Date();
-                expiresAt.setDate(expiresAt.getDate() + 30); // 30 days expiry
-
-                const newAccessKey = new AccessKey({
-                    user_id: newUser._id,
-                    access_key: accessKey,
-                    expires_at: expiresAt
-                });
-
-                await newAccessKey.save();
-
-                result.imported++;
-                result.access_keys.push({
-                    user_id: newUser._id,
-                    full_name: newUser.full_name,
-                    email: newUser.email,
-                    access_key: accessKey,
-                    qr_token: newUser.qr_code_token
-                });
-
-            } catch (err: any) {
-                result.failed++;
-                result.errors.push({ row, error: err.message });
-            }
-        }
-
-        return sendSuccess(res, result, 'Bulk import completed');
-
-    } catch (error: any) {
-        console.error('Bulk import error:', error);
-        return sendError(res, 'Failed to import users', 500);
+  if (req.file) {
+    const workbook  = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) {
+      sendError(res, 'The uploaded Excel file contains no sheets.', 400);
+      return;
     }
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) {
+      sendError(res, 'Could not find the first sheet in the Excel file.', 400);
+      return;
+    }
+    userData = XLSX.utils.sheet_to_json(sheet);
+  } else if (req.body.users && Array.isArray(req.body.users)) {
+    userData = req.body.users;
+  } else {
+    sendError(res, 'No file uploaded or users data provided', 400);
+    return;
+  }
+
+  const result = {
+    total:       userData.length,
+    imported:    0,
+    failed:      0,
+    errors:      [] as any[],
+    access_keys: [] as any[],
+  };
+
+  logger.info(`Starting bulk import of ${userData.length} records`);
+
+  for (const row of userData) {
+    try {
+      if (!row.full_name) {
+        result.failed++;
+        result.errors.push({ row, error: 'Missing full_name' });
+        continue;
+      }
+
+      const email = row.email?.trim()
+        || `user_${Date.now()}_${Math.random().toString(36).substring(7)}@temp.local`;
+
+      // Check for duplicate email
+      const existing = await prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        result.failed++;
+        result.errors.push({ email, error: 'User already exists' });
+        continue;
+      }
+
+      // Hash a temporary password
+      const tempPassword   = `temp_${Math.random().toString(36).substring(7)}`;
+      const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+      // Build embedded profile JSON (matches User.profile Json field)
+      const profileJson: Record<string, unknown> = {
+        age:             row.age,
+        gender:          row.gender,
+        marital_status:  row.marital_status,
+        education_level: row.education_level,
+        province:        row.province,
+        district:        row.district,
+        sector:          row.sector,
+        cell:            row.cell,
+        village:         row.village,
+        service_areas:   row.service_areas
+          ? row.service_areas.split(',').map((s: string) => s.trim())
+          : [],
+      };
+
+      if (row.farm_size) {
+        profileJson.farm_details = {
+          farm_location: {
+            province: row.province,
+            district: row.district,
+            sector:   row.sector,
+            cell:     row.cell,
+            village:  row.village,
+          },
+          farm_age:         row.farm_age,
+          planted:          row.planted,
+          avocado_type:     row.avocado_type,
+          mixed_percentage: row.mixed_percentage,
+          farm_size:        row.farm_size,
+          tree_count:       row.tree_count,
+          upi_number:       row.upi_number,
+          assistance:       row.assistance,
+        };
+      }
+
+      const newUser = await prisma.user.create({
+        data: {
+          full_name:     row.full_name,
+          email,
+          phone:         row.phone ?? null,
+          password:      hashedPassword,
+          role:          row.role ?? 'farmer',
+          status:        'active',
+          qr_code_token: generateQRToken(),
+          profile:       profileJson as any,
+        },
+      });
+
+      // Generate access key (30-day expiry)
+      const accessKeyValue = generateAccessKey();
+      const expiresAt      = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      await prisma.accessKey.create({
+        data: {
+          user_id:    newUser.id,
+          access_key: accessKeyValue,
+          expires_at: expiresAt,
+        },
+      });
+
+      result.imported++;
+      result.access_keys.push({
+        user_id:    newUser.id,
+        full_name:  newUser.full_name,
+        email:      newUser.email,
+        access_key: accessKeyValue,
+        qr_token:   newUser.qr_code_token,
+      });
+
+    } catch (err: any) {
+      result.failed++;
+      result.errors.push({ row, error: err.message });
+    }
+  }
+
+  sendSuccess(res, result, 'Bulk import completed');
 }));
 
 /**
  * @route   POST /api/profile-access/verify-access-key
- * @desc    Verify access key and get user info for profile editing
+ * @desc    Verify access key and return user info for profile editing
  * @access  Public
  */
-router.post('/verify-access-key', asyncHandler(async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-    try {
-        const { access_key } = req.body;
+router.post('/verify-access-key', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { access_key } = req.body;
 
-        if (!access_key || !isValidAccessKeyFormat(access_key)) {
-            sendError(res, 'Invalid access key format', 400);
-            return;
-        }
+  if (!access_key || !isValidAccessKeyFormat(access_key)) {
+    sendError(res, 'Invalid access key format', 400);
+    return;
+  }
 
-        const accessKeyDoc = await AccessKey.findOne({
-            access_key,
-            is_used: false,
-            expires_at: { $gt: new Date() }
-        }).populate('user_id');
+  const accessKeyDoc = await prisma.accessKey.findUnique({
+    where:   { access_key },
+    include: { user: true },
+  });
 
-        if (!accessKeyDoc) {
-            sendError(res, 'Invalid or expired access key', 404);
-            return;
-        }
+  if (
+    !accessKeyDoc ||
+    accessKeyDoc.is_used ||
+    accessKeyDoc.expires_at <= new Date()
+  ) {
+    sendError(res, 'Invalid or expired access key', 404);
+    return;
+  }
 
-        const user = accessKeyDoc.user_id as any;
+  const { user } = accessKeyDoc;
 
-        sendSuccess(res, {
-            user: {
-                id: user._id,
-                full_name: user.full_name,
-                email: user.email,
-                phone: user.phone,
-                role: user.role,
-                profile: user.profile
-            },
-            access_key_id: accessKeyDoc._id
-        }, 'Access key verified successfully');
-
-    } catch (error: any) {
-        console.error('Access key verification error:', error);
-        sendError(res, 'Failed to verify access key', 500);
-    }
+  sendSuccess(res, {
+    user: {
+      id:        user.id,
+      full_name: user.full_name,
+      email:     user.email,
+      phone:     user.phone,
+      role:      user.role,
+      profile:   user.profile,
+    },
+    access_key_id: accessKeyDoc.id,
+  }, 'Access key verified successfully');
 }));
 
 /**
  * @route   PUT /api/profile-access/update-profile
- * @desc    Update user profile using access key
+ * @desc    Update user profile using an access key (one-time use)
  * @access  Public (with valid access key)
  */
-router.put('/update-profile', asyncHandler(async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-    try {
-        const { access_key, profile_data } = req.body;
+router.put('/update-profile', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { access_key, profile_data } = req.body;
 
-        if (!access_key || !isValidAccessKeyFormat(access_key)) {
-            sendError(res, 'Invalid access key format', 400);
-            return;
-        }
+  if (!access_key || !isValidAccessKeyFormat(access_key)) {
+    sendError(res, 'Invalid access key format', 400);
+    return;
+  }
 
-        const accessKeyDoc = await AccessKey.findOne({
-            access_key,
-            is_used: false,
-            expires_at: { $gt: new Date() }
-        });
+  const accessKeyDoc = await prisma.accessKey.findUnique({ where: { access_key } });
 
-        if (!accessKeyDoc) {
-            sendError(res, 'Invalid or expired access key', 404);
-            return;
-        }
+  if (
+    !accessKeyDoc ||
+    accessKeyDoc.is_used ||
+    accessKeyDoc.expires_at <= new Date()
+  ) {
+    sendError(res, 'Invalid or expired access key', 404);
+    return;
+  }
 
-        const user = await User.findById(accessKeyDoc.user_id);
-        if (!user) {
-            sendError(res, 'User not found', 404);
-            return;
-        }
+  const user = await prisma.user.findUnique({ where: { id: accessKeyDoc.user_id } });
+  if (!user) {
+    sendError(res, 'User not found', 404);
+    return;
+  }
 
-        // Update user profile
-        if (profile_data.full_name) user.full_name = profile_data.full_name;
-        if (profile_data.phone) user.phone = profile_data.phone;
-        if (profile_data.email) user.email = profile_data.email;
-        
-        // Update profile object
-        if (profile_data.profile) {
-            user.profile = { ...user.profile, ...profile_data.profile };
-        }
+  // Build user-level update
+  const userUpdate: Record<string, unknown> = {};
+  if (profile_data.full_name) userUpdate.full_name = profile_data.full_name;
+  if (profile_data.phone)     userUpdate.phone     = profile_data.phone;
+  if (profile_data.email)     userUpdate.email     = profile_data.email;
 
-        await user.save();
+  // Merge embedded profile JSON
+  if (profile_data.profile) {
+    const current = (user.profile && typeof user.profile === 'object' && !Array.isArray(user.profile))
+      ? user.profile as Record<string, unknown>
+      : {};
+    userUpdate.profile = { ...current, ...profile_data.profile };
+  }
 
-        // Mark access key as used
-        accessKeyDoc.is_used = true;
-        await accessKeyDoc.save();
+  // Update user and mark access key used in a transaction
+  const [updatedUser] = await prisma.$transaction([
+    prisma.user.update({ where: { id: user.id }, data: userUpdate }),
+    prisma.accessKey.update({ where: { id: accessKeyDoc.id }, data: { is_used: true } }),
+  ]);
 
-        sendSuccess(res, {
-            user: user.toPublicJSON()
-        }, 'Profile updated successfully');
+  // Return a safe public projection
+  const publicUser = {
+    id:        updatedUser.id,
+    full_name: updatedUser.full_name,
+    email:     updatedUser.email,
+    phone:     updatedUser.phone,
+    role:      updatedUser.role,
+    status:    updatedUser.status,
+    profile:   updatedUser.profile,
+    created_at: updatedUser.created_at,
+    updated_at: updatedUser.updated_at,
+  };
 
-    } catch (error: any) {
-        console.error('Profile update error:', error);
-        sendError(res, 'Failed to update profile', 500);
-    }
+  sendSuccess(res, { user: publicUser }, 'Profile updated successfully');
 }));
 
 /**
  * @route   GET /api/profile-access/generate-qr/:userId
- * @desc    Generate QR code containing access key for a user
+ * @desc    Generate QR code containing a fresh access key for a user
  * @access  Private (Agent/Admin)
  */
-router.get('/generate-qr/:userId', authenticate, authorize('agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-    try {
-        const { userId } = req.params;
+router.get('/generate-qr/:userId', authenticate, authorize('agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { userId } = req.params;
 
-        const user = await User.findById(userId);
-        if (!user) {
-            sendError(res, 'User not found', 404);
-            return;
-        }
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    sendError(res, 'User not found', 404);
+    return;
+  }
 
-        // Generate new access key
-        const accessKey = generateAccessKey();
-        const expiresAt = new Date();
-        expiresAt.setDate(expiresAt.getDate() + 7); // 7 days expiry for QR codes
+  const accessKeyValue = generateAccessKey();
+  const expiresAt      = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 7); // 7-day expiry for QR codes
 
-        const newAccessKey = new AccessKey({
-            user_id: user._id,
-            access_key: accessKey,
-            expires_at: expiresAt
-        });
+  await prisma.accessKey.create({
+    data: {
+      user_id:    user.id,
+      access_key: accessKeyValue,
+      expires_at: expiresAt,
+    },
+  });
 
-        await newAccessKey.save();
+  const qrData  = JSON.stringify({
+    access_key: accessKeyValue,
+    user_name:  user.full_name,
+    expires_at: expiresAt.toISOString(),
+  });
 
-        // Generate QR Code with access key
-        const qrData = JSON.stringify({
-            access_key: accessKey,
-            user_name: user.full_name,
-            expires_at: expiresAt.toISOString()
-        });
-        
-        const qrImage = await QRCode.toDataURL(qrData);
+  const qrImage = await QRCode.toDataURL(qrData);
 
-        sendSuccess(res, {
-            user_id: user._id,
-            user_name: user.full_name,
-            access_key: accessKey,
-            qr_image: qrImage,
-            expires_at: expiresAt
-        }, 'QR Code generated successfully');
-
-    } catch (error: any) {
-        console.error('QR Generate error:', error);
-        sendError(res, 'Failed to generate QR code', 500);
-    }
+  sendSuccess(res, {
+    user_id:    user.id,
+    user_name:  user.full_name,
+    access_key: accessKeyValue,
+    qr_image:   qrImage,
+    expires_at: expiresAt,
+  }, 'QR Code generated successfully');
 }));
 
 export default router;

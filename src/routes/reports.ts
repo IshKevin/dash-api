@@ -1,228 +1,124 @@
 import { Router, Response } from 'express';
-import { asyncHandler } from '../utils/asyncHandler';
+import { prisma } from '../lib/prisma';
 import { authenticate, authorize } from '../middleware/auth';
-import { sendSuccess, sendError, sendPaginatedResponse } from '../utils/responses';
+import { asyncHandler } from '../middleware/errorHandler';
+import { sendSuccess, sendError, sendPaginatedResponse, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import Report from '../models/Report';
-import { upload } from '../middleware/upload';
+import { validateIdParam, validatePagination } from '../middleware/validation';
 
 const router = Router();
 
-/**
- * @route   GET /api/reports
- * @desc    Get all reports with pagination and filters
- * @access  Private (Admin, Agent)
- */
-router.get('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { 
-            page = 1, 
-            limit = 10, 
-            agent_id, 
-            report_type, 
-            status, 
-            date_from, 
-            date_to 
-        } = req.query;
+const reportSelect = {
+  id: true, title: true, description: true, report_type: true, status: true, priority: true,
+  agent_id: true, farmer_id: true, scheduled_date: true, completed_date: true, location: true,
+  attachments: true, findings: true, recommendations: true, notes: true, created_at: true, updated_at: true,
+  agent: { select: { full_name: true, email: true } },
+};
 
-        const query: any = {};
-        
-        // If user is an agent, only show their reports
-        if (req.user?.role === 'agent') {
-            query.agent_id = req.user.id;
-        } else if (agent_id) {
-            query.agent_id = agent_id;
-        }
-        
-        if (report_type) query.report_type = report_type;
-        if (status) query.status = status;
-        
-        if (date_from || date_to) {
-            query.scheduled_date = {};
-            if (date_from) query.scheduled_date.$gte = new Date(date_from as string);
-            if (date_to) query.scheduled_date.$lte = new Date(date_to as string);
-        }
+router.get('/statistics', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const where: any = {};
+  if (req.user?.role === 'agent') where.agent_id = req.user.id;
 
-        const reports = await Report.find(query)
-            .populate('agent_id', 'full_name email')
-            .populate('farmer_id', 'full_name email')
-            .sort({ created_at: -1 })
-            .limit(Number(limit))
-            .skip((Number(page) - 1) * Number(limit));
+  const [total, byStatus, byType, byPriority] = await Promise.all([
+    prisma.report.count({ where }),
+    prisma.report.groupBy({ by: ['status'], where, _count: true }),
+    prisma.report.groupBy({ by: ['report_type'], where, _count: true }),
+    prisma.report.groupBy({ by: ['priority'], where, _count: true }),
+  ]);
 
-        const total = await Report.countDocuments(query);
+  const statusCounts = byStatus.reduce((acc: any, s) => { acc[s.status] = s._count; return acc; }, {});
+  const typeCounts = byType.reduce((acc: any, t) => { acc[t.report_type] = t._count; return acc; }, {});
+  const priorityCounts = byPriority.reduce((acc: any, p) => { acc[p.priority] = p._count; return acc; }, {});
 
-        return sendPaginatedResponse(res, reports, total, Number(page), Number(limit), 'Reports retrieved successfully');
-    } catch (error: any) {
-        console.error('Get reports error:', error);
-        return sendError(res, 'Failed to retrieve reports', 500);
-    }
+  sendSuccess(res, { total, byStatus: statusCounts, byType: typeCounts, byPriority: priorityCounts }, 'Report statistics retrieved successfully');
 }));
 
-/**
- * @route   GET /api/reports/:id
- * @desc    Get report by ID
- * @access  Private (Admin, Agent - own reports)
- */
-router.get('/:id', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const report = await Report.findById(req.params.id)
-            .populate('agent_id', 'full_name email')
-            .populate('farmer_id', 'full_name email');
-        
-        if (!report) {
-            return sendError(res, 'Report not found', 404);
-        }
+router.get('/', authenticate, authorize('admin', 'agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const where: any = {};
 
-        // If user is an agent, ensure they can only access their own reports
-        if (req.user?.role === 'agent' && report.agent_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
+  if (req.user?.role === 'agent') where.agent_id = req.user.id;
+  else if (req.query.agent_id) where.agent_id = req.query.agent_id;
 
-        return sendSuccess(res, report, 'Report retrieved successfully');
-    } catch (error: any) {
-        console.error('Get report error:', error);
-        return sendError(res, 'Failed to retrieve report', 500);
-    }
+  if (req.query.report_type) where.report_type = req.query.report_type;
+  if (req.query.status) where.status = req.query.status;
+  if (req.query.date_from || req.query.date_to) {
+    where.scheduled_date = {};
+    if (req.query.date_from) where.scheduled_date.gte = new Date(req.query.date_from as string);
+    if (req.query.date_to) where.scheduled_date.lte = new Date(req.query.date_to as string);
+  }
+
+  const [reports, total] = await Promise.all([
+    prisma.report.findMany({ where, select: reportSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.report.count({ where }),
+  ]);
+  sendPaginatedResponse(res, reports, total, page, limit, 'Reports retrieved successfully');
 }));
 
-/**
- * @route   POST /api/reports
- * @desc    Create new report
- * @access  Private (Admin, Agent)
- */
+router.get('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const report = await prisma.report.findUnique({ where: { id: req.params.id }, select: reportSelect });
+  if (!report) { sendNotFound(res, 'Report not found'); return; }
+  if (req.user?.role === 'agent' && report.agent_id !== req.user.id) { sendError(res, 'Access denied', 403); return; }
+  sendSuccess(res, report, 'Report retrieved successfully');
+}));
+
 router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const reportData = {
-            ...req.body,
-            agent_id: req.user?.role === 'agent' ? req.user.id : req.body.agent_id
-        };
+  const { title, description, report_type, priority, farmer_id, scheduled_date, location, findings, recommendations, notes } = req.body;
+  if (!title || !description || !report_type || !scheduled_date || !location) {
+    sendError(res, 'title, description, report_type, scheduled_date, and location are required', 400); return;
+  }
 
-        const report = new Report(reportData);
-        await report.save();
-        
-        await report.populate('agent_id', 'full_name email');
-        if (report.farmer_id) {
-            await report.populate('farmer_id', 'full_name email');
-        }
+  const agent_id = req.user?.role === 'agent' ? req.user.id : req.body.agent_id;
+  if (!agent_id) { sendError(res, 'agent_id is required', 400); return; }
 
-        return sendSuccess(res, report, 'Report created successfully', 201);
-    } catch (error: any) {
-        console.error('Create report error:', error);
-        if (error.name === 'ValidationError') {
-            return sendError(res, error.message, 400);
-        }
-        return sendError(res, 'Failed to create report', 500);
-    }
+  const report = await prisma.report.create({
+    data: {
+      title, description, report_type, priority: (priority || 'medium') as any,
+      agent_id, farmer_id: farmer_id || null,
+      scheduled_date: new Date(scheduled_date), location,
+      attachments: [], findings: findings || null, recommendations: recommendations || null, notes: notes || null,
+    },
+    select: reportSelect,
+  });
+  sendSuccess(res, report, 'Report created successfully', 201);
 }));
 
-/**
- * @route   PUT /api/reports/:id
- * @desc    Update report
- * @access  Private (Admin, Agent - own reports)
- */
-router.put('/:id', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const report = await Report.findById(req.params.id);
-        if (!report) {
-            return sendError(res, 'Report not found', 404);
-        }
+router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const existing = await prisma.report.findUnique({ where: { id: req.params.id }, select: { agent_id: true } });
+  if (!existing) { sendNotFound(res, 'Report not found'); return; }
+  if (req.user?.role === 'agent' && existing.agent_id !== req.user.id) { sendError(res, 'Access denied', 403); return; }
 
-        // If user is an agent, ensure they can only update their own reports
-        if (req.user?.role === 'agent' && report.agent_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
+  const { scheduled_date, completed_date, ...rest } = req.body;
+  const data: any = { ...rest };
+  if (scheduled_date) data.scheduled_date = new Date(scheduled_date);
+  if (completed_date) data.completed_date = new Date(completed_date);
 
-        const updatedReport = await Report.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            { new: true, runValidators: true }
-        ).populate('agent_id', 'full_name email')
-         .populate('farmer_id', 'full_name email');
-
-        return sendSuccess(res, updatedReport, 'Report updated successfully');
-    } catch (error: any) {
-        console.error('Update report error:', error);
-        if (error.name === 'ValidationError') {
-            return sendError(res, error.message, 400);
-        }
-        return sendError(res, 'Failed to update report', 500);
-    }
+  const report = await prisma.report.update({ where: { id: req.params.id }, data, select: reportSelect });
+  sendSuccess(res, report, 'Report updated successfully');
 }));
 
-/**
- * @route   DELETE /api/reports/:id
- * @desc    Delete report
- * @access  Private (Admin only)
- */
-router.delete('/:id', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const report = await Report.findById(req.params.id);
-        if (!report) {
-            return sendError(res, 'Report not found', 404);
-        }
-
-        await Report.findByIdAndDelete(req.params.id);
-        return sendSuccess(res, null, 'Report deleted successfully');
-    } catch (error: any) {
-        console.error('Delete report error:', error);
-        return sendError(res, 'Failed to delete report', 500);
-    }
+router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const report = await prisma.report.delete({ where: { id: req.params.id } }).catch(() => null);
+  if (!report) { sendNotFound(res, 'Report not found'); return; }
+  sendSuccess(res, null, 'Report deleted successfully');
 }));
 
-/**
- * @route   POST /api/reports/:id/attachments
- * @desc    Upload report attachments
- * @access  Private (Admin, Agent - own reports)
- */
-router.post('/:id/attachments', authenticate, authorize('admin', 'agent'), upload.array('files', 5), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const report = await Report.findById(req.params.id);
-        if (!report) {
-            return sendError(res, 'Report not found', 404);
-        }
+router.post('/:id/attachments', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const existing = await prisma.report.findUnique({ where: { id: req.params.id }, select: { agent_id: true, attachments: true } });
+  if (!existing) { sendNotFound(res, 'Report not found'); return; }
+  if (req.user?.role === 'agent' && existing.agent_id !== req.user.id) { sendError(res, 'Access denied', 403); return; }
 
-        // If user is an agent, ensure they can only update their own reports
-        if (req.user?.role === 'agent' && report.agent_id.toString() !== req.user.id) {
-            return sendError(res, 'Access denied', 403);
-        }
+  const files = (req as any).files as Express.Multer.File[];
+  if (!files || files.length === 0) { sendError(res, 'No files uploaded', 400); return; }
 
-        const files = req.files as Express.Multer.File[];
-        if (!files || files.length === 0) {
-            return sendError(res, 'No files uploaded', 400);
-        }
-
-        // In a real implementation, you would upload files to cloud storage
-        // For now, we'll just store the file paths
-        const attachmentUrls = files.map(file => `/uploads/${file.filename}`);
-        
-        report.attachments.push(...attachmentUrls);
-        await report.save();
-
-        return sendSuccess(res, { attachments: attachmentUrls }, 'Attachments uploaded successfully');
-    } catch (error: any) {
-        console.error('Upload attachments error:', error);
-        return sendError(res, 'Failed to upload attachments', 500);
-    }
-}));
-
-/**
- * @route   GET /api/reports/statistics
- * @desc    Get report statistics
- * @access  Private (Admin, Agent)
- */
-router.get('/statistics', authenticate, authorize('admin', 'agent'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
-    try {
-        // If user is an agent, only show their report statistics
-        // TODO: Implement agent-specific statistics filtering
-        
-        const statistics = await Report.getStatistics();
-
-        return sendSuccess(res, statistics, 'Report statistics retrieved successfully');
-    } catch (error: any) {
-        console.error('Get report statistics error:', error);
-        return sendError(res, 'Failed to retrieve report statistics', 500);
-    }
+  const attachmentUrls = files.map(file => `/uploads/${file.filename}`);
+  const report = await prisma.report.update({
+    where: { id: req.params.id },
+    data: { attachments: { push: attachmentUrls } },
+    select: reportSelect,
+  });
+  sendSuccess(res, { attachments: attachmentUrls, report }, 'Attachments uploaded successfully');
 }));
 
 export default router;
