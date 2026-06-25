@@ -1158,7 +1158,8 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           responses: { 200: { description: 'Paginated orders list' } },
         },
         post: {
-          summary: 'Create order. Validates stock and decrements quantities on creation.',
+          summary: 'Create order. Validates stock and decrements quantities atomically.',
+          description: '`customer_id` must reference a **Customer** record (from `GET /api/customers`), not a User ID. Creates order items, deducts stock in a single transaction.',
           tags: ['Orders'],
           requestBody: {
             required: true,
@@ -1168,7 +1169,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                   type: 'object',
                   required: ['customer_id', 'items', 'shipping_address'],
                   properties: {
-                    customer_id: { type: 'string' },
+                    customer_id: { type: 'string', description: 'ID from the Customer table (not User ID)' },
                     items: {
                       type: 'array',
                       items: {
@@ -1831,18 +1832,21 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/reports': {
         get: {
-          summary: 'List reports (admin/agent)',
+          summary: 'List reports (admin/agent). Agents only see their own reports.',
           tags: ['Reports'],
           parameters: [
             { $ref: '#/components/parameters/pageParam' },
             { $ref: '#/components/parameters/limitParam' },
-            { in: 'query', name: 'type', schema: { type: 'string', enum: ['inspection', 'audit', 'assessment', 'survey', 'other'] } },
+            { in: 'query', name: 'report_type', schema: { type: 'string', enum: ['inspection', 'audit', 'assessment', 'survey', 'other'] } },
             { in: 'query', name: 'status', schema: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] } },
+            { in: 'query', name: 'agent_id', schema: { type: 'string' }, description: 'Filter by agent (admin only)' },
+            { in: 'query', name: 'date_from', schema: { type: 'string', format: 'date-time' } },
+            { in: 'query', name: 'date_to', schema: { type: 'string', format: 'date-time' } },
           ],
           responses: { 200: { description: 'Paginated reports' } },
         },
         post: {
-          summary: 'Create report (agent/admin)',
+          summary: 'Create report (agent/admin). Agents auto-assigned; admins must supply agent_id.',
           tags: ['Reports'],
           requestBody: {
             required: true,
@@ -1850,22 +1854,33 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['title', 'type', 'location', 'findings'],
+                  required: ['title', 'description', 'report_type', 'scheduled_date', 'location'],
                   properties: {
                     title: { type: 'string' },
-                    type: { type: 'string', enum: ['inspection', 'audit', 'assessment', 'survey', 'other'] },
+                    description: { type: 'string' },
+                    report_type: { type: 'string', enum: ['inspection', 'audit', 'assessment', 'survey', 'other'] },
+                    agent_id: { type: 'string', description: 'Required when created by admin; auto-set for agents' },
                     farmer_id: { type: 'string' },
-                    location: { type: 'object', description: '{province, district, sector}' },
+                    scheduled_date: { type: 'string', format: 'date-time' },
+                    location: { type: 'string', description: 'Free-text location description' },
                     findings: { type: 'string' },
                     recommendations: { type: 'string' },
+                    notes: { type: 'string' },
                     priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-                    attachments: { type: 'array', items: { type: 'string', format: 'uri' } },
                   },
                 },
               },
             },
           },
           responses: { 201: { description: 'Report created' } },
+        },
+      },
+      '/api/reports/statistics': {
+        get: {
+          summary: 'Report statistics — counts by status, type, and priority (admin/agent)',
+          description: 'Agents only see stats for their own reports. Admins see platform-wide stats.',
+          tags: ['Reports'],
+          responses: { 200: { description: 'Aggregated report counts grouped by status, type, and priority' } },
         },
       },
       '/api/reports/{id}': {
@@ -2408,18 +2423,28 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/farmer-information/{id}/verify': {
         put: {
-          summary: 'Verify or reject a farmer profile (admin)',
+          summary: 'Verify or reject a farmer profile (admin). The {id} is the FarmerProfile record ID.',
           tags: ['FarmerInformation'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: {
             required: true,
             content: {
               'application/json': {
-                schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['verified', 'rejected'] }, reason: { type: 'string' } } },
+                schema: {
+                  type: 'object',
+                  required: ['verification_status'],
+                  properties: {
+                    verification_status: { type: 'string', enum: ['verified', 'rejected'], description: 'New verification status' },
+                  },
+                },
               },
             },
           },
-          responses: { 200: { description: 'Verification status updated' }, 404: { description: 'Farmer not found' } },
+          responses: {
+            200: { description: 'Verification status updated' },
+            400: { description: 'verification_status must be "verified" or "rejected"' },
+            404: { description: 'Farmer profile not found' },
+          },
         },
       },
 
@@ -2490,14 +2515,26 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/reports/export': {
         get: {
-          summary: 'Export reports as CSV or JSON',
+          summary: 'Export reports as CSV (default) or JSON file download',
+          description: 'Returns a file attachment. Use `format=json` for a JSON array, otherwise returns CSV. Capped at 1000 rows.',
           tags: ['Reports'],
           parameters: [
-            { in: 'query', name: 'format', schema: { type: 'string', enum: ['csv', 'json'], default: 'json' } },
-            { in: 'query', name: 'start_date', schema: { type: 'string', format: 'date' } },
-            { in: 'query', name: 'end_date', schema: { type: 'string', format: 'date' } },
+            { in: 'query', name: 'format', schema: { type: 'string', enum: ['csv', 'json'], default: 'csv' }, description: 'Output format' },
+            { in: 'query', name: 'report_type', schema: { type: 'string', enum: ['inspection', 'audit', 'assessment', 'survey', 'other'] } },
+            { in: 'query', name: 'status', schema: { type: 'string' } },
+            { in: 'query', name: 'agent_id', schema: { type: 'string' } },
+            { in: 'query', name: 'from', schema: { type: 'string', format: 'date-time' }, description: 'Filter created_at >= from' },
+            { in: 'query', name: 'to', schema: { type: 'string', format: 'date-time' }, description: 'Filter created_at <= to' },
           ],
-          responses: { 200: { description: 'Report file download or JSON array' } },
+          responses: {
+            200: {
+              description: 'File download (text/csv or application/json)',
+              content: {
+                'text/csv': { schema: { type: 'string', format: 'binary' } },
+                'application/json': { schema: { type: 'array', items: { type: 'object' } } },
+              },
+            },
+          },
         },
       },
 

@@ -187,7 +187,7 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
 
 // PUT /api/farmer-information/:id/verify
 router.put('/:id/verify', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { verification_status, notes } = req.body;
+  const { verification_status } = req.body;
 
   if (!verification_status || !['verified', 'rejected'].includes(verification_status)) {
     sendError(res, 'verification_status must be "verified" or "rejected"', 400);
@@ -202,10 +202,7 @@ router.put('/:id/verify', authenticate, authorize('admin'), validateIdParam, asy
 
   const updated = await prisma.farmerProfile.update({
     where: { id: req.params.id },
-    data: {
-      verification_status,
-      ...(notes !== undefined ? { notes } : {}),
-    },
+    data: { verification_status },
   });
 
   sendSuccess(res, updated, `Farmer profile ${verification_status} successfully`);
