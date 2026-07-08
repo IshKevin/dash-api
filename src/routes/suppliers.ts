@@ -84,6 +84,30 @@ router.post('/', authenticate, authorize('admin'), asyncHandler(async (req: Auth
   sendCreated(res, supplier, 'Supplier created successfully');
 }));
 
+// PUT /api/suppliers/bulk — must be defined BEFORE /:id to avoid route shadowing
+router.put('/bulk', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { suppliers } = req.body;
+
+  if (!Array.isArray(suppliers) || suppliers.length === 0) {
+    sendError(res, 'suppliers must be a non-empty array', 400);
+    return;
+  }
+
+  const results = await Promise.all(suppliers.map((supplier: any) => {
+    if (!supplier.id) return null;
+    const { id, email, category, status, ...rest } = supplier;
+    const updateData: any = { ...rest };
+    if (email) updateData.email = email.toLowerCase();
+    if (category) updateData.category = category as any;
+    if (status) updateData.status = status as any;
+
+    return prisma.supplier.update({ where: { id }, data: updateData }).catch(() => null);
+  }));
+
+  const updated = results.filter(Boolean);
+  sendSuccess(res, updated, `${updated.length} of ${suppliers.length} suppliers updated successfully`);
+}));
+
 // PUT /api/suppliers/:id
 router.put('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { email, category, status, ...rest } = req.body;

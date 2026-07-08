@@ -9,7 +9,7 @@ import { AuthenticatedRequest } from '../types/auth';
 const router = Router();
 
 // GET /api/inventory
-router.get('/', authenticate, authorize('admin'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
 
@@ -71,6 +71,47 @@ router.get('/summary', authenticate, authorize('admin', 'shop_manager'), asyncHa
   }, 'Inventory summary retrieved successfully');
 }));
 
+// POST /api/inventory
+router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const {
+    name, category, description, price, quantity, unit, supplier_id,
+    variety, min_stock, cost, source_type, brand, images, specifications,
+    harvest_date, expiry_date,
+  } = req.body;
+
+  if (!name || !category || price === undefined || !unit || !supplier_id) {
+    sendError(res, 'name, category, price, unit, and supplier_id are required', 400);
+    return;
+  }
+
+  const product = await prisma.product.create({
+    data: {
+      name, category: category as any, description, price, quantity: quantity || 0, unit: unit as any,
+      supplier_id, variety, min_stock: min_stock ?? 10, cost, source_type: source_type || 'manual',
+      brand, images: images || [], specifications,
+      harvest_date: harvest_date ? new Date(harvest_date) : undefined,
+      expiry_date: expiry_date ? new Date(expiry_date) : undefined,
+      status: (quantity || 0) > 0 ? 'available' : 'out_of_stock',
+    },
+  });
+
+  if (product.quantity > 0) {
+    await prisma.stockHistory.create({
+      data: {
+        product_id: product.id,
+        previous_quantity: 0,
+        new_quantity: product.quantity,
+        change_amount: product.quantity,
+        reason: 'restock',
+        notes: 'Initial stock',
+        created_by: req.user?.id,
+      },
+    });
+  }
+
+  sendSuccess(res, product, 'Inventory item created successfully');
+}));
+
 // GET /api/inventory/:id
 router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const product = await prisma.product.findUnique({ where: { id: req.params.id } });
@@ -81,6 +122,54 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
   }
 
   sendSuccess(res, product, 'Product retrieved successfully');
+}));
+
+// PUT /api/inventory/:id
+router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const {
+    name, category, description, price, quantity, unit, supplier_id,
+    variety, min_stock, cost, source_type, brand, images, specifications,
+    harvest_date, expiry_date,
+  } = req.body;
+
+  const updateData: any = {
+    name, description, price, unit: unit as any, supplier_id,
+    variety, min_stock, cost, source_type, brand, images, specifications,
+  };
+  if (category) updateData.category = category as any;
+  if (quantity !== undefined) {
+    updateData.quantity = quantity;
+    updateData.status = quantity > 0 ? 'available' : 'out_of_stock';
+  }
+  if (harvest_date) updateData.harvest_date = new Date(harvest_date);
+  if (expiry_date) updateData.expiry_date = new Date(expiry_date);
+
+  const product = await prisma.product.update({
+    where: { id: req.params.id },
+    data: updateData,
+  }).catch(() => null);
+
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
+
+  sendSuccess(res, product, 'Inventory item updated successfully');
+}));
+
+// DELETE /api/inventory/:id
+router.delete('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const product = await prisma.product.update({
+    where: { id: req.params.id },
+    data: { status: 'discontinued' },
+  }).catch(() => null);
+
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
+
+  sendSuccess(res, null, 'Inventory item deleted successfully');
 }));
 
 // PUT /api/inventory/:id/restock

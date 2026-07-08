@@ -99,8 +99,11 @@ router.post('/addshop', authenticate, authorize('admin'), validateShopCreation, 
  * @desc    Get all shops
  * @access  Private (Admin, Shop Manager)
  */
-router.get('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const where = req.user?.role === 'shop_manager' ? { manager_id: req.user.id } : {};
+
   const shops = await prisma.shop.findMany({
+    where,
     orderBy: { shop_number: 'asc' },
     include: { creator: { select: { full_name: true, email: true } } },
   });
@@ -130,6 +133,11 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHandle
     return;
   }
 
+  if (req.user?.role === 'shop_manager' && shop.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
   sendSuccess(res, shop, 'Shop retrieved successfully');
 }));
 
@@ -148,6 +156,11 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateSho
   const existing = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
   if (!existing) {
     sendNotFound(res, 'Shop not found');
+    return;
+  }
+
+  if (req.user?.role === 'shop_manager' && existing.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
     return;
   }
 
@@ -188,9 +201,40 @@ router.delete('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHan
     return;
   }
 
+  if (req.user?.role === 'shop_manager' && existing.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
   await prisma.shop.delete({ where: { shop_number: shopNumber } });
 
   sendSuccess(res, existing, 'Shop deleted successfully');
+}));
+
+/**
+ * @route   PUT /api/shops/:shopId/selling-permission
+ * @desc    Enable or disable a shop's ability to sell (Admin only)
+ * @access  Private (Admin only)
+ */
+router.put('/:shopId/selling-permission', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { can_sell } = req.body;
+  if (typeof can_sell !== 'boolean') {
+    sendError(res, 'can_sell must be a boolean', 400);
+    return;
+  }
+
+  const existing = await prisma.shop.findUnique({ where: { id: req.params.shopId } });
+  if (!existing) {
+    sendNotFound(res, 'Shop not found');
+    return;
+  }
+
+  const updated = await prisma.shop.update({
+    where: { id: req.params.shopId },
+    data: { can_sell },
+  });
+
+  sendSuccess(res, updated, `Shop selling permission ${can_sell ? 'enabled' : 'disabled'} successfully`);
 }));
 
 // ─── Sub-routes: inventory, orders, analytics ────────────────────────────────
@@ -210,6 +254,11 @@ router.get('/:id/inventory', authenticate, authorize('admin', 'shop_manager'), a
   const shop = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
   if (!shop) {
     sendNotFound(res, 'Shop not found');
+    return;
+  }
+
+  if (req.user?.role === 'shop_manager' && shop.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
     return;
   }
 
@@ -247,6 +296,11 @@ router.get('/:id/orders', authenticate, authorize('admin', 'shop_manager'), asyn
   const shop = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
   if (!shop) {
     sendNotFound(res, 'Shop not found');
+    return;
+  }
+
+  if (req.user?.role === 'shop_manager' && shop.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
     return;
   }
 
@@ -297,6 +351,11 @@ router.get('/:id/analytics', authenticate, authorize('admin', 'shop_manager'), a
   const shop = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
   if (!shop) {
     sendNotFound(res, 'Shop not found');
+    return;
+  }
+
+  if (req.user?.role === 'shop_manager' && shop.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
     return;
   }
 

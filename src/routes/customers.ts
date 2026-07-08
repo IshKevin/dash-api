@@ -48,10 +48,15 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
 
 // POST /api/customers
 router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { name, email, phone, address, shop_id, status } = req.body;
+  const {
+    name, first_name, last_name, email, phone, address, shop_id, status,
+    type, company, address_details, preferences, tags, notes,
+  } = req.body;
 
-  if (!name || !email || !phone) {
-    sendError(res, 'Name, email, and phone are required', 400);
+  const resolvedName = name || [first_name, last_name].filter(Boolean).join(' ');
+
+  if (!resolvedName || !email || !phone) {
+    sendError(res, 'Name (or first/last name), email, and phone are required', 400);
     return;
   }
 
@@ -62,7 +67,11 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
   }
 
   const customer = await prisma.customer.create({
-    data: { name, email: email.toLowerCase(), phone, address, shop_id, status: (status || 'active') as any },
+    data: {
+      name: resolvedName, email: email.toLowerCase(), phone, address, shop_id, status: (status || 'active') as any,
+      first_name, last_name, type: type || 'individual', company, address_details, preferences,
+      tags: tags || [], notes,
+    },
   });
 
   sendCreated(res, customer, 'Customer created successfully');
@@ -70,8 +79,14 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
 
 // PUT /api/customers/:id
 router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { email, ...rest } = req.body;
-  const updateData: any = { ...rest };
+  const { email, name, first_name, last_name, ...rest } = req.body;
+  const updateData: any = { ...rest, first_name, last_name };
+
+  if (name) {
+    updateData.name = name;
+  } else if (first_name || last_name) {
+    updateData.name = [first_name, last_name].filter(Boolean).join(' ');
+  }
 
   if (email) {
     const conflict = await prisma.customer.findFirst({

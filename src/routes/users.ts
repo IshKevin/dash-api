@@ -12,6 +12,7 @@ import { authenticate, authorize, adminOnly } from '../middleware/auth';
 import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { env } from '../config/environment';
+import { createFarmerProfileForUser, createAgentProfileForUser, createFarmForUser } from '../utils/profileCreation';
 
 const router = Router();
 
@@ -20,6 +21,17 @@ const userSelect = {
   role: true, status: true, profile: true,
   qr_code_token: true, created_at: true, updated_at: true,
 };
+
+// Farmer/agent detail fields live on the separate FarmerProfile/AgentProfile
+// models, not on User.profile. Flatten the joined relation onto the user
+// object so pages can read e.g. user.province directly.
+function flattenProfile(user: any) {
+  const { farmer_profile, agent_profile, ...rest } = user;
+  const extra = farmer_profile || agent_profile;
+  if (!extra) return rest;
+  const { id: _id, user_id: _userId, user: _user, created_at: _createdAt, updated_at: _updatedAt, ...fields } = extra;
+  return { ...rest, ...fields };
+}
 
 function buildSearchWhere(req: any, baseWhere: any = {}) {
   const where: any = { ...baseWhere };
@@ -52,6 +64,35 @@ router.get('/', authenticate, adminOnly, validatePagination, asyncHandler(async 
   sendPaginatedResponse(res, users, total, page, limit, 'Users retrieved successfully');
 }));
 
+// POST /api/users
+router.post('/', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { full_name, email, phone, role } = req.body;
+
+  if (!full_name || !email) {
+    sendError(res, 'Full name and email are required', 400);
+    return;
+  }
+
+  const allowedRoles = ['admin', 'agent', 'farmer', 'shop_manager'];
+  const targetRole = role && allowedRoles.includes(role) ? role : 'shop_manager';
+
+  const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+  if (existing) {
+    sendError(res, 'User with this email already exists', 400);
+    return;
+  }
+
+  const defaultPassword = 'UserPass123!';
+  const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
+
+  const user = await prisma.user.create({
+    data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: targetRole, status: 'active' },
+    select: userSelect,
+  });
+
+  sendSuccess(res, { ...user, default_password: defaultPassword }, 'User created successfully');
+}));
+
 // GET /api/users/farmers
 router.get('/farmers', authenticate, authorize('admin', 'agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
@@ -59,15 +100,15 @@ router.get('/farmers', authenticate, authorize('admin', 'agent'), validatePagina
   const where = buildSearchWhere(req, { role: 'farmer' });
 
   const [farmers, total] = await Promise.all([
-    prisma.user.findMany({ where, select: userSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.user.findMany({ where, select: { ...userSelect, farmer_profile: true }, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
     prisma.user.count({ where }),
   ]);
 
-  sendPaginatedResponse(res, farmers, total, page, limit, 'Farmers retrieved successfully');
+  sendPaginatedResponse(res, farmers.map(flattenProfile), total, page, limit, 'Farmers retrieved successfully');
 }));
 
 // POST /api/users/farmers
-router.post('/farmers', authenticate, adminOnly, validateFarmerProfile, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/farmers', authenticate, authorize('admin', 'agent'), validateFarmerProfile, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const {
     full_name, email, age, phone, gender, marital_status, education_level,
     province, district, sector, cell, village,
@@ -89,20 +130,23 @@ router.post('/farmers', authenticate, adminOnly, validateFarmerProfile, asyncHan
   const defaultPassword = 'FarmerPass123!';
   const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
 
-  const profile = {
-    age, gender, marital_status, education_level,
-    province, district, sector, cell, village,
-    farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number, assistance,
-    farm_province, farm_district, farm_sector, farm_cell, farm_village,
-    farm_details: {
-      farm_location: { province: farm_province, district: farm_district, sector: farm_sector, cell: farm_cell, village: farm_village },
-      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number, assistance,
-    },
-  };
+  const farmer = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: 'farmer', status: 'active' },
+      select: userSelect,
+    });
 
-  const farmer = await prisma.user.create({
-    data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: 'farmer', status: 'active', profile },
-    select: userSelect,
+    const farmerFields = {
+      age, gender, marital_status, education_level,
+      province, district, sector, cell, village,
+      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number, assistance,
+      farm_province, farm_district, farm_sector, farm_cell, farm_village,
+    };
+
+    await createFarmerProfileForUser(tx, created.id, farmerFields);
+    await createFarmForUser(tx, created.id, full_name, farmerFields);
+
+    return created;
   });
 
   sendSuccess(res, { ...farmer, default_password: defaultPassword }, 'Farmer created successfully');
@@ -115,11 +159,11 @@ router.get('/agents', authenticate, authorize('admin'), validatePagination, asyn
   const where = buildSearchWhere(req, { role: 'agent' });
 
   const [agents, total] = await Promise.all([
-    prisma.user.findMany({ where, select: userSelect, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.user.findMany({ where, select: { ...userSelect, agent_profile: true }, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
     prisma.user.count({ where }),
   ]);
 
-  sendPaginatedResponse(res, agents, total, page, limit, 'Agents retrieved successfully');
+  sendPaginatedResponse(res, agents.map(flattenProfile), total, page, limit, 'Agents retrieved successfully');
 }));
 
 // POST /api/users/agents
@@ -140,12 +184,15 @@ router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: Authent
   const defaultPassword = 'AgentPass123!';
   const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
 
-  const agent = await prisma.user.create({
-    data: {
-      email: email.toLowerCase(), password: hashed, full_name, phone, role: 'agent', status: 'active',
-      profile: { province, district, service_areas: sector ? [sector] : [] },
-    },
-    select: userSelect,
+  const agent = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: 'agent', status: 'active' },
+      select: userSelect,
+    });
+
+    await createAgentProfileForUser(tx, created.id, { province, district, sector });
+
+    return created;
   });
 
   sendSuccess(res, { ...agent, default_password: defaultPassword }, 'Agent created successfully');

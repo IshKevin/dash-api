@@ -8,6 +8,11 @@ import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
 
+// Test route
+router.get('/test', (_req: any, res: Response) => {
+  res.json({ success: true, message: 'Farmer Information routes are working!' });
+});
+
 function formatFarmerResponse(user: any, profile: any) {
   const userProfile = user.profile || {};
   return {
@@ -161,6 +166,21 @@ router.post('/', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandl
   });
 
   sendCreated(res, profile, 'Farmer profile created/updated successfully');
+}));
+
+// PUT /api/farmer-information/me
+router.put('/me', authenticate, authorize('farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const updateData = { ...req.body };
+  delete updateData.farmer_id;
+  delete updateData.user_id;
+
+  const profile = await prisma.farmerProfile.upsert({
+    where: { user_id: req.user!.id },
+    create: { user_id: req.user!.id, ...updateData },
+    update: updateData,
+  });
+
+  sendSuccess(res, profile, 'Farmer profile updated successfully');
 }));
 
 // PUT /api/farmer-information/:id

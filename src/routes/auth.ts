@@ -3,11 +3,11 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { Resend } from 'resend';
 import { prisma } from '../lib/prisma';
-import { generateToken } from '../utils/jwt';
+import { generateToken, generateRefreshToken, verifyRefreshToken } from '../utils/jwt';
 import { sendSuccess, sendError, sendCreated } from '../utils/responses';
-import { AuthResponse, RegisterRequest, LoginRequest, PasswordChangeRequest } from '../types/auth';
+import { AuthResponse, LoginRequest, PasswordChangeRequest } from '../types/auth';
 import {
-  validateUserRegistration,
+  validateComprehensiveRegistration,
   validateUserLogin,
   validatePasswordChange,
 } from '../middleware/validation';
@@ -15,12 +15,13 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types/auth';
 import { env } from '../config/environment';
+import { createFarmerProfileForUser, createAgentProfileForUser, createShopForManager, createFarmForUser } from '../utils/profileCreation';
 
 const router = Router();
 
 // POST /api/auth/register
-router.post('/register', validateUserRegistration, asyncHandler(async (req: Request, res: Response) => {
-  const { email, password, full_name, phone, role, profile }: RegisterRequest = req.body;
+router.post('/register', validateComprehensiveRegistration, asyncHandler(async (req: Request, res: Response) => {
+  const { email, password, full_name, phone, role, ...profileFields } = req.body;
 
   const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
   if (existingUser) {
@@ -30,22 +31,46 @@ router.post('/register', validateUserRegistration, asyncHandler(async (req: Requ
 
   const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
 
-  const user = await prisma.user.create({
-    data: {
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      full_name,
-      phone,
-      role: (role || 'farmer') as any,
-      profile: (profile || {}) as any,
-    },
-    select: { id: true, email: true, full_name: true, role: true, status: true },
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: {
+        email: email.toLowerCase(),
+        password: hashedPassword,
+        full_name,
+        phone,
+        role: role as any,
+      },
+      select: { id: true, email: true, full_name: true, role: true, status: true },
+    });
+
+    if (role === 'farmer') {
+      await createFarmerProfileForUser(tx, created.id, profileFields);
+      await createFarmForUser(tx, created.id, full_name, profileFields);
+    } else if (role === 'agent') {
+      await createAgentProfileForUser(tx, created.id, profileFields);
+    } else if (role === 'shop_manager') {
+      await createShopForManager(
+        tx,
+        created.id,
+        { ownerName: full_name, ownerEmail: created.email, ownerPhone: phone },
+        {
+          shopName: profileFields.shopName,
+          description: profileFields.description,
+          province: profileFields.province,
+          district: profileFields.district,
+        }
+      );
+    }
+
+    return created;
   });
 
   const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
+  const refreshToken = generateRefreshToken({ id: user.id, email: user.email, role: user.role as any });
 
   const responseData: AuthResponse = {
     token,
+    refreshToken,
     user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status },
   };
 
@@ -77,9 +102,11 @@ router.post('/login', validateUserLogin, asyncHandler(async (req: Request, res: 
   }
 
   const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
+  const refreshToken = generateRefreshToken({ id: user.id, email: user.email, role: user.role as any });
 
   const responseData: AuthResponse = {
     token,
+    refreshToken,
     user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status },
   };
 
@@ -167,14 +194,32 @@ router.put('/password', authenticate, validatePasswordChange, asyncHandler(async
 }));
 
 // POST /api/auth/refresh
-router.post('/refresh', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const token = generateToken({
-    id: req.user!.id,
-    email: req.user!.email,
-    role: req.user!.role,
-  });
+router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
+  const { refreshToken: incomingRefreshToken } = req.body;
 
-  sendSuccess(res, { token, user: req.user }, 'Token refreshed successfully');
+  if (!incomingRefreshToken) {
+    sendError(res, 'Refresh token is required', 400);
+    return;
+  }
+
+  const decoded = verifyRefreshToken(incomingRefreshToken);
+  if (!decoded) {
+    sendError(res, 'Invalid or expired refresh token', 401);
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+  if (!user || user.status !== 'active') {
+    sendError(res, 'Invalid or expired refresh token', 401);
+    return;
+  }
+
+  const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
+
+  sendSuccess(res, {
+    token,
+    user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, status: user.status },
+  }, 'Token refreshed successfully');
 }));
 
 // GET /api/auth/verify
