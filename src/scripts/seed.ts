@@ -196,6 +196,87 @@ async function seed() {
       logger.info(`${sampleProducts.length} sample products created`);
     }
 
+    // Container & protection-equipment products (added separately so they
+    // backfill even on databases already seeded before these categories existed)
+    const containerProductExists = await prisma.product.findFirst({ where: { sku: 'CONT-PLASTIC-001' } });
+    if (!containerProductExists) {
+      const supplier = await prisma.supplier.findFirst();
+      if (supplier) {
+        await prisma.product.createMany({
+          data: [
+            {
+              name: 'Premium Plastic Avocado Container - 50kg',
+              description: 'Heavy-duty plastic container perfect for storing and transporting avocados',
+              price: 45000,
+              category: 'containers' as const,
+              unit: 'piece' as const,
+              quantity: 50,
+              status: 'available' as const,
+              sku: 'CONT-PLASTIC-001',
+              supplier_id: supplier.id,
+            },
+            {
+              name: 'Wooden Crate for Avocados - Large',
+              description: 'Traditional wooden crate with excellent ventilation',
+              price: 35000,
+              category: 'containers' as const,
+              unit: 'piece' as const,
+              quantity: 30,
+              status: 'available' as const,
+              sku: 'CONT-WOOD-001',
+              supplier_id: supplier.id,
+            },
+          ],
+        });
+        logger.info('Container products created');
+      }
+    }
+
+    const protectionProductExists = await prisma.product.findFirst({ where: { sku: 'PROT-BOOTS-001' } });
+    if (!protectionProductExists) {
+      const supplier = await prisma.supplier.findFirst();
+      if (supplier) {
+        await prisma.product.createMany({
+          data: [
+            {
+              name: 'Farm Boots - Heavy Duty',
+              description: 'Protect feet from mud and sharp objects in the orchard',
+              price: 25000,
+              category: 'protection' as const,
+              unit: 'piece' as const,
+              quantity: 40,
+              status: 'available' as const,
+              sku: 'PROT-BOOTS-001',
+              supplier_id: supplier.id,
+            },
+            {
+              name: 'Protective Gloves - Chemical Resistant',
+              description: 'Safeguards hands during spraying and tool use',
+              price: 8500,
+              category: 'protection' as const,
+              unit: 'piece' as const,
+              quantity: 60,
+              status: 'available' as const,
+              sku: 'PROT-GLOVES-001',
+              supplier_id: supplier.id,
+            },
+            {
+              name: 'Respiratory Mask - Reusable',
+              description: 'Chemical inhalation protection during spraying',
+              price: 12000,
+              category: 'protection' as const,
+              unit: 'piece' as const,
+              quantity: 35,
+              status: 'available' as const,
+              sku: 'PROT-MASK-001',
+              supplier_id: supplier.id,
+            },
+          ],
+        });
+        logger.info('Protection equipment products created');
+      }
+    }
+
     logger.info('Database seeding completed successfully');
     logger.info('Credentials:');
     logger.info('  Admin:        admin@dashboardavocado.com / admin123456');
