@@ -49,6 +49,7 @@ import trainingRoutes from './routes/training';
 import geographyRoutes from './routes/geography';
 import cartRoutes from './routes/cart';
 import visitsRoutes from './routes/visits';
+import pendingFarmersRoutes from './routes/pendingFarmers';
 
 dotenv.config();
 
@@ -164,6 +165,7 @@ app.use('/api/training', trainingRoutes);
 app.use('/api/geography', geographyRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/visits', visitsRoutes);
+app.use('/api/pending-farmers', pendingFarmersRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
