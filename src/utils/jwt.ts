@@ -56,6 +56,31 @@ export const decodeToken = (token: string): any => {
 };
 
 /**
+ * Generate a refresh token for a user
+ */
+export const generateRefreshToken = (payload: JWTPayload): string => {
+  const signOptions: SignOptions = {
+    expiresIn: env.JWT_REFRESH_EXPIRE as NonNullable<SignOptions['expiresIn']>,
+  };
+  return jwt.sign({ ...payload, type: 'refresh' }, env.JWT_SECRET, signOptions);
+};
+
+/**
+ * Verify a refresh token
+ */
+export const verifyRefreshToken = (token: string): JWTPayload | null => {
+  try {
+    const decoded = jwt.verify(token, env.JWT_SECRET) as JWTPayload & { type?: string };
+    if (decoded.type !== 'refresh') {
+      return null;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Refresh a JWT token
  */
 export const refreshToken = (oldToken: string): string | null => {
