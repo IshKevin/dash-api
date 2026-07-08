@@ -92,29 +92,39 @@ describe('Simple Authentication Middleware', () => {
     expect(nextCalled).to.be.true;
   });
 
-  it('should accept requests with valid tokens using simpleAdminOnly', () => {
-    const req = {} as Request;
+  it('should accept requests from an authenticated admin using simpleAdminOnly', () => {
+    const req = {
+      user: { id: 'user-1', email: 'admin@example.com', role: 'admin', status: 'active' },
+    } as unknown as Request;
     const res = createMockResponse();
     let nextCalled = false;
     const next = () => {
       nextCalled = true;
     };
-    
+
     simpleAdminOnly(req, res, next);
-    
+
     expect(nextCalled).to.be.true;
   });
 
-  it('should accept requests with invalid tokens using simpleAdminOnly', () => {
-    const req = {} as Request;
+  it('should reject requests from a non-admin user using simpleAdminOnly', () => {
+    const req = {
+      user: { id: 'user-2', email: 'farmer@example.com', role: 'farmer', status: 'active' },
+    } as unknown as Request;
     const res = createMockResponse();
     let nextCalled = false;
+    let statusCode: number | undefined;
     const next = () => {
       nextCalled = true;
     };
-    
+    res.status = (code: number) => {
+      statusCode = code;
+      return res;
+    };
+
     simpleAdminOnly(req, res, next);
-    
-    expect(nextCalled).to.be.true;
+
+    expect(nextCalled).to.be.false;
+    expect(statusCode).to.equal(403);
   });
 });
