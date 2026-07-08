@@ -8,6 +8,7 @@ interface EnvironmentConfig {
   DATABASE_URL: string;
   JWT_SECRET: string;
   JWT_EXPIRE: string;
+  JWT_REFRESH_EXPIRE: string;
   CORS_ORIGIN: string;
   CORS_PUBLIC: boolean;
   APP_NAME: string;
@@ -31,6 +32,7 @@ const validateEnvironment = (): EnvironmentConfig => {
     DATABASE_URL: process.env.DATABASE_URL || '',
     JWT_SECRET: process.env.JWT_SECRET || '',
     JWT_EXPIRE: process.env.JWT_EXPIRE || '7d',
+    JWT_REFRESH_EXPIRE: process.env.JWT_REFRESH_EXPIRE || '30d',
     CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:3000',
     CORS_PUBLIC: process.env.CORS_PUBLIC === 'true',
     APP_NAME: process.env.APP_NAME || 'Dashboard Avocado Backend',
