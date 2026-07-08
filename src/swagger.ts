@@ -96,7 +96,8 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         AuthResponse: {
           type: 'object',
           properties: {
-            token: { type: 'string', description: 'JWT Bearer token' },
+            token: { type: 'string', description: 'Short-lived JWT access token' },
+            refreshToken: { type: 'string', description: 'Long-lived JWT refresh token (type: refresh), used against POST /api/auth/refresh to obtain a new access token' },
             user: {
               type: 'object',
               properties: {
@@ -190,6 +191,11 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                 village: { type: 'string' },
               },
             },
+            organic_certified: { type: 'boolean', default: false },
+            irrigation_system: { type: 'string', nullable: true },
+            soil_type: { type: 'string', nullable: true },
+            latitude: { type: 'number', nullable: true },
+            longitude: { type: 'number', nullable: true },
             notes: { type: 'string', nullable: true },
             created_at: { type: 'string', format: 'date-time' },
           },
@@ -239,10 +245,15 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           properties: {
             id: { type: 'string' },
             shop_number: { type: 'integer', description: 'Auto-incremented integer used in URLs' },
-            name: { type: 'string' },
-            location: { type: 'object' },
-            owner_id: { type: 'string', nullable: true },
-            status: { type: 'string' },
+            shopName: { type: 'string' },
+            description: { type: 'string' },
+            province: { type: 'string' },
+            district: { type: 'string' },
+            ownerName: { type: 'string' },
+            ownerEmail: { type: 'string', format: 'email' },
+            ownerPhone: { type: 'string' },
+            created_by: { type: 'string', description: 'User id of the admin who created this shop' },
+            manager_id: { type: 'string', nullable: true, description: 'User id of the shop_manager who manages this shop; scopes GET/PUT/DELETE access for that role' },
             created_at: { type: 'string', format: 'date-time' },
           },
         },
@@ -299,13 +310,23 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           type: 'object',
           properties: {
             id: { type: 'string' },
-            name: { type: 'string' },
+            name: { type: 'string', description: 'Derived from first_name + last_name if not provided directly' },
+            first_name: { type: 'string', nullable: true },
+            last_name: { type: 'string', nullable: true },
             email: { type: 'string', format: 'email' },
             phone: { type: 'string' },
-            address: { type: 'string', nullable: true },
+            address: { type: 'string', nullable: true, description: 'Legacy free-text address' },
+            address_details: { type: 'object', nullable: true, description: '{street, city, state, zipCode, country}' },
+            type: { type: 'string', default: 'individual', description: "e.g. 'individual' | 'business'" },
+            company: { type: 'string', nullable: true },
+            preferences: { type: 'object', nullable: true, description: '{organic, local, deliveryMethod, communicationMethod}' },
+            tags: { type: 'array', items: { type: 'string' } },
+            notes: { type: 'string', nullable: true },
+            shop_id: { type: 'string', nullable: true },
             status: { type: 'string', enum: ['active', 'inactive'] },
             total_orders: { type: 'integer' },
             total_spent: { type: 'number' },
+            last_order_date: { type: 'string', format: 'date-time', nullable: true },
             created_at: { type: 'string', format: 'date-time' },
           },
         },
@@ -332,13 +353,31 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           properties: {
             id: { type: 'string' },
             user_id: { type: 'string' },
+            age: { type: 'integer', nullable: true },
+            id_number: { type: 'string', nullable: true },
+            gender: { type: 'string', enum: ['Male', 'Female', 'Other'], nullable: true },
+            marital_status: { type: 'string', enum: ['Single', 'Married', 'Divorced', 'Widowed'], nullable: true },
+            education_level: { type: 'string', enum: ['Primary', 'Secondary', 'University', 'None'], nullable: true },
             province: { type: 'string', nullable: true },
             district: { type: 'string', nullable: true },
             sector: { type: 'string', nullable: true },
+            cell: { type: 'string', nullable: true },
+            village: { type: 'string', nullable: true },
+            farm_age: { type: 'integer', nullable: true },
+            planted: { type: 'string', nullable: true },
+            avocado_type: { type: 'string', nullable: true },
+            mixed_percentage: { type: 'number', nullable: true },
             farm_size: { type: 'number', nullable: true },
             tree_count: { type: 'integer', nullable: true },
-            avocado_type: { type: 'string', nullable: true },
+            upi_number: { type: 'string', nullable: true },
+            farm_province: { type: 'string', nullable: true },
+            farm_district: { type: 'string', nullable: true },
+            farm_sector: { type: 'string', nullable: true },
+            farm_cell: { type: 'string', nullable: true },
+            farm_village: { type: 'string', nullable: true },
             assistance: { type: 'array', items: { type: 'string' } },
+            image: { type: 'string', nullable: true, description: 'Profile photo URL' },
+            verification_status: { type: 'string', enum: ['pending', 'verified', 'rejected'], description: 'Set only via PUT /api/farmer-information/{id}/verify (admin)' },
           },
         },
         // ─── Trees ───────────────────────────────────────────────────────
@@ -645,7 +684,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/auth/register': {
         post: {
-          summary: 'Register a new user',
+          summary: 'Comprehensive self-service registration. Role-conditional: farmer additionally creates a FarmerProfile + seed Farm record, agent creates an AgentProfile, shop_manager creates a Shop (linked via manager_id). role=admin is rejected (admins are seeded/created by other admins only).',
           tags: ['Auth'],
           security: [],
           requestBody: {
@@ -654,21 +693,53 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['email', 'password', 'full_name'],
+                  required: ['email', 'password', 'full_name', 'phone', 'role'],
                   properties: {
                     email: { type: 'string', format: 'email' },
-                    password: { type: 'string', minLength: 6 },
-                    full_name: { type: 'string' },
+                    password: { type: 'string', minLength: 8, description: 'Must contain upper, lower, digit, and special character' },
+                    full_name: { type: 'string', minLength: 2 },
                     phone: { type: 'string' },
-                    role: { type: 'string', enum: ['farmer', 'agent', 'shop_manager'], default: 'farmer' },
-                    profile: { type: 'object' },
+                    role: { type: 'string', enum: ['farmer', 'agent', 'shop_manager'] },
+                    age: { type: 'integer', description: 'farmer' },
+                    id_number: { type: 'string', description: 'farmer' },
+                    gender: { type: 'string', enum: ['Male', 'Female', 'Other'], description: 'farmer, required' },
+                    marital_status: { type: 'string', enum: ['Single', 'Married', 'Divorced', 'Widowed'], description: 'farmer' },
+                    education_level: { type: 'string', enum: ['Primary', 'Secondary', 'University', 'None'], description: 'farmer' },
+                    province: { type: 'string', description: 'farmer (required) / agent (required) / shop_manager (required)' },
+                    district: { type: 'string', description: 'farmer (required) / agent (required) / shop_manager (required)' },
+                    sector: { type: 'string', description: 'farmer / agent' },
+                    cell: { type: 'string', description: 'farmer / agent' },
+                    village: { type: 'string', description: 'farmer / agent' },
+                    farm_age: { type: 'integer', description: 'farmer' },
+                    planted: { type: 'string', description: 'farmer — year planted, also seeds Farm.planting_date' },
+                    avocado_type: { type: 'string', enum: ['Hass', 'Fuerte', 'Bacon', 'Zutano', 'Mixed'], description: 'farmer, required' },
+                    mixed_percentage: { type: 'number', description: 'farmer' },
+                    farm_size: { type: 'number', description: 'farmer, required' },
+                    tree_count: { type: 'integer', description: 'farmer' },
+                    upi_number: { type: 'string', description: 'farmer' },
+                    farm_province: { type: 'string', description: 'farmer' },
+                    farm_district: { type: 'string', description: 'farmer' },
+                    farm_sector: { type: 'string', description: 'farmer' },
+                    farm_cell: { type: 'string', description: 'farmer' },
+                    farm_village: { type: 'string', description: 'farmer' },
+                    assistance: { type: 'array', items: { type: 'string' }, description: 'farmer' },
+                    image: { type: 'string', description: 'farmer — profile photo URL, typically obtained via POST /api/upload first' },
+                    organic_certified: { type: 'boolean', default: false, description: 'farmer — seeds Farm.organic_certified' },
+                    irrigation_system: { type: 'string', description: 'farmer — seeds Farm.irrigation_system' },
+                    soil_type: { type: 'string', description: 'farmer — seeds Farm.soil_type' },
+                    specialization: { type: 'string', description: 'agent, required' },
+                    experience: { type: 'string', description: 'agent' },
+                    certification: { type: 'string', description: 'agent' },
+                    shopName: { type: 'string', description: 'shop_manager, required' },
+                    description: { type: 'string', description: 'shop_manager, required' },
                   },
                 },
               },
             },
           },
           responses: {
-            201: { description: 'User created successfully', content: { 'application/json': { schema: { $ref: '#/components/schemas/AuthResponse' } } } },
+            201: { description: 'User (and role-specific profile/Farm/Shop) created', content: { 'application/json': { schema: { $ref: '#/components/schemas/AuthResponse' } } } },
+            400: { description: 'Validation failed, or missing role-specific required fields' },
             409: { description: 'Email already exists' },
           },
         },
@@ -747,7 +818,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                   required: ['currentPassword', 'newPassword'],
                   properties: {
                     currentPassword: { type: 'string' },
-                    newPassword: { type: 'string', minLength: 6 },
+                    newPassword: { type: 'string', minLength: 8 },
                   },
                 },
               },
@@ -758,9 +829,18 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       },
       '/api/auth/refresh': {
         post: {
-          summary: 'Refresh JWT token',
+          summary: 'Exchange a refresh token for a new short-lived access token. Does not require an Authorization header (the access token may already be expired).',
           tags: ['Auth'],
-          responses: { 200: { description: 'New token issued' } },
+          security: [],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['refreshToken'], properties: { refreshToken: { type: 'string' } } } } },
+          },
+          responses: {
+            200: { description: 'New access token issued', content: { 'application/json': { schema: { type: 'object', properties: { token: { type: 'string' }, user: { type: 'object' } } } } } },
+            400: { description: 'refreshToken missing' },
+            401: { description: 'Invalid, expired, or non-refresh token; or user no longer active' },
+          },
         },
       },
       '/api/auth/verify': {
@@ -786,6 +866,41 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             { in: 'query', name: 'status', schema: { type: 'string', enum: ['active', 'inactive'] } },
           ],
           responses: { 200: { description: 'Paginated users list' } },
+        },
+        post: {
+          summary: 'Create a generic user account (admin). Defaults role to shop_manager if omitted/invalid; sets an auto-generated default password (returned in the response).',
+          tags: ['Users'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['full_name', 'email'],
+                  properties: {
+                    full_name: { type: 'string' },
+                    email: { type: 'string', format: 'email' },
+                    phone: { type: 'string' },
+                    role: { type: 'string', enum: ['admin', 'agent', 'farmer', 'shop_manager'], default: 'shop_manager' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'User created, includes default_password' } },
+        },
+      },
+      '/api/users/me': {
+        get: {
+          summary: 'Get the authenticated user',
+          tags: ['Users'],
+          responses: { 200: { description: 'Current user' } },
+        },
+        put: {
+          summary: "Update the authenticated user's own account fields (name, phone; role/status/password/email are ignored). If role is farmer, also merges farm fields into the legacy User.profile JSON blob.",
+          tags: ['Users'],
+          requestBody: { content: { 'application/json': { schema: { type: 'object' } } } },
+          responses: { 200: { description: 'Profile updated' } },
         },
       },
       '/api/users/farmers': {
@@ -910,6 +1025,24 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           tags: ['Users'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           responses: { 200: { description: 'User deleted' }, 404: { description: 'User not found' } },
+        },
+      },
+      '/api/users/{id}/status': {
+        put: {
+          summary: "Set a user's active/inactive status (admin)",
+          tags: ['Users'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['active', 'inactive'] } } } } } },
+          responses: { 200: { description: 'Status updated' } },
+        },
+      },
+      '/api/users/{id}/role': {
+        put: {
+          summary: "Change a user's role (admin)",
+          tags: ['Users'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['role'], properties: { role: { type: 'string', enum: ['admin', 'agent', 'farmer', 'shop_manager'] } } } } } },
+          responses: { 200: { description: 'Role updated' } },
         },
       },
 
@@ -1118,8 +1251,8 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         },
       },
       '/api/products/{id}/stock': {
-        post: {
-          summary: 'Update product stock (admin/agent). Records a StockHistory entry.',
+        put: {
+          summary: 'Set product stock to an absolute quantity (admin/shop_manager/agent). Records a StockHistory entry when the quantity changes.',
           tags: ['Products'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: {
@@ -1128,17 +1261,25 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['quantity', 'reason'],
+                  required: ['quantity'],
                   properties: {
-                    quantity: { type: 'integer', description: 'New absolute quantity (not a delta)' },
-                    reason: { type: 'string', enum: ['restock', 'sale', 'adjustment', 'damage', 'return', 'other'] },
+                    quantity: { type: 'integer', minimum: 0, description: 'New absolute quantity (not a delta)' },
+                    reason: { type: 'string', enum: ['restock', 'sale', 'adjustment', 'damage', 'return', 'other'], default: 'adjustment' },
                     notes: { type: 'string' },
                   },
                 },
               },
             },
           },
-          responses: { 200: { description: 'Stock updated and history recorded' } },
+          responses: { 200: { description: 'Stock updated (and history recorded if the quantity changed)' }, 400: { description: 'Quantity must be a non-negative integer' }, 404: { description: 'Product not found' } },
+        },
+      },
+      '/api/products/{id}/stock-history': {
+        get: {
+          summary: 'Paginated stock change history for a product (admin/shop_manager)',
+          tags: ['Products'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }, { $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: "Paginated StockHistory entries, each including the creator's full_name and email" } },
         },
       },
 
@@ -1202,11 +1343,30 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           responses: { 200: { description: 'Order details', content: { 'application/json': { schema: { $ref: '#/components/schemas/Order' } } } } },
         },
+        put: {
+          summary: 'Partially update an order, excluding items (admin/shop_manager)',
+          tags: ['Orders'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { shipping_address: { type: 'object' }, billing_address: { type: 'object' }, payment_method: { type: 'string' }, payment_status: { type: 'string' }, notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Order updated' }, 404: { description: 'Order not found' } },
+        },
         delete: {
           summary: 'Cancel/delete order (admin)',
           tags: ['Orders'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           responses: { 200: { description: 'Order cancelled' } },
+        },
+      },
+      '/api/orders/user/{userId}': {
+        get: {
+          summary: 'List orders for a specific user (admin/shop_manager, or the user themselves)',
+          tags: ['Orders'],
+          parameters: [
+            { in: 'path', name: 'userId', required: true, schema: { type: 'string' } },
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+          ],
+          responses: { 200: { description: 'Paginated orders belonging to the user' }, 403: { description: 'Not an admin/shop_manager and not the requesting user' } },
         },
       },
       '/api/orders/{id}/status': {
@@ -1384,23 +1544,13 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
 
       // ═══════════════════════════════════════════════════════════════════
       // SERVICE REQUESTS
+      // One table (ServiceRequest) discriminated by service_type. assign/start/
+      // cancel/reject/feedback/status are generic across every type; approve/
+      // complete are type-specific (e.g. approve-harvest, complete-ipm-routine).
       // ═══════════════════════════════════════════════════════════════════
-      '/api/service-requests': {
-        get: {
-          summary: 'List service requests (role-scoped: farmers see own, agents see assigned, admin sees all)',
-          tags: ['ServiceRequests'],
-          parameters: [
-            { $ref: '#/components/parameters/pageParam' },
-            { $ref: '#/components/parameters/limitParam' },
-            { in: 'query', name: 'status', schema: { type: 'string', enum: ['pending', 'approved', 'rejected', 'assigned', 'in_progress', 'completed', 'cancelled'] } },
-            { in: 'query', name: 'service_type', schema: { type: 'string', enum: ['harvest', 'pest_control', 'other'] } },
-          ],
-          responses: { 200: { description: 'Paginated service requests' } },
-        },
-      },
       '/api/service-requests/harvest': {
         post: {
-          summary: 'Create harvest service request (farmer/agent)',
+          summary: 'Create a harvest request (farmer for self, or agent on behalf of a farmer)',
           tags: ['ServiceRequests'],
           requestBody: {
             required: true,
@@ -1410,22 +1560,16 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                   type: 'object',
                   required: ['workersNeeded', 'treesToHarvest', 'harvestDateFrom', 'harvestDateTo', 'location'],
                   properties: {
-                    workersNeeded: { type: 'integer' },
-                    treesToHarvest: { type: 'integer' },
+                    workersNeeded: { type: 'integer', minimum: 1 },
+                    treesToHarvest: { type: 'integer', minimum: 1 },
                     harvestDateFrom: { type: 'string', format: 'date' },
                     harvestDateTo: { type: 'string', format: 'date' },
                     equipmentNeeded: { type: 'array', items: { type: 'string' } },
-                    location: {
-                      type: 'object',
-                      required: ['province', 'district'],
-                      properties: {
-                        province: { type: 'string' },
-                        district: { type: 'string' },
-                        sector: { type: 'string' },
-                      },
-                    },
+                    harvestImages: { type: 'array', items: { type: 'string' } },
+                    location: { type: 'object', required: ['province'], properties: { province: { type: 'string' }, district: { type: 'string' }, sector: { type: 'string' }, cell: { type: 'string' }, village: { type: 'string' } } },
                     priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
                     notes: { type: 'string' },
+                    farmer_id: { type: 'string', description: 'Required when an agent creates this on behalf of a farmer' },
                   },
                 },
               },
@@ -1433,42 +1577,16 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           },
           responses: { 201: { description: 'Harvest request created' } },
         },
-      },
-      '/api/service-requests/pest-control': {
-        post: {
-          summary: 'Create pest control request (farmer)',
+        get: {
+          summary: 'List harvest requests (role-scoped)',
           tags: ['ServiceRequests'],
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['title', 'description', 'location', 'pest_management_details'],
-                  properties: {
-                    title: { type: 'string' },
-                    description: { type: 'string' },
-                    priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
-                    location: { type: 'object' },
-                    pest_management_details: {
-                      type: 'object',
-                      properties: {
-                        pests_diseases: { type: 'array', items: { type: 'object' } },
-                        severity_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-                        damage_details: { type: 'string' },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-          responses: { 201: { description: 'Pest control request created' } },
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated harvest requests' } },
         },
       },
-      '/api/service-requests/other': {
+      '/api/service-requests/harvesting-plan': {
         post: {
-          summary: 'Create other/property evaluation request (farmer/agent)',
+          summary: 'Create a harvesting plan request (farmer for self, or agent on behalf of a farmer)',
           tags: ['ServiceRequests'],
           requestBody: {
             required: true,
@@ -1476,84 +1594,405 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['title', 'description', 'location'],
+                  required: ['plannedHarvestDate', 'estimatedYield', 'farmSize', 'laborRequirement', 'marketTarget', 'location'],
                   properties: {
-                    title: { type: 'string' },
-                    description: { type: 'string' },
+                    plannedHarvestDate: { type: 'string', format: 'date' },
+                    estimatedYield: { type: 'string' },
+                    farmSize: { type: 'string' },
+                    laborRequirement: { type: 'string' },
+                    marketTarget: { type: 'string' },
                     location: { type: 'object' },
-                    priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+                    priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
                     notes: { type: 'string' },
+                    farmer_id: { type: 'string', description: 'Required when an agent creates this on behalf of a farmer' },
                   },
                 },
               },
             },
           },
-          responses: { 201: { description: 'Request created' } },
+          responses: { 201: { description: 'Harvesting plan request created' } },
+        },
+        get: {
+          summary: 'List harvesting plan requests (role-scoped)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated harvesting plan requests' } },
+        },
+      },
+      '/api/service-requests/ipm-routine': {
+        post: {
+          summary: 'Create an IPM (Integrated Pest Management) routine request (farmer for self, or agent on behalf of a farmer)',
+          tags: ['ServiceRequests'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['scheduledDate', 'farmSize', 'pestType', 'ipmMethod', 'laborRequired', 'targetArea', 'location'],
+                  properties: {
+                    scheduledDate: { type: 'string', format: 'date' },
+                    farmSize: { type: 'number' },
+                    pestType: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                    ipmMethod: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                    chemicalsNeeded: { type: 'string' },
+                    equipmentNeeded: { type: 'array', items: { type: 'string' } },
+                    laborRequired: { type: 'integer' },
+                    targetArea: { type: 'string' },
+                    severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+                    preventiveMeasures: { type: 'string' },
+                    followUpDate: { type: 'string', format: 'date' },
+                    specialInstructions: { type: 'string' },
+                    location: { type: 'object' },
+                    farmer_id: { type: 'string', description: 'Required when an agent creates this on behalf of a farmer' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'IPM routine request created' } },
+        },
+        get: {
+          summary: 'List IPM routine requests (role-scoped)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated IPM routine requests' } },
+        },
+      },
+      '/api/service-requests/pest-management': {
+        post: {
+          summary: 'Create a pest management request (farmer)',
+          tags: ['ServiceRequests'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['title', 'description', 'location', 'pest_management_details', 'farmer_info'],
+                  properties: {
+                    title: { type: 'string', maxLength: 200 },
+                    description: { type: 'string', maxLength: 1000 },
+                    priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+                    location: { type: 'object', required: ['province'], properties: { province: { type: 'string' } } },
+                    pest_management_details: {
+                      type: 'object',
+                      required: ['pests_diseases', 'severity_level'],
+                      properties: {
+                        pests_diseases: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' } } }, minItems: 1 },
+                        first_noticed: { type: 'string', maxLength: 500 },
+                        damage_observed: { type: 'string' },
+                        damage_details: { type: 'string', maxLength: 1000 },
+                        control_methods_tried: { type: 'string', maxLength: 1000 },
+                        severity_level: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+                      },
+                    },
+                    farmer_info: { type: 'object', required: ['name', 'phone'], properties: { name: { type: 'string' }, phone: { type: 'string' }, location: { type: 'object' } } },
+                    attachments: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Pest management request created' } },
+        },
+        get: {
+          summary: 'List pest management requests (role-scoped)',
+          tags: ['ServiceRequests'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'status', schema: { type: 'string' } },
+            { in: 'query', name: 'priority', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'Paginated pest management requests' } },
+        },
+      },
+      '/api/service-requests/property-evaluation': {
+        post: {
+          summary: 'Create a property evaluation request (farmer)',
+          tags: ['ServiceRequests'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['irrigationSource', 'visitStartDate', 'visitEndDate', 'location'],
+                  properties: {
+                    irrigationSource: { type: 'string', enum: ['Yes', 'No'] },
+                    irrigationTiming: { type: 'string', description: 'Required when irrigationSource is Yes' },
+                    soilTesting: { type: 'string' },
+                    visitStartDate: { type: 'string', format: 'date' },
+                    visitEndDate: { type: 'string', format: 'date', description: 'Must be exactly 5 days (inclusive) after visitStartDate' },
+                    evaluationPurpose: { type: 'string' },
+                    priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
+                    notes: { type: 'string' },
+                    location: { type: 'object', required: ['province'], properties: { province: { type: 'string' }, district: { type: 'string' }, farm_name: { type: 'string' } } },
+                    property_details: { type: 'object', properties: { farm_size: { type: 'string' }, crop_types: { type: 'string' }, current_irrigation_system: { type: 'string' }, soil_type: { type: 'string' }, water_access: { type: 'string' } } },
+                    certified_valuation_requested: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Property evaluation request created' } },
+        },
+        get: {
+          summary: 'List property evaluation requests (role-scoped)',
+          tags: ['ServiceRequests'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+          ],
+          responses: { 200: { description: 'Paginated property evaluation requests' } },
+        },
+      },
+      '/api/service-requests/property-evaluation/{id}': {
+        put: {
+          summary: 'Edit a pending property evaluation request (farmer, own request only, before approval)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', description: 'Same shape as create; only provided fields are updated' } } } },
+          responses: { 200: { description: 'Request updated' }, 400: { description: 'Only pending requests can be edited' }, 403: { description: 'Not the owning farmer' } },
+        },
+      },
+      '/api/service-requests/property-evaluation/stats': {
+        get: {
+          summary: 'Aggregate property evaluation statistics (admin/agent)',
+          tags: ['ServiceRequests'],
+          parameters: [
+            { in: 'query', name: 'date_from', schema: { type: 'string', format: 'date' } },
+            { in: 'query', name: 'date_to', schema: { type: 'string', format: 'date' } },
+            { in: 'query', name: 'agent_id', schema: { type: 'string' } },
+            { in: 'query', name: 'province', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'total, by_status counts, average_cost_estimate, average_final_cost' } },
+        },
+      },
+      '/api/service-requests/harvest/agent/me': {
+        get: {
+          summary: "List the authenticated agent's assigned harvest requests",
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated harvest requests assigned to this agent' } },
+        },
+      },
+      '/api/service-requests/harvesting-plan/agent/me': {
+        get: {
+          summary: "List the authenticated agent's assigned harvesting plan requests",
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated harvesting plan requests assigned to this agent' } },
+        },
+      },
+      '/api/service-requests/ipm-routine/agent/me': {
+        get: {
+          summary: "List the authenticated agent's assigned IPM routine requests",
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated IPM routine requests assigned to this agent' } },
+        },
+      },
+      '/api/service-requests/farmer/{farmerId}': {
+        get: {
+          summary: 'List all service requests for a given farmer, across every service type (admin/agent, or the farmer themself)',
+          tags: ['ServiceRequests'],
+          parameters: [
+            { in: 'path', name: 'farmerId', required: true, schema: { type: 'string' } },
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'status', schema: { type: 'string' } },
+            { in: 'query', name: 'service_type', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'Paginated service requests' }, 403: { description: 'Farmers may only query their own id' } },
+        },
+      },
+      '/api/service-requests/agent/{agentId}': {
+        get: {
+          summary: 'List all service requests assigned to a given agent, across every service type (admin, or the agent themself)',
+          tags: ['ServiceRequests'],
+          parameters: [
+            { in: 'path', name: 'agentId', required: true, schema: { type: 'string' } },
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'status', schema: { type: 'string' } },
+            { in: 'query', name: 'service_type', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: 'Paginated service requests' }, 403: { description: 'Agents may only query their own id' } },
         },
       },
       '/api/service-requests/{id}': {
         get: {
-          summary: 'Get service request by ID',
+          summary: 'Get a service request by ID (any type)',
           tags: ['ServiceRequests'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'Service request details' } },
+          responses: { 200: { description: 'Service request details, including farmer and agent summaries' } },
         },
+      },
+      '/api/service-requests/{id}/status': {
         put: {
-          summary: 'Update service request',
-          tags: ['ServiceRequests'],
-          parameters: [{ $ref: '#/components/parameters/idParam' }],
-          requestBody: { content: { 'application/json': { schema: { type: 'object' } } } },
-          responses: { 200: { description: 'Updated' } },
-        },
-        delete: {
-          summary: 'Delete service request (admin)',
-          tags: ['ServiceRequests'],
-          parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'Deleted' } },
-        },
-      },
-      '/api/service-requests/{id}/approve': {
-        post: {
-          summary: 'Approve service request (admin/agent)',
+          summary: 'Generically set the status of a service request, any type (admin)',
           tags: ['ServiceRequests'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: {
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    agent_id: { type: 'string' },
-                    scheduled_date: { type: 'string', format: 'date-time' },
-                    cost_estimate: { type: 'number' },
-                    notes: { type: 'string' },
-                  },
-                },
-              },
-            },
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'assigned', 'in_progress', 'completed', 'cancelled'] } } } } },
           },
-          responses: { 200: { description: 'Request approved' } },
+          responses: { 200: { description: 'Status updated' } },
         },
       },
-      '/api/service-requests/{id}/complete': {
-        post: {
-          summary: 'Mark service request as completed (admin/agent)',
+      '/api/service-requests/{id}/reject': {
+        put: {
+          summary: 'Reject a service request, any type (admin)',
           tags: ['ServiceRequests'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          requestBody: {
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    completion_notes: { type: 'string' },
-                    actual_cost: { type: 'number' },
-                  },
-                },
-              },
-            },
-          },
-          responses: { 200: { description: 'Request completed' } },
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['rejection_reason'], properties: { rejection_reason: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Request rejected' }, 400: { description: 'Only pending/approved requests can be rejected' } },
+        },
+      },
+      '/api/service-requests/{id}/assign': {
+        put: {
+          summary: 'Assign an agent to a service request, any type (admin)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['agent_id'], properties: { agent_id: { type: 'string' }, scheduled_date: { type: 'string', format: 'date-time' } } } } } },
+          responses: { 200: { description: 'Agent assigned, farmer and agent notified' } },
+        },
+      },
+      '/api/service-requests/{id}/start': {
+        put: {
+          summary: 'Mark a service request in_progress, any type (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { start_notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Request started' }, 400: { description: 'Must be approved/assigned first' } },
+        },
+      },
+      '/api/service-requests/{id}/cancel': {
+        put: {
+          summary: 'Cancel a service request, any type (farmer can cancel own pending request; admin can cancel any non-terminal request)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Request cancelled' } },
+        },
+      },
+      '/api/service-requests/{id}/feedback': {
+        post: {
+          summary: 'Submit feedback for a completed service request, any type (farmer)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['rating'], properties: { rating: { type: 'integer', minimum: 1, maximum: 5 }, comment: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Feedback recorded' }, 400: { description: 'Request must be completed; feedback can only be submitted once' } },
+        },
+      },
+      '/api/service-requests/{id}/approve-harvest': {
+        put: {
+          summary: 'Approve a harvest request (admin)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { agent_id: { type: 'string' }, scheduled_date: { type: 'string', format: 'date-time' }, cost_estimate: { type: 'number' }, notes: { type: 'string' }, approved_workers: { type: 'integer' }, approved_equipment: { type: 'array', items: { type: 'string' } } } } } } },
+          responses: { 200: { description: 'Harvest request approved' } },
+        },
+      },
+      '/api/service-requests/{id}/complete-harvest': {
+        put: {
+          summary: 'Complete a harvest request (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { completion_notes: { type: 'string' }, actual_workers_used: { type: 'integer' }, actual_harvest_amount: { type: 'string' }, harvest_quality_notes: { type: 'string' }, completion_images: { type: 'array', items: { type: 'string' } } } } } } },
+          responses: { 200: { description: 'Harvest request completed, farmer notified' } },
+        },
+      },
+      '/api/service-requests/{id}/approve-harvesting-plan': {
+        put: {
+          summary: 'Approve a harvesting plan request (admin)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { agent_id: { type: 'string' }, scheduled_date: { type: 'string', format: 'date-time' }, cost_estimate: { type: 'number' }, notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Harvesting plan request approved' } },
+        },
+      },
+      '/api/service-requests/{id}/complete-harvesting-plan': {
+        put: {
+          summary: 'Complete a harvesting plan request (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { completion_notes: { type: 'string' }, actual_yield: { type: 'string' }, completion_images: { type: 'array', items: { type: 'string' } } } } } } },
+          responses: { 200: { description: 'Harvesting plan request completed, farmer notified' } },
+        },
+      },
+      '/api/service-requests/{id}/approve-ipm-routine': {
+        put: {
+          summary: 'Approve an IPM routine request (admin)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { agent_id: { type: 'string' }, scheduled_date: { type: 'string', format: 'date-time' }, cost_estimate: { type: 'number' }, notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'IPM routine request approved' } },
+        },
+      },
+      '/api/service-requests/{id}/complete-ipm-routine': {
+        put: {
+          summary: 'Complete an IPM routine request (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { completion_notes: { type: 'string' }, treatment_outcome: { type: 'string' }, completion_images: { type: 'array', items: { type: 'string' } } } } } } },
+          responses: { 200: { description: 'IPM routine request completed, farmer notified' } },
+        },
+      },
+      '/api/service-requests/{id}/approve-pest-management': {
+        put: {
+          summary: 'Approve a pest management request (admin)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { agent_id: { type: 'string' }, scheduled_date: { type: 'string', format: 'date-time' }, cost_estimate: { type: 'number' }, notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Pest management request approved' } },
+        },
+      },
+      '/api/service-requests/{id}/complete-pest-management': {
+        put: {
+          summary: 'Complete a pest management request (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { completion_notes: { type: 'string' }, treatment_applied: { type: 'string' }, completion_images: { type: 'array', items: { type: 'string' } } } } } } },
+          responses: { 200: { description: 'Pest management request completed, farmer notified' } },
+        },
+      },
+      '/api/service-requests/{id}/approve-property-evaluation': {
+        put: {
+          summary: 'Approve a property evaluation request (admin)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { agent_id: { type: 'string' }, scheduled_date: { type: 'string', format: 'date-time' }, cost_estimate: { type: 'number' }, notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Property evaluation request approved' } },
+        },
+      },
+      '/api/service-requests/{id}/complete-property-evaluation': {
+        put: {
+          summary: 'Complete a property evaluation request (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { completion_notes: { type: 'string' }, evaluation_report: { type: 'object' }, follow_up_required: { type: 'boolean' }, follow_up_date: { type: 'string', format: 'date' }, attachments: { type: 'array', items: { type: 'string' } } } } } } },
+          responses: { 200: { description: 'Property evaluation request completed, farmer notified' } },
+        },
+      },
+      '/api/service-requests/{id}/schedule-visit': {
+        put: {
+          summary: 'Schedule a property evaluation visit (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['visit_date', 'visit_time'], properties: { visit_date: { type: 'string', format: 'date' }, visit_time: { type: 'string' }, estimated_duration: { type: 'string' }, preparation_notes: { type: 'string' }, farmer_instructions: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Visit scheduled, farmer notified' } },
+        },
+      },
+      '/api/service-requests/{id}/reschedule-visit': {
+        put: {
+          summary: 'Reschedule a previously scheduled property evaluation visit (admin, or the assigned agent)',
+          tags: ['ServiceRequests'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['new_visit_date', 'reason'], properties: { new_visit_date: { type: 'string', format: 'date' }, new_visit_time: { type: 'string' }, reason: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Visit rescheduled, farmer notified, history preserved' } },
         },
       },
 
@@ -1562,16 +2001,14 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/shops': {
         get: {
-          summary: 'List shops',
+          summary: 'List shops (admin sees all; shop_manager sees only the shop they manage, via manager_id)',
           tags: ['Shops'],
-          parameters: [
-            { $ref: '#/components/parameters/pageParam' },
-            { $ref: '#/components/parameters/limitParam' },
-          ],
-          responses: { 200: { description: 'Paginated shops list' } },
+          responses: { 200: { description: 'Shops list' } },
         },
+      },
+      '/api/shops/addshop': {
         post: {
-          summary: 'Create shop (admin)',
+          summary: 'Create a shop (admin)',
           tags: ['Shops'],
           requestBody: {
             required: true,
@@ -1579,20 +2016,21 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['name'],
+                  required: ['shopName', 'description', 'province', 'district', 'ownerName', 'ownerEmail', 'ownerPhone'],
                   properties: {
-                    name: { type: 'string' },
-                    location: { type: 'object' },
-                    owner_id: { type: 'string' },
-                    description: { type: 'string' },
-                    phone: { type: 'string' },
-                    email: { type: 'string' },
+                    shopName: { type: 'string', minLength: 2, maxLength: 200 },
+                    description: { type: 'string', maxLength: 1000 },
+                    province: { type: 'string' },
+                    district: { type: 'string' },
+                    ownerName: { type: 'string', minLength: 2 },
+                    ownerEmail: { type: 'string', format: 'email' },
+                    ownerPhone: { type: 'string' },
                   },
                 },
               },
             },
           },
-          responses: { 201: { description: 'Shop created with auto-assigned shop_number' } },
+          responses: { 201: { description: 'Shop created with auto-assigned shop_number; not linked to a manager unless created via farmer/shop_manager registration' } },
         },
       },
       '/api/shops/{shopNumber}': {
@@ -1600,25 +2038,25 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           summary: 'Get shop by shop number (integer)',
           tags: ['Shops'],
           parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
-          responses: { 200: { description: 'Shop details' } },
+          responses: { 200: { description: 'Shop details' }, 403: { description: 'shop_manager requesting a shop they do not manage' } },
         },
         put: {
-          summary: 'Update shop (admin/shop_manager)',
+          summary: 'Update shop (admin, or the managing shop_manager)',
           tags: ['Shops'],
           parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
-          requestBody: { content: { 'application/json': { schema: { type: 'object' } } } },
-          responses: { 200: { description: 'Shop updated' } },
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { shopName: { type: 'string' }, description: { type: 'string' }, province: { type: 'string' }, district: { type: 'string' }, ownerName: { type: 'string' }, ownerEmail: { type: 'string' }, ownerPhone: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Shop updated' }, 403: { description: 'shop_manager updating a shop they do not manage' } },
         },
         delete: {
-          summary: 'Delete shop (admin)',
+          summary: 'Delete shop (admin, or the managing shop_manager)',
           tags: ['Shops'],
           parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
-          responses: { 200: { description: 'Shop deleted' } },
+          responses: { 200: { description: 'Shop deleted' }, 403: { description: 'shop_manager deleting a shop they do not manage' } },
         },
       },
       '/api/shops/{shopNumber}/inventory': {
         get: {
-          summary: "List shop's products/inventory",
+          summary: "List shop's products/inventory (Products whose supplier_id equals this shop's id)",
           tags: ['Shops'],
           parameters: [
             { $ref: '#/components/parameters/shopNumberParam' },
@@ -1630,7 +2068,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       },
       '/api/shops/{shopNumber}/orders': {
         get: {
-          summary: "List orders associated with the shop's products",
+          summary: "List orders containing the shop's products",
           tags: ['Shops'],
           parameters: [
             { $ref: '#/components/parameters/shopNumberParam' },
@@ -1638,6 +2076,14 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             { $ref: '#/components/parameters/limitParam' },
           ],
           responses: { 200: { description: "Shop's orders" } },
+        },
+      },
+      '/api/shops/{shopNumber}/analytics': {
+        get: {
+          summary: 'Shop analytics summary (totals, revenue, stock levels)',
+          tags: ['Shops'],
+          parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
+          responses: { 200: { description: 'totalProducts, totalOrders, totalSales, totalRevenue, lowStockProducts, outOfStockProducts' } },
         },
       },
 
@@ -1653,6 +2099,35 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             { $ref: '#/components/parameters/limitParam' },
           ],
           responses: { 200: { description: 'Inventory list' } },
+        },
+        post: {
+          summary: 'Create a new inventory item (admin/shop_manager)',
+          tags: ['Inventory'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['name', 'category', 'price', 'unit', 'supplier_id'],
+                  properties: {
+                    name: { type: 'string' },
+                    category: { type: 'string' },
+                    description: { type: 'string' },
+                    price: { type: 'number' },
+                    quantity: { type: 'integer', default: 0 },
+                    unit: { type: 'string' },
+                    supplier_id: { type: 'string' },
+                    variety: { type: 'string' },
+                    min_stock: { type: 'integer', default: 10 },
+                    cost: { type: 'number' },
+                    source_type: { type: 'string', default: 'manual' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Inventory item created' } },
         },
       },
       '/api/inventory/low-stock': {
@@ -1673,8 +2148,8 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         },
       },
       '/api/inventory/{id}/restock': {
-        post: {
-          summary: 'Restock product and log stock history (admin)',
+        put: {
+          summary: 'Add stock to a product and log a StockHistory entry (admin/shop_manager)',
           tags: ['Inventory'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: {
@@ -1685,14 +2160,22 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                   type: 'object',
                   required: ['quantity'],
                   properties: {
-                    quantity: { type: 'integer', description: 'Quantity to add' },
+                    quantity: { type: 'integer', minimum: 1, description: 'Quantity to add (delta, must be a positive integer)' },
                     notes: { type: 'string' },
                   },
                 },
               },
             },
           },
-          responses: { 200: { description: 'Stock updated' } },
+          responses: { 200: { description: 'Product restocked; status set to available' }, 400: { description: 'Restock quantity must be a positive integer' }, 404: { description: 'Product not found' } },
+        },
+      },
+      '/api/inventory/{id}/history': {
+        get: {
+          summary: 'Paginated stock history for a product (admin/shop_manager)',
+          tags: ['Inventory'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }, { $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          responses: { 200: { description: 'Paginated StockHistory entries for the product' } },
         },
       },
 
@@ -1710,19 +2193,41 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           ],
           responses: { 200: { description: 'Notifications list' } },
         },
+        post: {
+          summary: 'Create a notification for a user (admin)',
+          tags: ['Notifications'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['recipient_id', 'title', 'message'],
+                  properties: {
+                    recipient_id: { type: 'string' },
+                    title: { type: 'string' },
+                    message: { type: 'string' },
+                    type: { type: 'string', enum: ['info', 'success', 'warning', 'error', 'order', 'system'], default: 'info' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Notification created' } },
+        },
+      },
+      '/api/notifications/unread-count': {
+        get: {
+          summary: "Get current user's unread notification count",
+          tags: ['Notifications'],
+          responses: { 200: { description: 'Unread notification count' } },
+        },
       },
       '/api/notifications/read-all': {
         put: {
           summary: 'Mark all notifications as read',
           tags: ['Notifications'],
           responses: { 200: { description: 'All marked as read' } },
-        },
-      },
-      '/api/notifications/clear-all': {
-        delete: {
-          summary: 'Delete all notifications for current user',
-          tags: ['Notifications'],
-          responses: { 200: { description: 'All deleted' } },
         },
       },
       '/api/notifications/{id}/read': {
@@ -1734,6 +2239,12 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         },
       },
       '/api/notifications/{id}': {
+        get: {
+          summary: 'Get a single notification (must belong to the current user)',
+          tags: ['Notifications'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Notification details' }, 404: { description: 'Notification not found' } },
+        },
         delete: {
           summary: 'Delete a notification',
           tags: ['Notifications'],
@@ -1933,21 +2444,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           responses: { 200: { description: 'Product analytics' } },
         },
       },
-      '/api/analytics/service-requests': {
-        get: {
-          summary: 'Service request trends by type and status (admin)',
-          tags: ['Analytics'],
-          responses: { 200: { description: 'Service request analytics' } },
-        },
-      },
-      '/api/analytics/farms': {
-        get: {
-          summary: 'Farm status distribution and regional breakdown (admin)',
-          tags: ['Analytics'],
-          responses: { 200: { description: 'Farm analytics' } },
-        },
-      },
-
       // ═══════════════════════════════════════════════════════════════════
       // FARMER INFORMATION
       // ═══════════════════════════════════════════════════════════════════
@@ -2004,6 +2500,9 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       // AGENT INFORMATION
       // ═══════════════════════════════════════════════════════════════════
+      '/api/agent-information/test': {
+        get: { summary: 'Health-check route for this router (no auth)', tags: ['AgentInformation'], security: [], responses: { 200: { description: 'Routes are working' } } },
+      },
       '/api/agent-information': {
         get: {
           summary: 'List agents with profiles (admin)',
@@ -2044,6 +2543,31 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           summary: 'Get own agent profile (agent)',
           tags: ['AgentInformation'],
           responses: { 200: { description: 'Own agent profile' } },
+        },
+        put: {
+          summary: "Upsert the authenticated agent's own profile",
+          tags: ['AgentInformation'],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    territory: { type: 'array', items: { type: 'object' } },
+                    province: { type: 'string' },
+                    district: { type: 'string' },
+                    sector: { type: 'string' },
+                    cell: { type: 'string' },
+                    village: { type: 'string' },
+                    specialization: { type: 'string' },
+                    experience: { type: 'string' },
+                    certification: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Agent profile updated' } },
         },
       },
       '/api/agent-information/{id}': {
@@ -2176,32 +2700,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           },
         },
       },
-      '/api/profile-access/update-profile-with-key': {
-        post: {
-          summary: 'Update farmer profile using a one-time access key (public)',
-          tags: ['ProfileAccess'],
-          security: [],
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['access_key'],
-                  properties: {
-                    access_key: { type: 'string' },
-                    full_name: { type: 'string' },
-                    phone: { type: 'string' },
-                    profile: { type: 'object' },
-                  },
-                },
-              },
-            },
-          },
-          responses: { 200: { description: 'Profile updated. Access key marked as used.' } },
-        },
-      },
-
       // ═══════════════════════════════════════════════════════════════════
       // WEATHER
       // ═══════════════════════════════════════════════════════════════════
@@ -2339,13 +2837,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           },
         },
       },
-      '/api/monitoring/stats': {
-        get: {
-          summary: 'API usage statistics (admin)',
-          tags: ['Monitoring'],
-          responses: { 200: { description: 'Request counts and usage data from logs' } },
-        },
-      },
       '/api/monitoring/system': {
         get: {
           summary: 'System resource information — CPU, memory, uptime (admin)',
@@ -2448,6 +2939,108 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         },
       },
 
+      '/api/farmer-information/test': {
+        get: { summary: 'Health-check route for this router (no auth)', tags: ['FarmerInformation'], security: [], responses: { 200: { description: 'Routes are working' } } },
+      },
+      '/api/farmer-information/me': {
+        get: {
+          summary: "Get the authenticated farmer's own extended profile",
+          tags: ['FarmerInformation'],
+          responses: { 200: { description: 'Farmer profile (or null if not yet created)' } },
+        },
+        put: {
+          summary: "Upsert the authenticated farmer's own extended profile",
+          tags: ['FarmerInformation'],
+          requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/FarmerProfile' } } } },
+          responses: { 200: { description: 'Profile updated' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // AGENT INFORMATION — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/agent-information/{id}/performance': {
+        put: {
+          summary: "Update an agent's performance metrics (admin)",
+          tags: ['AgentInformation'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    farmersAssisted: { type: 'integer' },
+                    totalTransactions: { type: 'integer' },
+                    performance: { type: 'string', example: '85%' },
+                    statistics: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Performance metrics updated' }, 404: { description: 'Agent not found' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // INVENTORY — new endpoints
+      // Thin wrapper over Product; POST/PUT create or edit shop-facing stock
+      // items (as opposed to the supplier-catalog-oriented /api/products).
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/inventory/out-of-stock': {
+        get: {
+          summary: 'List out-of-stock products (admin/shop_manager)',
+          tags: ['Inventory'],
+          responses: { 200: { description: 'Out-of-stock products' } },
+        },
+      },
+      '/api/inventory/{id}': {
+        get: {
+          summary: 'Get an inventory item (Product) by ID (admin/shop_manager)',
+          tags: ['Inventory'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Product' }, 404: { description: 'Not found' } },
+        },
+        put: {
+          summary: 'Update an inventory item (admin/shop_manager)',
+          tags: ['Inventory'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string' }, category: { type: 'string' }, price: { type: 'number' }, quantity: { type: 'integer' }, unit: { type: 'string' }, supplier_id: { type: 'string' }, variety: { type: 'string' }, min_stock: { type: 'integer' }, cost: { type: 'number' }, source_type: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Inventory item updated' }, 404: { description: 'Not found' } },
+        },
+        delete: {
+          summary: 'Soft-delete an inventory item (sets status to discontinued) (admin/shop_manager)',
+          tags: ['Inventory'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Inventory item deleted' }, 404: { description: 'Not found' } },
+        },
+      },
+      // ═══════════════════════════════════════════════════════════════════
+      // SUPPLIERS — new endpoints
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/suppliers/bulk': {
+        put: {
+          summary: 'Bulk-update multiple suppliers in one call (admin)',
+          tags: ['Suppliers'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['suppliers'],
+                  properties: {
+                    suppliers: { type: 'array', items: { type: 'object', required: ['id'], properties: { id: { type: 'string' } }, description: 'Any other Supplier fields to update' } },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Updated suppliers (entries with an invalid id are skipped, not errored)' } },
+        },
+      },
+
       // ═══════════════════════════════════════════════════════════════════
       // PROFILE ACCESS — new endpoints
       // ═══════════════════════════════════════════════════════════════════
@@ -2513,6 +3106,18 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       // REPORTS — new endpoints
       // ═══════════════════════════════════════════════════════════════════
+      '/api/reports/{id}/attachments': {
+        post: {
+          summary: 'Upload file attachments to a report (agent/admin). Agents may only upload to reports they own.',
+          tags: ['Reports'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: { 'multipart/form-data': { schema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string', format: 'binary' } } } } } },
+          },
+          responses: { 200: { description: 'Attachment URLs appended to the report' }, 400: { description: 'No files uploaded' }, 403: { description: 'Access denied (agent does not own this report)' }, 404: { description: 'Report not found' } },
+        },
+      },
       '/api/reports/export': {
         get: {
           summary: 'Export reports as CSV (default) or JSON file download',
@@ -2541,6 +3146,102 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       // ANALYTICS — new endpoints
       // ═══════════════════════════════════════════════════════════════════
+      '/api/analytics/sales': {
+        get: {
+          summary: 'Sales analytics with daily revenue trend and top products (admin/shop_manager)',
+          tags: ['Analytics'],
+          parameters: [
+            { in: 'query', name: 'start_date', schema: { type: 'string', format: 'date' }, description: 'Defaults to 30 days before end_date' },
+            { in: 'query', name: 'end_date', schema: { type: 'string', format: 'date' }, description: 'Defaults to now' },
+          ],
+          responses: { 200: { description: 'Period totals, daily sales trend, and top 10 products by revenue' }, 400: { description: 'start_date must be before end_date' } },
+        },
+      },
+      '/api/analytics/orders/monthly': {
+        get: {
+          summary: 'Monthly order count and revenue trends (admin/shop_manager)',
+          tags: ['Analytics'],
+          parameters: [
+            { in: 'query', name: 'start_date', schema: { type: 'string', format: 'date' }, description: 'Defaults to 11 months before end_date' },
+            { in: 'query', name: 'end_date', schema: { type: 'string', format: 'date' }, description: 'Defaults to now' },
+          ],
+          responses: { 200: { description: 'Monthly trend entries (orders, revenue, averageOrderValue) plus an overall summary' } },
+        },
+      },
+      '/api/welcome/stats': {
+        get: {
+          summary: 'Detailed system statistics — user/product/order counts and process memory/uptime (public)',
+          tags: ['Welcome'],
+          security: [],
+          responses: { 200: { description: 'User, product, order counts plus system memory/uptime info' } },
+        },
+      },
+      '/api/logs/export': {
+        get: {
+          summary: 'Export logs as a CSV file (admin)',
+          tags: ['Logs'],
+          parameters: [
+            { in: 'query', name: 'level', schema: { type: 'string', enum: ['error', 'warn', 'info', 'http', 'debug'] } },
+            { in: 'query', name: 'start_date', schema: { type: 'string', format: 'date' } },
+            { in: 'query', name: 'end_date', schema: { type: 'string', format: 'date' } },
+          ],
+          responses: { 200: { description: 'CSV file download', content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } } } },
+        },
+      },
+      '/api/logs/cleanup': {
+        delete: {
+          summary: 'Delete logs older than a given number of days (admin)',
+          tags: ['Logs'],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { older_than_days: { type: 'integer', default: 30 } } } } } },
+          responses: { 200: { description: 'Old logs deleted' } },
+        },
+      },
+      '/api/profile-access/update-profile': {
+        put: {
+          summary: 'Update a user profile using a one-time access key (public). Marks the access key as used.',
+          tags: ['ProfileAccess'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['access_key', 'profile_data'],
+                  properties: {
+                    access_key: { type: 'string', example: 'ABCD-1234-EFGH' },
+                    profile_data: { type: 'object', properties: { full_name: { type: 'string' }, phone: { type: 'string' }, email: { type: 'string' }, profile: { type: 'object' } } },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Profile updated' }, 400: { description: 'Invalid access key format' }, 404: { description: 'Access key invalid, already used, or expired' } },
+        },
+      },
+      '/api/profile-access/generate-qr/{userId}': {
+        get: {
+          summary: 'Generate a QR code containing a fresh 7-day access key for a user (agent/admin)',
+          tags: ['ProfileAccess'],
+          parameters: [{ in: 'path', name: 'userId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Access key, base64 QR image, and expiry' }, 404: { description: 'User not found' } },
+        },
+      },
+      '/api/monitoring/usage': {
+        get: {
+          summary: 'Request/log volume broken down by log level over a time window (admin)',
+          tags: ['Monitoring'],
+          parameters: [{ in: 'query', name: 'period', schema: { type: 'string', enum: ['24h', '7d', '30d'], default: '24h' } }],
+          responses: { 200: { description: 'Total request count and counts grouped by log level for the period' } },
+        },
+      },
+      '/api/monitoring/database': {
+        get: {
+          summary: 'Database connectivity check and row counts for key tables (admin)',
+          tags: ['Monitoring'],
+          responses: { 200: { description: 'DB status, query time in ms, and row counts' } },
+        },
+      },
       '/api/analytics/regional': {
         get: {
           summary: 'Farm and harvest stats broken down by province/district',
@@ -2566,6 +3267,14 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       // TREES
       // ═══════════════════════════════════════════════════════════════════
+      '/api/trees/farm/{farmId}/summary': {
+        get: {
+          summary: 'Get a tree summary for a farm — latest tree record, untreated disease count, and all reported disease names',
+          tags: ['Trees'],
+          parameters: [{ in: 'path', name: 'farmId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Returns { latest_record, untreated_diseases_count, all_disease_names }' }, 404: { description: 'Farm not found' } },
+        },
+      },
       '/api/trees/farm/{farmId}': {
         get: {
           summary: 'List all tree records for a farm',
@@ -2599,21 +3308,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             },
           },
           responses: { 201: { description: 'Tree record created' } },
-        },
-      },
-      '/api/trees/{id}': {
-        put: {
-          summary: 'Update a tree record',
-          tags: ['Trees'],
-          parameters: [{ $ref: '#/components/parameters/idParam' }],
-          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/TreeRecord' } } } },
-          responses: { 200: { description: 'Tree updated' }, 404: { description: 'Tree not found' } },
-        },
-        delete: {
-          summary: 'Delete a tree record',
-          tags: ['Trees'],
-          parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'Tree deleted' }, 404: { description: 'Tree not found' } },
         },
       },
       '/api/trees/farm/{farmId}/diseases': {
@@ -2657,14 +3351,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           responses: { 200: { description: 'Tree disease updated' } },
         },
       },
-      '/api/trees/summary': {
-        get: {
-          summary: 'Platform-wide tree health summary',
-          tags: ['Trees'],
-          responses: { 200: { description: 'Aggregate tree health counts by status' } },
-        },
-      },
-
       // ═══════════════════════════════════════════════════════════════════
       // DISEASES
       // ═══════════════════════════════════════════════════════════════════
@@ -2753,12 +3439,33 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         },
       },
       '/api/diseases/cases/{id}': {
+        get: {
+          summary: 'Get a disease case by ID, including farm and outbreak details',
+          tags: ['Diseases'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Disease case detail' }, 404: { description: 'Disease case not found' } },
+        },
         put: {
           summary: 'Update a disease case status',
           tags: ['Diseases'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/DiseaseCase' } } } },
           responses: { 200: { description: 'Case updated' } },
+        },
+      },
+      '/api/diseases/outbreaks/{id}': {
+        get: {
+          summary: 'Get a disease outbreak by ID, including all linked disease cases',
+          tags: ['Diseases'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Disease outbreak detail with cases' }, 404: { description: 'Disease outbreak not found' } },
+        },
+        put: {
+          summary: 'Update a disease outbreak (admin/agent). Auto-sets end_date when status is set to resolved.',
+          tags: ['Diseases'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { status: { type: 'string', enum: ['active', 'contained', 'resolved', 'monitoring'] }, end_date: { type: 'string', format: 'date-time' }, response_plan: { type: 'string' }, affected_farms: { type: 'integer' }, description: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Disease outbreak updated' }, 404: { description: 'Disease outbreak not found' } },
         },
       },
       '/api/diseases/outbreaks': {
@@ -2832,7 +3539,24 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           responses: { 201: { description: 'Forecast created' } },
         },
       },
+      '/api/forecasting/compare': {
+        get: {
+          summary: 'List forecasts that have actual_kg recorded, with a computed accuracy_rating (admin/agent)',
+          tags: ['Forecasting'],
+          parameters: [
+            { in: 'query', name: 'forecast_year', schema: { type: 'integer' } },
+            { in: 'query', name: 'province', schema: { type: 'string' } },
+          ],
+          responses: { 200: { description: "Forecasts with accuracy_rating: 'on_track' | 'over' | 'under'" } },
+        },
+      },
       '/api/forecasting/{id}': {
+        get: {
+          summary: 'Get a single harvest forecast by ID',
+          tags: ['Forecasting'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Forecast detail' }, 404: { description: 'Forecast not found' } },
+        },
         put: {
           summary: 'Update a forecast (including actual kg when harvested)',
           tags: ['Forecasting'],
@@ -2858,19 +3582,20 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       // PROCUREMENT
       // ═══════════════════════════════════════════════════════════════════
-      '/api/procurement/purchase-orders': {
+      '/api/procurement': {
         get: {
-          summary: 'List purchase orders',
+          summary: 'List purchase orders with supplier details, paginated (admin/shop_manager)',
           tags: ['Procurement'],
           parameters: [
             { $ref: '#/components/parameters/pageParam' },
             { $ref: '#/components/parameters/limitParam' },
-            { in: 'query', name: 'status', schema: { type: 'string', enum: ['draft', 'submitted', 'approved', 'received', 'cancelled'] } },
+            { in: 'query', name: 'status', schema: { type: 'string', enum: ['draft', 'submitted', 'approved', 'ordered', 'partially_received', 'fully_received', 'cancelled'] } },
+            { in: 'query', name: 'supplier_id', schema: { type: 'string' } },
           ],
-          responses: { 200: { description: 'Purchase orders' } },
+          responses: { 200: { description: 'Paginated purchase orders' } },
         },
         post: {
-          summary: 'Create a draft purchase order',
+          summary: 'Create a draft purchase order with line items (admin/shop_manager)',
           tags: ['Procurement'],
           requestBody: {
             required: true,
@@ -2881,14 +3606,19 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                   required: ['supplier_id', 'items'],
                   properties: {
                     supplier_id: { type: 'string' },
-                    expected_delivery: { type: 'string', format: 'date' },
+                    expected_date: { type: 'string', format: 'date-time' },
                     notes: { type: 'string' },
                     items: {
                       type: 'array',
                       items: {
                         type: 'object',
-                        required: ['product_id', 'quantity', 'unit_price'],
-                        properties: { product_id: { type: 'string' }, quantity: { type: 'integer' }, unit_price: { type: 'number' } },
+                        required: ['product_name', 'quantity_ordered', 'unit_price'],
+                        properties: {
+                          product_name: { type: 'string' },
+                          product_id: { type: 'string', description: 'Optional link to an existing Product' },
+                          quantity_ordered: { type: 'number' },
+                          unit_price: { type: 'number' },
+                        },
                       },
                     },
                   },
@@ -2896,51 +3626,51 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               },
             },
           },
-          responses: { 201: { description: 'Purchase order created' } },
+          responses: { 201: { description: 'Purchase order created with a generated po_number and computed total_amount' }, 400: { description: 'supplier_id and a non-empty items array are required' }, 404: { description: 'Supplier not found' } },
         },
       },
-      '/api/procurement/purchase-orders/{id}': {
+      '/api/procurement/{id}': {
         get: {
-          summary: 'Get a purchase order with items',
+          summary: 'Get a purchase order with items, supplier, and goods receipts (admin/shop_manager)',
           tags: ['Procurement'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'Purchase order detail' }, 404: { description: 'Not found' } },
+          responses: { 200: { description: 'Purchase order detail' }, 404: { description: 'Purchase order not found' } },
         },
         put: {
-          summary: 'Update a draft purchase order',
+          summary: 'Update a purchase order — only allowed while status is draft (admin/shop_manager)',
           tags: ['Procurement'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/PurchaseOrder' } } } },
-          responses: { 200: { description: 'PO updated' } },
+          requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', properties: { expected_date: { type: 'string', format: 'date-time' }, notes: { type: 'string' } } } } } },
+          responses: { 200: { description: 'Purchase order updated' }, 400: { description: 'Purchase order cannot be modified after submission' }, 404: { description: 'Purchase order not found' } },
         },
       },
-      '/api/procurement/purchase-orders/{id}/submit': {
+      '/api/procurement/{id}/submit': {
         put: {
-          summary: 'Submit a draft PO for approval',
+          summary: 'Submit a draft purchase order for approval: draft → submitted (admin/shop_manager)',
           tags: ['Procurement'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'PO submitted' } },
+          responses: { 200: { description: 'Purchase order submitted' }, 400: { description: 'Purchase order must be in draft status to submit' }, 404: { description: 'Purchase order not found' } },
         },
       },
-      '/api/procurement/purchase-orders/{id}/approve': {
+      '/api/procurement/{id}/approve': {
         put: {
-          summary: 'Approve a submitted PO (admin)',
+          summary: 'Approve a submitted purchase order: submitted → approved (admin only)',
           tags: ['Procurement'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'PO approved' } },
+          responses: { 200: { description: 'Purchase order approved' }, 400: { description: 'Purchase order must be in submitted status to approve' }, 404: { description: 'Purchase order not found' } },
         },
       },
-      '/api/procurement/purchase-orders/{id}/cancel': {
+      '/api/procurement/{id}/cancel': {
         put: {
-          summary: 'Cancel a PO',
+          summary: 'Cancel a purchase order (admin only). Cannot cancel once fully received.',
           tags: ['Procurement'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'PO cancelled' } },
+          responses: { 200: { description: 'Purchase order cancelled' }, 400: { description: 'Cannot cancel a fully received purchase order' }, 404: { description: 'Purchase order not found' } },
         },
       },
-      '/api/procurement/purchase-orders/{id}/receive': {
+      '/api/procurement/{id}/receive': {
         post: {
-          summary: 'Record goods receipt for an approved PO',
+          summary: 'Record a goods receipt against a purchase order and increment product stock (admin/shop_manager)',
           tags: ['Procurement'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: {
@@ -2956,8 +3686,14 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
                       type: 'array',
                       items: {
                         type: 'object',
-                        required: ['product_id', 'quantity_received'],
-                        properties: { product_id: { type: 'string' }, quantity_received: { type: 'integer' } },
+                        required: ['product_name', 'quantity', 'unit_price'],
+                        properties: {
+                          product_name: { type: 'string' },
+                          product_id: { type: 'string', description: 'When set, increments Product.quantity and matches against the PO item' },
+                          quantity: { type: 'number' },
+                          unit_price: { type: 'number' },
+                          notes: { type: 'string' },
+                        },
                       },
                     },
                   },
@@ -2965,13 +3701,28 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               },
             },
           },
-          responses: { 201: { description: 'Goods receipt recorded and stock updated' } },
+          responses: { 201: { description: 'Goods receipt created; PO status becomes partially_received or fully_received' }, 400: { description: 'items array is required, or PO is not approved/ordered' }, 404: { description: 'Purchase order not found' } },
+        },
+      },
+      '/api/procurement/{id}/receipts': {
+        get: {
+          summary: 'List goods receipts recorded against a purchase order (admin/shop_manager)',
+          tags: ['Procurement'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Goods receipts for the purchase order' }, 404: { description: 'Purchase order not found' } },
         },
       },
 
       // ═══════════════════════════════════════════════════════════════════
       // TRAINING
       // ═══════════════════════════════════════════════════════════════════
+      '/api/training/all': {
+        get: {
+          summary: 'List all training content regardless of status (admin)',
+          tags: ['Training'],
+          responses: { 200: { description: 'Training content list, including drafts and archived items' } },
+        },
+      },
       '/api/training': {
         get: {
           summary: 'List training content (published only for farmers)',
@@ -3046,15 +3797,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           responses: { 200: { description: 'Content archived' } },
         },
       },
-      '/api/training/{id}/access': {
-        get: {
-          summary: 'List who has accessed a training item (admin)',
-          tags: ['Training'],
-          parameters: [{ $ref: '#/components/parameters/idParam' }],
-          responses: { 200: { description: 'Access records' } },
-        },
-      },
-
       // ═══════════════════════════════════════════════════════════════════
       // GEOGRAPHY
       // ═══════════════════════════════════════════════════════════════════
@@ -3211,9 +3953,34 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/settings': {
         get: {
-          summary: 'List all system settings (admin)',
+          summary: 'List all system settings, optionally filtered by category (admin)',
           tags: ['Settings'],
+          parameters: [{ in: 'query', name: 'category', schema: { type: 'string' } }],
           responses: { 200: { description: 'All settings key-value pairs' } },
+        },
+        post: {
+          summary: 'Create a new system setting (admin)',
+          tags: ['Settings'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['key', 'value'],
+                  properties: {
+                    key: { type: 'string' },
+                    value: { type: 'string' },
+                    description: { type: 'string' },
+                    category: { type: 'string' },
+                    data_type: { type: 'string', default: 'string' },
+                    is_editable: { type: 'boolean', default: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Setting created' }, 409: { description: 'A setting with this key already exists' } },
         },
       },
       '/api/settings/{key}': {
@@ -3245,10 +4012,10 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         },
       },
       '/api/settings/initialize': {
-        post: {
-          summary: 'Initialize default platform settings (admin)',
+        get: {
+          summary: 'Seed default system settings if none exist yet (admin). No-op if settings already exist.',
           tags: ['Settings'],
-          responses: { 200: { description: 'Defaults seeded' } },
+          responses: { 200: { description: 'Returns { created, message } — created is 0 if defaults already existed' } },
         },
       },
 
@@ -3319,6 +4086,14 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       // VISITS
       // ═══════════════════════════════════════════════════════════════════
+      '/api/visits/farm/{farmId}': {
+        get: {
+          summary: 'List all visits for a specific farm',
+          tags: ['Visits'],
+          parameters: [{ in: 'path', name: 'farmId', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Visits for the farm' } },
+        },
+      },
       '/api/visits': {
         get: {
           summary: 'List farm visits (admin sees all; agents see their own)',
@@ -3368,6 +4143,14 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/FarmVisit' } } } },
           responses: { 200: { description: 'Visit updated' } },
+        },
+      },
+      '/api/visits/{id}/start': {
+        put: {
+          summary: 'Mark a scheduled visit as in-progress',
+          tags: ['Visits'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Visit marked in-progress' }, 404: { description: 'Not found' } },
         },
       },
       '/api/visits/{id}/complete': {
