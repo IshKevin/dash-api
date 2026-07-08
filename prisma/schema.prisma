@@ -31,6 +31,7 @@ enum ProductCategory {
   // stored as "pest-management" in DB to preserve existing API contract
   pest_management @map("pest-management")
   protection
+  produce
 }
 
 enum ProductStatus {
@@ -138,6 +139,8 @@ enum ServiceType {
   consultation
   pest_control
   other
+  harvesting_plan
+  ipm_routine
 }
 
 enum ServiceStatus {
@@ -307,7 +310,8 @@ model User {
   agent_profile              AgentProfile?
   reports_as_agent           Report[]          @relation("AgentReports")
   stock_history_created      StockHistory[]
-  shops_created              Shop[]
+  shops_created              Shop[]            @relation("ShopCreator")
+  shop_managed               Shop?             @relation("ShopManager")
   transactions_as_payer      Transaction[]     @relation("PayerTransactions")
   transactions_as_payee      Transaction[]     @relation("PayeeTransactions")
   cart                       Cart?
@@ -326,6 +330,8 @@ model User {
   qr_activities              QRActivity[]
   password_reset_tokens      PasswordResetToken[]
   supplier_evaluations       SupplierEvaluation[] @relation("SupplierEvaluator")
+  pending_farmers_created    PendingFarmer[]       @relation("PendingFarmerCreator")
+  pending_farmer_approved    PendingFarmer?        @relation("PendingFarmerApprovedUser")
 
   @@index([role, status])
   @@index([created_at])
@@ -347,6 +353,10 @@ model Product {
   brand         String?
   images        String[]
   specifications Json?
+  variety       String?
+  min_stock     Int?            @default(10)
+  cost          Float?
+  source_type   String?         @default("manual")
   created_at    DateTime        @default(now())
   updated_at    DateTime        @updatedAt
 
@@ -407,6 +417,16 @@ model Customer {
   total_orders    Int            @default(0)
   total_spent     Float          @default(0)
   last_order_date DateTime?
+  first_name      String?
+  last_name       String?
+  type            String?        @default("individual")
+  company         String?
+  /// CustomerAddressDetails: {street, city, state, zipCode, country}
+  address_details Json?
+  /// CustomerPreferences: {organic, local, deliveryMethod, communicationMethod}
+  preferences     Json?
+  tags            String[]       @default([])
+  notes           String?
   created_at      DateTime       @default(now())
   updated_at      DateTime       @updatedAt
 
@@ -508,11 +528,14 @@ model Shop {
   ownerName    String
   ownerEmail   String
   ownerPhone   String
+  can_sell     Boolean    @default(true)
   created_by   String
+  manager_id   String?    @unique
   created_at   DateTime   @default(now())
   updated_at   DateTime   @updatedAt
 
-  creator      User       @relation(fields: [created_by], references: [id])
+  creator      User       @relation("ShopCreator", fields: [created_by], references: [id])
+  manager      User?      @relation("ShopManager", fields: [manager_id], references: [id])
   customers    Customer[]
 
   @@index([created_by])
@@ -587,6 +610,12 @@ model ServiceRequest {
   harvest_details         Json?
   /// PestManagementDetails: {pests_diseases, first_noticed, damage_observed, ...}
   pest_management_details Json?
+  /// HarvestingPlanDetails: {plannedHarvestDate, estimatedYield, farmSize, laborRequirement, marketTarget, ...}
+  harvesting_plan_details Json?
+  /// IPMRoutineDetails: {scheduledDate, farmSize, pestType, ipmMethod, chemicalsNeeded, equipmentNeeded, laborRequired, targetArea, severity, ...}
+  ipm_routine_details     Json?
+  /// VisitDetails: {visit_date, visit_time, estimated_duration, preparation_notes, farmer_instructions, reschedule_history}
+  visit_details           Json?
   /// FarmerInfo: {name, phone, email, location}
   farmer_info             Json?
   attachments             String[]
@@ -1149,6 +1178,31 @@ model PasswordResetToken {
 
   @@index([user_id])
   @@index([token, is_used])
+}
+
+// ── Pending Farmers (farmers registered without a login account yet) ───────────
+
+enum PendingFarmerStatus {
+  pending
+  approved
+  rejected
+}
+
+model PendingFarmer {
+  id               String              @id @default(uuid())
+  full_name        String
+  email            String              @unique
+  phone            String
+  status           PendingFarmerStatus @default(pending)
+  created_by       String
+  creator          User                @relation("PendingFarmerCreator", fields: [created_by], references: [id])
+  approved_user_id String?             @unique
+  approved_user    User?               @relation("PendingFarmerApprovedUser", fields: [approved_user_id], references: [id])
+  created_at       DateTime            @default(now())
+  updated_at       DateTime            @updatedAt
+
+  @@index([status])
+  @@index([created_by])
 }
 
 // ── Epic 14: Supplier Evaluation ────────────────────────────────────────────
