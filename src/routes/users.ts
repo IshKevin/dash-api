@@ -279,7 +279,7 @@ router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: 
 }));
 
 // GET /api/users/:id
-router.get('/:id', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user = await prisma.user.findUnique({ where: { id: req.params.id }, select: userSelect });
 
   if (!user) {
