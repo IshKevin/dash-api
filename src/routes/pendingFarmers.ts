@@ -2,8 +2,9 @@ import { Router, Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { Resend } from 'resend';
 import { prisma } from '../lib/prisma';
+import { emailService } from '../services/emailService';
+import { smsService } from '../services/smsService';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendCreated, sendNotFound } from '../utils/responses';
@@ -105,18 +106,9 @@ router.put('/:id/approve', authenticate, authorize('admin'), asyncHandler(async 
     return created;
   });
 
-  if (process.env.RESEND_API_KEY) {
-    try {
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      await resend.emails.send({
-        from: process.env.FROM_EMAIL || 'noreply@avocadodashboard.com',
-        to: user.email,
-        subject: 'Your Avocado Society of Rwanda account is ready',
-        html: `<p>Hi ${user.full_name},</p><p>Your farmer account has been approved. You can now log in with:</p><p>Email: ${user.email}<br/>Temporary password: <strong>${tempPassword}</strong></p><p>Please log in and change your password as soon as possible.</p>`,
-      });
-    } catch (emailError) {
-      console.error('Email send failed:', emailError);
-    }
+  await emailService.sendFarmerApprovalCredentials(user.email, user.full_name, tempPassword);
+  if (user.phone) {
+    smsService.sendFarmerApprovalCredentials(user.phone, tempPassword);
   }
 
   sendSuccess(res, {
