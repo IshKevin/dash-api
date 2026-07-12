@@ -177,6 +177,11 @@ router.post('/checkout', authenticate, asyncHandler(async (req: AuthenticatedReq
     return sendError(res, 'customer_id is required', 400 as any);
   }
 
+  const customer = await prisma.customer.findUnique({ where: { id: customer_id }, select: { email: true } });
+  if (!customer || customer.email.toLowerCase() !== req.user!.email.toLowerCase()) {
+    return sendError(res, 'customer_id must refer to a customer record matching your own account email', 403 as any);
+  }
+
   const cart = await prisma.cart.findUnique({
     where: { user_id },
     include: cartInclude,
