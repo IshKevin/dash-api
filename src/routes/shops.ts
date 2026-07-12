@@ -212,29 +212,122 @@ router.delete('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHan
 }));
 
 /**
- * @route   PUT /api/shops/:shopId/selling-permission
+ * @route   PUT /api/shops/:id/selling-permission
  * @desc    Enable or disable a shop's ability to sell (Admin only)
  * @access  Private (Admin only)
  */
-router.put('/:shopId/selling-permission', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id/selling-permission', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { can_sell } = req.body;
   if (typeof can_sell !== 'boolean') {
     sendError(res, 'can_sell must be a boolean', 400);
     return;
   }
 
-  const existing = await prisma.shop.findUnique({ where: { id: req.params.shopId } });
+  const shopNumber = parseShopNumber(req.params.id);
+  if (shopNumber === null) {
+    sendError(res, 'Invalid shop ID', 400);
+    return;
+  }
+
+  const existing = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
   if (!existing) {
     sendNotFound(res, 'Shop not found');
     return;
   }
 
   const updated = await prisma.shop.update({
-    where: { id: req.params.shopId },
+    where: { shop_number: shopNumber },
     data: { can_sell },
   });
 
   sendSuccess(res, updated, `Shop selling permission ${can_sell ? 'enabled' : 'disabled'} successfully`);
+}));
+
+/**
+ * @route   POST /api/shops/:id/wallet/topup
+ * @desc    Add balance to a shop's wallet (Admin only)
+ * @access  Private (Admin only)
+ */
+router.post('/:id/wallet/topup', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { amount, description, payment_method } = req.body;
+  if (typeof amount !== 'number' || amount <= 0) {
+    sendError(res, 'amount must be a positive number', 400);
+    return;
+  }
+
+  const shopNumber = parseShopNumber(req.params.id);
+  if (shopNumber === null) {
+    sendError(res, 'Invalid shop ID', 400);
+    return;
+  }
+
+  const shop = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
+  if (!shop) {
+    sendNotFound(res, 'Shop not found');
+    return;
+  }
+  if (!shop.manager_id) {
+    sendError(res, 'Shop has no assigned manager to credit', 400);
+    return;
+  }
+
+  const [updatedShop, transaction] = await prisma.$transaction([
+    prisma.shop.update({ where: { shop_number: shopNumber }, data: { balance: { increment: amount } } }),
+    prisma.transaction.create({
+      data: {
+        transaction_number: `WTOP-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+        payer_id: req.user!.id,
+        payee_id: shop.manager_id,
+        amount,
+        type: 'adjustment',
+        status: 'completed',
+        payment_method: payment_method || 'cash',
+        description: description || `Wallet top-up for shop ${shop.shopName}`,
+        net_amount: amount,
+        processed_at: new Date(),
+      },
+    }),
+  ]);
+
+  sendCreated(res, { shop: updatedShop, transaction }, 'Shop wallet topped up successfully');
+}));
+
+/**
+ * @route   GET /api/shops/:id/wallet
+ * @desc    Get a shop's wallet balance and top-up history
+ * @access  Private (Admin, Shop Manager)
+ */
+router.get('/:id/wallet', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const shopNumber = parseShopNumber(req.params.id);
+  if (shopNumber === null) {
+    sendError(res, 'Invalid shop ID', 400);
+    return;
+  }
+
+  const shop = await prisma.shop.findUnique({ where: { shop_number: shopNumber } });
+  if (!shop) {
+    sendNotFound(res, 'Shop not found');
+    return;
+  }
+
+  if (req.user?.role === 'shop_manager' && shop.manager_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
+  const page  = parseInt(req.query.page  as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+
+  const where = shop.manager_id
+    ? { type: 'adjustment' as const, OR: [{ payee_id: shop.manager_id }, { payer_id: shop.manager_id }] }
+    : { id: '__no_manager__' };
+
+  const [transactions, total] = await Promise.all([
+    prisma.transaction.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.transaction.count({ where }),
+  ]);
+
+  sendPaginatedResponse(res, transactions, total, page, limit, 'Shop wallet retrieved successfully', { balance: shop.balance });
 }));
 
 // ─── Sub-routes: inventory, orders, analytics ────────────────────────────────
