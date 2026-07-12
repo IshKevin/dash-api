@@ -35,7 +35,7 @@ router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagina
 }));
 
 // GET /api/suppliers/:id
-router.get('/:id', authenticate, validateIdParam, asyncHandler(async (req: Request, res: Response) => {
+router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: Request, res: Response) => {
   const supplier = await prisma.supplier.findUnique({
     where: { id: req.params.id },
     include: { products: true },
