@@ -447,13 +447,19 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           type: 'object',
           properties: {
             id: { type: 'string' },
-            farm_id: { type: 'string' },
-            agent_id: { type: 'string' },
-            forecast_date: { type: 'string', format: 'date' },
-            forecast_kg: { type: 'number', example: 500 },
+            forecast_number: { type: 'string' },
+            farm_id: { type: 'string', nullable: true },
+            province: { type: 'string', nullable: true },
+            district: { type: 'string', nullable: true },
+            forecast_year: { type: 'integer' },
+            forecast_season: { type: 'string', nullable: true },
+            predicted_kg: { type: 'number', example: 500 },
+            confidence_pct: { type: 'number', default: 70 },
             actual_kg: { type: 'number', nullable: true },
-            variety: { type: 'string', nullable: true },
+            variance_pct: { type: 'number', nullable: true },
+            basis: { type: 'string', nullable: true },
             notes: { type: 'string', nullable: true },
+            created_by: { type: 'string', nullable: true },
             created_at: { type: 'string', format: 'date-time' },
           },
         },
@@ -603,6 +609,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         searchParam: { in: 'query', name: 'search', schema: { type: 'string' }, description: 'Search term' },
         idParam: { in: 'path', name: 'id', required: true, schema: { type: 'string' }, description: 'Resource CUID' },
         shopNumberParam: { in: 'path', name: 'shopNumber', required: true, schema: { type: 'integer' }, description: 'Shop number (auto-increment integer)' },
+        escalatedParam: { in: 'query', name: 'escalated', schema: { type: 'boolean' }, description: 'Filter to only requests auto-escalated to urgent priority past their due_date' },
       },
     },
     security: [{ bearerAuth: [] }],
@@ -625,7 +632,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       { name: 'AgentInformation', description: 'Extended agent profiles' },
       { name: 'ProfileAccess', description: 'QR code and access key system' },
       { name: 'Weather', description: 'Weather data and farm conditions' },
-      { name: 'Upload', description: 'File upload (Cloudinary)' },
+      { name: 'Upload', description: 'File upload (MinIO object storage)' },
       { name: 'Logs', description: 'System logs (admin)' },
       { name: 'Monitoring', description: 'Health and system metrics' },
       { name: 'Welcome', description: 'Public platform overview' },
@@ -638,6 +645,8 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       { name: 'Settings', description: 'System-wide configuration key-value settings' },
       { name: 'Cart', description: 'Shopping cart and checkout for farmers' },
       { name: 'Visits', description: 'Agent farm visit scheduling and reporting' },
+      { name: 'Documents', description: 'Generated/uploaded documents, e-signatures, and notarization workflow' },
+      { name: 'PendingFarmers', description: 'Farmers registered by staff without a login account yet, pending approval' },
     ],
     paths: {
 
@@ -1580,7 +1589,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         get: {
           summary: 'List harvest requests (role-scoped)',
           tags: ['ServiceRequests'],
-          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }, { $ref: '#/components/parameters/escalatedParam' }],
           responses: { 200: { description: 'Paginated harvest requests' } },
         },
       },
@@ -1615,7 +1624,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         get: {
           summary: 'List harvesting plan requests (role-scoped)',
           tags: ['ServiceRequests'],
-          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }, { $ref: '#/components/parameters/escalatedParam' }],
           responses: { 200: { description: 'Paginated harvesting plan requests' } },
         },
       },
@@ -1655,7 +1664,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         get: {
           summary: 'List IPM routine requests (role-scoped)',
           tags: ['ServiceRequests'],
-          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }],
+          parameters: [{ $ref: '#/components/parameters/pageParam' }, { $ref: '#/components/parameters/limitParam' }, { $ref: '#/components/parameters/escalatedParam' }],
           responses: { 200: { description: 'Paginated IPM routine requests' } },
         },
       },
@@ -1704,6 +1713,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             { $ref: '#/components/parameters/limitParam' },
             { in: 'query', name: 'status', schema: { type: 'string' } },
             { in: 'query', name: 'priority', schema: { type: 'string' } },
+            { $ref: '#/components/parameters/escalatedParam' },
           ],
           responses: { 200: { description: 'Paginated pest management requests' } },
         },
@@ -1744,6 +1754,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           parameters: [
             { $ref: '#/components/parameters/pageParam' },
             { $ref: '#/components/parameters/limitParam' },
+            { $ref: '#/components/parameters/escalatedParam' },
           ],
           responses: { 200: { description: 'Paginated property evaluation requests' } },
         },
@@ -2084,6 +2095,54 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           tags: ['Shops'],
           parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
           responses: { 200: { description: 'totalProducts, totalOrders, totalSales, totalRevenue, lowStockProducts, outOfStockProducts' } },
+        },
+      },
+      '/api/shops/{shopNumber}/selling-permission': {
+        put: {
+          summary: "Enable or disable a shop's ability to sell (admin only)",
+          tags: ['Shops'],
+          parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { type: 'object', required: ['can_sell'], properties: { can_sell: { type: 'boolean' } } } } },
+          },
+          responses: { 200: { description: 'Selling permission updated' } },
+        },
+      },
+      '/api/shops/{shopNumber}/wallet/topup': {
+        post: {
+          summary: "Add balance to a shop's wallet (admin only)",
+          tags: ['Shops'],
+          parameters: [{ $ref: '#/components/parameters/shopNumberParam' }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['amount'],
+                  properties: {
+                    amount: { type: 'number', minimum: 0.01 },
+                    description: { type: 'string' },
+                    payment_method: { type: 'string', enum: ['cash', 'mobile_money', 'bank_transfer', 'credit_card', 'debit_card', 'check'], default: 'cash' },
+                  },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Wallet topped up; returns the updated shop and the created Transaction' }, 400: { description: 'Shop has no assigned manager to credit' } },
+        },
+      },
+      '/api/shops/{shopNumber}/wallet': {
+        get: {
+          summary: "Get a shop's wallet balance and top-up/adjustment transaction history",
+          tags: ['Shops'],
+          parameters: [
+            { $ref: '#/components/parameters/shopNumberParam' },
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+          ],
+          responses: { 200: { description: 'Paginated Transaction history; current balance is in meta.balance' } },
         },
       },
 
@@ -2761,7 +2820,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/upload': {
         post: {
-          summary: 'Upload a single file to Cloudinary (max 5MB: jpg, png, webp, pdf)',
+          summary: 'Upload a single file to MinIO object storage (max 5MB: jpg, png, webp, pdf)',
           tags: ['Upload'],
           requestBody: {
             required: true,
@@ -2776,12 +2835,12 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               },
             },
           },
-          responses: { 200: { description: 'Upload successful', content: { 'application/json': { example: { success: true, data: { url: 'https://res.cloudinary.com/...', filename: 'img-123.jpg', size: 204800 } } } } } },
+          responses: { 200: { description: 'Upload successful', content: { 'application/json': { example: { success: true, data: { url: 'http://localhost:9000/avocado-dashboard/img-123.jpg', filename: 'img-123.jpg', size: 204800 } } } } } },
         },
       },
       '/api/upload/multiple': {
         post: {
-          summary: 'Upload multiple files to Cloudinary (max 5 files)',
+          summary: 'Upload multiple files to MinIO object storage (max 5 files)',
           tags: ['Upload'],
           requestBody: {
             required: true,
@@ -3358,7 +3417,6 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         get: {
           summary: 'List disease registry entries',
           tags: ['Diseases'],
-          security: [],
           responses: { 200: { description: 'Disease registry' } },
         },
         post: {
@@ -3511,7 +3569,9 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             { $ref: '#/components/parameters/pageParam' },
             { $ref: '#/components/parameters/limitParam' },
             { in: 'query', name: 'farm_id', schema: { type: 'string' } },
-            { in: 'query', name: 'year', schema: { type: 'integer' } },
+            { in: 'query', name: 'province', schema: { type: 'string' } },
+            { in: 'query', name: 'district', schema: { type: 'string' } },
+            { in: 'query', name: 'forecast_year', schema: { type: 'integer' } },
           ],
           responses: { 200: { description: 'Harvest forecasts' } },
         },
@@ -3524,12 +3584,16 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
               'application/json': {
                 schema: {
                   type: 'object',
-                  required: ['farm_id', 'forecast_date', 'forecast_kg'],
+                  required: ['forecast_year', 'predicted_kg'],
                   properties: {
                     farm_id: { type: 'string' },
-                    forecast_date: { type: 'string', format: 'date' },
-                    forecast_kg: { type: 'number' },
-                    variety: { type: 'string' },
+                    province: { type: 'string' },
+                    district: { type: 'string' },
+                    forecast_year: { type: 'integer' },
+                    forecast_season: { type: 'string' },
+                    predicted_kg: { type: 'number' },
+                    confidence_pct: { type: 'number', default: 70 },
+                    basis: { type: 'string' },
                     notes: { type: 'string' },
                   },
                 },
@@ -4053,11 +4117,11 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           responses: { 201: { description: 'Item added to cart' } },
         },
       },
-      '/api/cart/items/{itemId}': {
+      '/api/cart/items/{productId}': {
         put: {
           summary: 'Update quantity of a cart item',
           tags: ['Cart'],
-          parameters: [{ in: 'path', name: 'itemId', required: true, schema: { type: 'string' } }],
+          parameters: [{ in: 'path', name: 'productId', required: true, schema: { type: 'string' } }],
           requestBody: {
             required: true,
             content: { 'application/json': { schema: { type: 'object', required: ['quantity'], properties: { quantity: { type: 'integer', minimum: 0 } } } } },
@@ -4067,7 +4131,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
         delete: {
           summary: 'Remove a single item from the cart',
           tags: ['Cart'],
-          parameters: [{ in: 'path', name: 'itemId', required: true, schema: { type: 'string' } }],
+          parameters: [{ in: 'path', name: 'productId', required: true, schema: { type: 'string' } }],
           responses: { 200: { description: 'Item removed' } },
         },
       },
@@ -4175,6 +4239,136 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
             content: { 'application/json': { schema: { type: 'object', properties: { reason: { type: 'string' } } } } },
           },
           responses: { 200: { description: 'Visit cancelled' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // DOCUMENTS
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/documents': {
+        get: {
+          summary: 'List documents owned by the current user (admin may pass owner_id to view another user\'s documents)',
+          tags: ['Documents'],
+          parameters: [
+            { $ref: '#/components/parameters/pageParam' },
+            { $ref: '#/components/parameters/limitParam' },
+            { in: 'query', name: 'type', schema: { type: 'string', enum: ['profile_card', 'contract', 'ipm_form', 'notarized_upload', 'other'] } },
+            { in: 'query', name: 'owner_id', schema: { type: 'string' }, description: 'Admin only' },
+          ],
+          responses: { 200: { description: 'Paginated documents' } },
+        },
+      },
+      '/api/documents/{id}': {
+        get: {
+          summary: "Get a document's metadata",
+          tags: ['Documents'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Document' }, 403: { description: 'Access denied' }, 404: { description: 'Not found' } },
+        },
+      },
+      '/api/documents/{id}/download': {
+        get: {
+          summary: "Download a document's file (streamed from private object storage)",
+          tags: ['Documents'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'File stream', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } }, 403: { description: 'Access denied' } },
+        },
+      },
+      '/api/documents/{id}/signature': {
+        post: {
+          summary: 'Attach a captured signature image to a document',
+          tags: ['Documents'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: { 'multipart/form-data': { schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } } } } },
+          },
+          responses: { 201: { description: 'Signature attached' }, 400: { description: 'Document already has a signature, or no file provided' } },
+        },
+      },
+      '/api/documents/{id}/notarize': {
+        post: {
+          summary: 'Upload a physically notarized copy of a document for admin review (agent/admin)',
+          tags: ['Documents'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: { 'multipart/form-data': { schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } } } } },
+          },
+          responses: { 200: { description: 'Document moved to pending_notarization; version incremented' } },
+        },
+      },
+      '/api/documents/{id}/notarize-review': {
+        put: {
+          summary: 'Approve or reject a document pending notarization review (admin only)',
+          tags: ['Documents'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['approved'],
+                  properties: { approved: { type: 'boolean' }, rejection_reason: { type: 'string', description: 'Required when approved is false' } },
+                },
+              },
+            },
+          },
+          responses: { 200: { description: 'Document notarized or rejected' }, 400: { description: 'Document is not pending_notarization, or missing rejection_reason' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // PENDING FARMERS
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/pending-farmers': {
+        get: {
+          summary: 'List farmers registered without a login account yet (admin, agent)',
+          tags: ['PendingFarmers'],
+          parameters: [{ in: 'query', name: 'status', schema: { type: 'string', enum: ['pending', 'approved', 'rejected'], default: 'pending' } }],
+          responses: { 200: { description: 'Pending farmers' } },
+        },
+        post: {
+          summary: "Register a farmer's basic info without creating a login account (admin, agent)",
+          tags: ['PendingFarmers'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['full_name', 'email', 'phone'],
+                  properties: { full_name: { type: 'string' }, email: { type: 'string' }, phone: { type: 'string' } },
+                },
+              },
+            },
+          },
+          responses: { 201: { description: 'Pending farmer created' }, 409: { description: 'A user or pending farmer with this email already exists' } },
+        },
+      },
+      '/api/pending-farmers/{id}/approve': {
+        put: {
+          summary: 'Approve a pending farmer, creating their real login account with a temporary password (admin only)',
+          tags: ['PendingFarmers'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Farmer approved; response includes temp_password (also emailed/texted to the farmer)' } },
+        },
+      },
+      '/api/pending-farmers/{id}/reject': {
+        put: {
+          summary: 'Reject a pending farmer (admin only)',
+          tags: ['PendingFarmers'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Pending farmer rejected' } },
+        },
+      },
+      '/api/pending-farmers/{id}': {
+        delete: {
+          summary: 'Remove a pending farmer record (admin only)',
+          tags: ['PendingFarmers'],
+          parameters: [{ $ref: '#/components/parameters/idParam' }],
+          responses: { 200: { description: 'Pending farmer removed' } },
         },
       },
     },
