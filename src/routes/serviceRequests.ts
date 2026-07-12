@@ -6,12 +6,57 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { createNotification } from '../utils/notificationService';
+import { notifyAllAdmins, notifyAgentAssignment, notifyFarmerServiceUpdate } from '../utils/notificationService';
+import { documentService } from '../services/documentService';
+import { putObject, PRIVATE_PREFIX } from '../config/minio';
+import logger from '../config/logger';
 
 const router = Router();
 
 function generateRequestNumber(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+}
+
+// SLA windows used to set ServiceRequest.due_date on assignment. Requests past
+// their due_date are picked up by src/jobs/escalationJob.ts and escalated to
+// urgent priority.
+const SERVICE_TYPE_SLA_HOURS: Record<string, number> = {
+  harvest: 72,
+  planting: 96,
+  maintenance: 96,
+  consultation: 48,
+  pest_control: 48,
+  harvesting_plan: 96,
+  ipm_routine: 48,
+  other: 96,
+};
+
+function computeDueDate(serviceType: string): Date {
+  const hours = SERVICE_TYPE_SLA_HOURS[serviceType] ?? 96;
+  return new Date(Date.now() + hours * 60 * 60 * 1000);
+}
+
+// Best-effort: renders a filled-in IPM form PDF for an approved IPM routine
+// request and stores it as a Document. Failure here doesn't block approval.
+async function generateIPMFormDocument(serviceRequest: { id: string; farmer_id: string; request_number: string; title: string; ipm_routine_details: unknown }): Promise<void> {
+  try {
+    const pdfBytes = await documentService.generateIPMForm(serviceRequest as any);
+    const key = `${PRIVATE_PREFIX}/ipm-form-${serviceRequest.id}-${Date.now()}.pdf`;
+    await putObject(key, pdfBytes, 'application/pdf');
+
+    await prisma.document.create({
+      data: {
+        owner_id: serviceRequest.farmer_id,
+        type: 'ipm_form',
+        service_request_id: serviceRequest.id,
+        file_url: key,
+        file_key: key,
+        mimetype: 'application/pdf',
+      },
+    });
+  } catch (error) {
+    logger.error(`Failed to generate IPM form document for service request ${serviceRequest.id}: ${error}`);
+  }
 }
 
 function handleValidation(req: Request, res: Response, next: NextFunction): void {
@@ -81,6 +126,7 @@ function buildRequestWhere(req: AuthenticatedRequest, serviceType?: string): any
 
   if (req.query.status) where.status = req.query.status as any;
   if (req.query.priority) where.priority = req.query.priority as any;
+  if (req.query.escalated === 'true') where.is_escalated = true;
 
   return where;
 }
@@ -108,13 +154,7 @@ router.post('/pest-management', authenticate, authorize('farmer'), validatePestM
     },
   });
 
-  // Notify admins (find all admins and notify them)
-  try {
-    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
-    await Promise.all(admins.map(admin =>
-      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
-    ));
-  } catch (_) {}
+  await notifyAllAdmins('info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id);
 
   sendCreated(res, serviceRequest, 'Pest management request submitted successfully');
 }));
@@ -173,13 +213,7 @@ router.post('/property-evaluation', authenticate, authorize('farmer'), asyncHand
     },
   });
 
-  // Notify admins (find all admins and notify them)
-  try {
-    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
-    await Promise.all(admins.map(admin =>
-      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
-    ));
-  } catch (_) {}
+  await notifyAllAdmins('info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id);
 
   sendCreated(res, serviceRequest, 'Property evaluation request submitted successfully');
 }));
@@ -282,13 +316,7 @@ router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarv
     },
   });
 
-  // Notify admins (find all admins and notify them)
-  try {
-    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
-    await Promise.all(admins.map(admin =>
-      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
-    ));
-  } catch (_) {}
+  await notifyAllAdmins('info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id);
 
   sendCreated(res, serviceRequest, 'Harvest request submitted successfully');
 }));
@@ -334,12 +362,7 @@ router.post('/harvesting-plan', authenticate, authorize('farmer', 'agent'), vali
     },
   });
 
-  try {
-    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
-    await Promise.all(admins.map(admin =>
-      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
-    ));
-  } catch (_) {}
+  await notifyAllAdmins('info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id);
 
   sendCreated(res, serviceRequest, 'Harvesting plan request submitted successfully');
 }));
@@ -389,12 +412,7 @@ router.post('/ipm-routine', authenticate, authorize('farmer', 'agent'), validate
     },
   });
 
-  try {
-    const admins = await prisma.user.findMany({ where: { role: 'admin', status: 'active' }, select: { id: true } });
-    await Promise.all(admins.map(admin =>
-      createNotification(admin.id, 'info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id, 'service_request')
-    ));
-  } catch (_) {}
+  await notifyAllAdmins('info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id);
 
   sendCreated(res, serviceRequest, 'IPM routine request submitted successfully');
 }));
@@ -579,17 +597,7 @@ router.put('/:id/complete-harvest', authenticate, authorize('admin', 'agent'), v
     },
   });
 
-  // Notify farmer of completion
-  try {
-    await createNotification(
-      updated.farmer_id,
-      'success',
-      'Service Request Completed',
-      'Your service request has been completed: ' + updated.title,
-      updated.id,
-      'service_request'
-    );
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Completed', 'Your service request has been completed: ' + updated.title);
 
   sendSuccess(res, updated, 'Harvest request completed successfully');
 }));
@@ -649,9 +657,7 @@ router.put('/:id/complete-harvesting-plan', authenticate, authorize('admin', 'ag
     },
   });
 
-  try {
-    await createNotification(updated.farmer_id, 'success', 'Service Request Completed', 'Your service request has been completed: ' + updated.title, updated.id, 'service_request');
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Completed', 'Your service request has been completed: ' + updated.title);
 
   sendSuccess(res, updated, 'Harvesting plan request completed successfully');
 }));
@@ -682,6 +688,8 @@ router.put('/:id/approve-ipm-routine', authenticate, authorize('admin'), validat
     },
   });
 
+  await generateIPMFormDocument(updated);
+
   sendSuccess(res, updated, 'IPM routine request approved successfully');
 }));
 
@@ -711,9 +719,7 @@ router.put('/:id/complete-ipm-routine', authenticate, authorize('admin', 'agent'
     },
   });
 
-  try {
-    await createNotification(updated.farmer_id, 'success', 'Service Request Completed', 'Your service request has been completed: ' + updated.title, updated.id, 'service_request');
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Completed', 'Your service request has been completed: ' + updated.title);
 
   sendSuccess(res, updated, 'IPM routine request completed successfully');
 }));
@@ -773,9 +779,7 @@ router.put('/:id/complete-pest-management', authenticate, authorize('admin', 'ag
     },
   });
 
-  try {
-    await createNotification(updated.farmer_id, 'success', 'Service Request Completed', 'Your service request has been completed: ' + updated.title, updated.id, 'service_request');
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Completed', 'Your service request has been completed: ' + updated.title);
 
   sendSuccess(res, updated, 'Pest management request completed successfully');
 }));
@@ -837,9 +841,7 @@ router.put('/:id/complete-property-evaluation', authenticate, authorize('admin',
     },
   });
 
-  try {
-    await createNotification(updated.farmer_id, 'success', 'Service Request Completed', 'Your service request has been completed: ' + updated.title, updated.id, 'service_request');
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Completed', 'Your service request has been completed: ' + updated.title);
 
   sendSuccess(res, updated, 'Property evaluation request completed successfully');
 }));
@@ -868,9 +870,7 @@ router.put('/:id/schedule-visit', authenticate, authorize('admin', 'agent'), val
     },
   });
 
-  try {
-    await createNotification(updated.farmer_id, 'info', 'Visit Scheduled', 'A visit has been scheduled for your service request: ' + updated.title, updated.id, 'service_request');
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Visit Scheduled', 'A visit has been scheduled for your service request: ' + updated.title);
 
   sendSuccess(res, updated, 'Visit scheduled successfully');
 }));
@@ -907,9 +907,7 @@ router.put('/:id/reschedule-visit', authenticate, authorize('admin', 'agent'), v
     },
   });
 
-  try {
-    await createNotification(updated.farmer_id, 'info', 'Visit Rescheduled', 'The visit for your service request has been rescheduled: ' + updated.title, updated.id, 'service_request');
-  } catch (_) {}
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Visit Rescheduled', 'The visit for your service request has been rescheduled: ' + updated.title);
 
   sendSuccess(res, updated, 'Visit rescheduled successfully');
 }));
@@ -1005,11 +1003,13 @@ router.put('/:id/status', authenticate, authorize('admin'), validateIdParam, asy
     data: { status: status as any, ...timestamps },
   });
 
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Status Updated', 'Your service request status changed to: ' + status);
+
   sendSuccess(res, updated, 'Service request status updated successfully');
 }));
 
 // GET /api/service-requests/:id
-router.get('/:id', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const request = await prisma.serviceRequest.findUnique({
     where: { id: req.params.id },
     include: {
@@ -1096,29 +1096,12 @@ router.put('/:id/assign', authenticate, authorize('admin'), validateIdParam, asy
       agent_id,
       status: 'assigned',
       scheduled_date: scheduled_date ? new Date(scheduled_date) : existing.scheduled_date,
+      due_date: existing.due_date || computeDueDate(existing.service_type),
     },
   });
 
-  // Notify agent of assignment
-  try {
-    await createNotification(
-      updated.agent_id!,
-      'info',
-      'New Service Request Assignment',
-      'You have been assigned a new service request: ' + updated.title,
-      updated.id,
-      'service_request'
-    );
-    // Notify farmer of agent assignment
-    await createNotification(
-      updated.farmer_id,
-      'info',
-      'Agent Assigned',
-      'An agent has been assigned to your service request: ' + updated.title,
-      updated.id,
-      'service_request'
-    );
-  } catch (_) {}
+  await notifyAgentAssignment(updated.agent_id!, updated.id, updated.title);
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Agent Assigned', 'An agent has been assigned to your service request: ' + updated.title);
 
   sendSuccess(res, updated, 'Agent assigned successfully');
 }));
@@ -1153,7 +1136,7 @@ router.put('/:id/start', authenticate, authorize('admin', 'agent'), validateIdPa
 }));
 
 // PUT /api/service-requests/:id/cancel
-router.put('/:id/cancel', authenticate, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id/cancel', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { notes } = req.body;
   const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id } });
   if (!existing) { sendNotFound(res, 'Service request not found'); return; }
@@ -1168,6 +1151,11 @@ router.put('/:id/cancel', authenticate, validateIdParam, asyncHandler(async (req
 
   if (role === 'farmer' && !['pending'].includes(existing.status)) {
     sendError(res, 'Farmers can only cancel pending requests', 400);
+    return;
+  }
+
+  if (role === 'agent' && existing.agent_id !== userId) {
+    sendError(res, 'You can only cancel your assigned requests', 403);
     return;
   }
 
