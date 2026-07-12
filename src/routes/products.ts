@@ -94,7 +94,7 @@ router.get('/:id', validateIdParam, asyncHandler(async (req: Request, res: Respo
 }));
 
 // POST /api/products
-router.post('/', authenticate, authorize('admin', 'shop_manager', 'agent'), validateProductCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/', authenticate, authorize('admin', 'shop_manager'), validateProductCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { name, category, description, price, quantity, unit, supplier_id, brand, images, specifications } = req.body;
 
   const existing = await prisma.product.findFirst({ where: { name } });
@@ -147,7 +147,7 @@ router.post('/', authenticate, authorize('admin', 'shop_manager', 'agent'), vali
 }));
 
 // PUT /api/products/:id
-router.put('/:id', authenticate, authorize('admin', 'shop_manager', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const productId = req.params.id;
   const { name, category, ...rest } = req.body;
 
@@ -199,7 +199,7 @@ router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHa
 }));
 
 // PUT /api/products/:id/stock
-router.put('/:id/stock', authenticate, authorize('admin', 'shop_manager', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id/stock', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const productId = req.params.id;
   const { quantity, reason = 'adjustment', notes } = req.body;
 
