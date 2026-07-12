@@ -5,6 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { getManagedShopId } from '../utils/shopScope';
 
 const router = Router();
 
@@ -12,10 +13,12 @@ const router = Router();
 router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
+  const where: any = {};
+  if (req.user?.role === 'shop_manager') where.supplier_id = await getManagedShopId(req);
 
   const [products, total] = await Promise.all([
-    prisma.product.findMany({ skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
-    prisma.product.count(),
+    prisma.product.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.product.count({ where }),
   ]);
 
   sendPaginatedResponse(res, products, total, page, limit, 'Inventory retrieved successfully');
@@ -29,7 +32,11 @@ router.get('/low-stock', authenticate, authorize('admin', 'shop_manager'), async
     status: 'available',
   };
 
-  if (req.query.shopId) where.supplier_id = req.query.shopId;
+  if (req.user?.role === 'shop_manager') {
+    where.supplier_id = await getManagedShopId(req);
+  } else if (req.query.shopId) {
+    where.supplier_id = req.query.shopId;
+  }
 
   const products = await prisma.product.findMany({ where, orderBy: { quantity: 'asc' } });
 
@@ -38,8 +45,11 @@ router.get('/low-stock', authenticate, authorize('admin', 'shop_manager'), async
 
 // GET /api/inventory/out-of-stock
 router.get('/out-of-stock', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const where: any = { OR: [{ quantity: 0 }, { status: 'out_of_stock' }] };
+  if (req.user?.role === 'shop_manager') where.supplier_id = await getManagedShopId(req);
+
   const products = await prisma.product.findMany({
-    where: { OR: [{ quantity: 0 }, { status: 'out_of_stock' }] },
+    where,
     orderBy: { updated_at: 'desc' },
   });
 
@@ -47,18 +57,21 @@ router.get('/out-of-stock', authenticate, authorize('admin', 'shop_manager'), as
 }));
 
 // GET /api/inventory/summary — must be defined BEFORE /:id to avoid route shadowing
-router.get('/summary', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
+router.get('/summary', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const supplierId = req.user?.role === 'shop_manager' ? await getManagedShopId(req) : undefined;
+  const scoped = (extra: any = {}) => (supplierId !== undefined ? { ...extra, supplier_id: supplierId } : extra);
+
   const [total, available, outOfStock, lowStock, discontinued] = await Promise.all([
-    prisma.product.count(),
-    prisma.product.count({ where: { status: 'available' } }),
-    prisma.product.count({ where: { status: 'out_of_stock' } }),
-    prisma.product.count({ where: { quantity: { lte: 10, gt: 0 }, status: 'available' } }),
-    prisma.product.count({ where: { status: 'discontinued' } }),
+    prisma.product.count({ where: scoped() }),
+    prisma.product.count({ where: scoped({ status: 'available' }) }),
+    prisma.product.count({ where: scoped({ status: 'out_of_stock' }) }),
+    prisma.product.count({ where: scoped({ quantity: { lte: 10, gt: 0 }, status: 'available' }) }),
+    prisma.product.count({ where: scoped({ status: 'discontinued' }) }),
   ]);
 
   const totalValue = await prisma.product.aggregate({
     _sum: { price: true, quantity: true },
-    where: { status: { not: 'discontinued' } },
+    where: scoped({ status: { not: 'discontinued' } }),
   });
 
   sendSuccess(res, {
@@ -81,6 +94,11 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
 
   if (!name || !category || price === undefined || !unit || !supplier_id) {
     sendError(res, 'name, category, price, unit, and supplier_id are required', 400);
+    return;
+  }
+
+  if (req.user?.role === 'shop_manager' && supplier_id !== (await getManagedShopId(req))) {
+    sendError(res, 'supplier_id must be your own shop', 403);
     return;
   }
 
@@ -120,6 +138,10 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
     sendNotFound(res, 'Product not found');
     return;
   }
+  if (req.user?.role === 'shop_manager' && product.supplier_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
 
   sendSuccess(res, product, 'Product retrieved successfully');
 }));
@@ -143,6 +165,18 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
   }
   if (harvest_date) updateData.harvest_date = new Date(harvest_date);
   if (expiry_date) updateData.expiry_date = new Date(expiry_date);
+  // shop_managers cannot move a product to a shop they don't manage
+  if (req.user?.role === 'shop_manager') delete updateData.supplier_id;
+
+  const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
+  if (!existing) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
+  if (req.user?.role === 'shop_manager' && existing.supplier_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
 
   const product = await prisma.product.update({
     where: { id: req.params.id },
@@ -159,6 +193,16 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
 
 // DELETE /api/inventory/:id
 router.delete('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
+  if (!existing) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
+  if (req.user?.role === 'shop_manager' && existing.supplier_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
   const product = await prisma.product.update({
     where: { id: req.params.id },
     data: { status: 'discontinued' },
@@ -187,6 +231,10 @@ router.put('/:id/restock', authenticate, authorize('admin', 'shop_manager'), val
     sendNotFound(res, 'Product not found');
     return;
   }
+  if (req.user?.role === 'shop_manager' && product.supplier_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
 
   const newQuantity = product.quantity + quantity;
 
@@ -213,6 +261,16 @@ router.put('/:id/restock', authenticate, authorize('admin', 'shop_manager'), val
 
 // GET /api/inventory/:id/history
 router.get('/:id/history', authenticate, authorize('admin', 'shop_manager'), validateIdParam, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const product = await prisma.product.findUnique({ where: { id: req.params.id }, select: { supplier_id: true } });
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return;
+  }
+  if (req.user?.role === 'shop_manager' && product.supplier_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
 
