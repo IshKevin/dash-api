@@ -121,6 +121,8 @@ Base URL: `http://localhost:5000/api`
 
 All authenticated routes require: `Authorization: Bearer <jwt_token>`
 
+The tables below are a quick reference; the full, current endpoint contracts live at `/api-docs` (Swagger), and the complete access-control model — roles, ownership-scoping rules, and deliberate exceptions — is documented in **[RBAC.md](./RBAC.md)**.
+
 ### Authentication — `/api/auth`
 
 | Method | Path               | Auth | Description                    |
