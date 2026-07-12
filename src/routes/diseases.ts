@@ -183,6 +183,9 @@ router.post(
     if (!farm) {
       return sendNotFound(res, 'Farm not found');
     }
+    if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+      return sendError(res, 'Access denied: this farm does not belong to you', 403 as any);
+    }
 
     const case_number = 'DC-' + Date.now();
 
@@ -210,6 +213,7 @@ router.post(
 router.get(
   '/cases/:id',
   authenticate,
+  authorize('admin', 'agent', 'farmer'),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
 
@@ -223,6 +227,9 @@ router.get(
 
     if (!diseaseCase) {
       return sendNotFound(res, 'Disease case not found');
+    }
+    if (req.user?.role === 'farmer' && diseaseCase.farm.farmer_id !== req.user.id) {
+      return sendError(res, 'Access denied: this disease case does not belong to your farm', 403 as any);
     }
 
     return sendSuccess(res, diseaseCase, 'Disease case retrieved successfully');
