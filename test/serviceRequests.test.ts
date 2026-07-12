@@ -39,6 +39,9 @@ describe('Service requests, profile /me routes, and shop-manager module (in-proc
   });
 
   after(async () => {
+    await prisma.notification.deleteMany({ where: { recipient_id: { in: createdUserIds } } });
+    await prisma.signature.deleteMany({ where: { signer_id: { in: createdUserIds } } });
+    await prisma.document.deleteMany({ where: { owner_id: { in: createdUserIds } } });
     await prisma.serviceRequest.deleteMany({ where: { id: { in: createdRequestIds } } });
     await prisma.farm.deleteMany({ where: { farmer_id: { in: createdUserIds } } });
     await prisma.farmerProfile.deleteMany({ where: { user_id: { in: createdUserIds } } });

@@ -11,6 +11,8 @@ describe('Comprehensive registration (in-process, via supertest)', function () {
 
   after(async () => {
     // Clean up in dependency order: profiles/shops/farms first, then users.
+    await prisma.signature.deleteMany({ where: { signer_id: { in: createdUserIds } } });
+    await prisma.document.deleteMany({ where: { owner_id: { in: createdUserIds } } });
     await prisma.farm.deleteMany({ where: { farmer_id: { in: createdUserIds } } });
     await prisma.farmerProfile.deleteMany({ where: { user_id: { in: createdUserIds } } });
     await prisma.agentProfile.deleteMany({ where: { user_id: { in: createdUserIds } } });
