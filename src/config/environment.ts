@@ -13,11 +13,18 @@ interface EnvironmentConfig {
   CORS_PUBLIC: boolean;
   APP_NAME: string;
   APP_VERSION: string;
-  CLOUDINARY_CLOUD_NAME: string;
-  CLOUDINARY_API_KEY: string;
-  CLOUDINARY_API_SECRET: string;
+  MINIO_ENDPOINT: string;
+  MINIO_PORT: number;
+  MINIO_ACCESS_KEY: string;
+  MINIO_SECRET_KEY: string;
+  MINIO_BUCKET: string;
+  MINIO_USE_SSL: boolean;
+  MINIO_PUBLIC_URL: string | undefined;
   RESEND_API_KEY: string | undefined;
   FROM_EMAIL: string | undefined;
+  AFRICASTALKING_USERNAME: string | undefined;
+  AFRICASTALKING_API_KEY: string | undefined;
+  AFRICASTALKING_SENDER_ID: string | undefined;
   RATE_LIMIT_WINDOW_MS: number;
   RATE_LIMIT_MAX_REQUESTS: number;
   BCRYPT_ROUNDS: number;
@@ -37,11 +44,18 @@ const validateEnvironment = (): EnvironmentConfig => {
     CORS_PUBLIC: process.env.CORS_PUBLIC === 'true',
     APP_NAME: process.env.APP_NAME || 'Dashboard Avocado Backend',
     APP_VERSION: process.env.APP_VERSION || '2.0.0',
-    CLOUDINARY_CLOUD_NAME: process.env.CLOUDINARY_CLOUD_NAME || '',
-    CLOUDINARY_API_KEY: process.env.CLOUDINARY_API_KEY || '',
-    CLOUDINARY_API_SECRET: process.env.CLOUDINARY_API_SECRET || '',
+    MINIO_ENDPOINT: process.env.MINIO_ENDPOINT || 'localhost',
+    MINIO_PORT: parseInt(process.env.MINIO_PORT || '9000', 10),
+    MINIO_ACCESS_KEY: process.env.MINIO_ACCESS_KEY || 'minioadmin',
+    MINIO_SECRET_KEY: process.env.MINIO_SECRET_KEY || 'minioadmin123',
+    MINIO_BUCKET: process.env.MINIO_BUCKET || 'avocado-dashboard',
+    MINIO_USE_SSL: process.env.MINIO_USE_SSL === 'true',
+    MINIO_PUBLIC_URL: process.env.MINIO_PUBLIC_URL,
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     FROM_EMAIL: process.env.FROM_EMAIL,
+    AFRICASTALKING_USERNAME: process.env.AFRICASTALKING_USERNAME,
+    AFRICASTALKING_API_KEY: process.env.AFRICASTALKING_API_KEY,
+    AFRICASTALKING_SENDER_ID: process.env.AFRICASTALKING_SENDER_ID,
     RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
     RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '1000', 10),
     BCRYPT_ROUNDS: parseInt(process.env.BCRYPT_ROUNDS || '12', 10),
