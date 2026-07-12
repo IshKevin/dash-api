@@ -332,6 +332,8 @@ model User {
   supplier_evaluations       SupplierEvaluation[] @relation("SupplierEvaluator")
   pending_farmers_created    PendingFarmer[]       @relation("PendingFarmerCreator")
   pending_farmer_approved    PendingFarmer?        @relation("PendingFarmerApprovedUser")
+  documents_owned            Document[]            @relation("DocumentOwner")
+  signatures_made            Signature[]           @relation("SignatureSigner")
 
   @@index([role, status])
   @@index([created_at])
@@ -529,6 +531,7 @@ model Shop {
   ownerEmail   String
   ownerPhone   String
   can_sell     Boolean    @default(true)
+  balance      Float      @default(0)
   created_by   String
   manager_id   String?    @unique
   created_at   DateTime   @default(now())
@@ -621,17 +624,79 @@ model ServiceRequest {
   attachments             String[]
   /// ServiceFeedback: {rating, comment, submitted_at}
   feedback                Json?
+  due_date                DateTime?
+  escalated_at            DateTime?
+  is_escalated            Boolean         @default(false)
   created_at              DateTime        @default(now())
   updated_at              DateTime        @updatedAt
 
   farmer                  User            @relation("FarmerRequests", fields: [farmer_id], references: [id])
   agent                   User?           @relation("AgentRequests", fields: [agent_id], references: [id])
   transactions            Transaction[]
+  documents               Document[]
 
   @@index([farmer_id, status])
   @@index([agent_id, status])
   @@index([service_type, status])
   @@index([created_at])
+  @@index([is_escalated, due_date])
+}
+
+enum DocumentType {
+  profile_card
+  contract
+  ipm_form
+  notarized_upload
+  other
+}
+
+enum DocumentStatus {
+  generated
+  pending_notarization
+  notarized
+  rejected
+}
+
+model Document {
+  id                 String          @id @default(uuid())
+  owner_id           String
+  type               DocumentType
+  status             DocumentStatus  @default(generated)
+  service_request_id String?
+  file_url           String
+  file_key           String
+  mimetype           String
+  version            Int             @default(1)
+  uploaded_by        String?
+  rejection_reason   String?
+  signature_id       String?         @unique
+  /// Document-type-specific extras, e.g. {template: 'ipm_v1'}
+  metadata           Json?
+  created_at         DateTime        @default(now())
+  updated_at         DateTime        @updatedAt
+
+  owner              User            @relation("DocumentOwner", fields: [owner_id], references: [id])
+  service_request    ServiceRequest? @relation(fields: [service_request_id], references: [id])
+  signature          Signature?      @relation(fields: [signature_id], references: [id])
+
+  @@index([owner_id, type])
+  @@index([service_request_id])
+  @@index([status])
+}
+
+model Signature {
+  id           String    @id @default(uuid())
+  reference_id String    @unique
+  signer_id    String
+  image_url    String
+  image_key    String
+  ip_address   String?
+  captured_at  DateTime  @default(now())
+
+  signer       User      @relation("SignatureSigner", fields: [signer_id], references: [id])
+  document     Document?
+
+  @@index([signer_id])
 }
 
 model AccessKey {
@@ -658,6 +723,12 @@ model Notification {
   related_entity_id   String?
   related_entity_type RelatedEntityType?
   is_read             Boolean            @default(false)
+  email_sent          Boolean            @default(false)
+  email_sent_at       DateTime?
+  email_error         String?
+  sms_sent            Boolean            @default(false)
+  sms_sent_at         DateTime?
+  sms_error           String?
   created_at          DateTime           @default(now())
 
   recipient           User               @relation(fields: [recipient_id], references: [id])
