@@ -141,6 +141,40 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
   sendCreated(res, profile, 'Agent profile created/updated successfully');
 }));
 
+// PUT /api/agent-information/me
+router.put('/me', authenticate, authorize('agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { territory, statistics, province, district, sector, specialization, experience, certification } = req.body;
+  const agentId = req.user!.id;
+
+  const profile = await prisma.agentProfile.upsert({
+    where: { user_id: agentId },
+    create: {
+      user_id: agentId,
+      agentId: agentId,
+      territory: territory || [],
+      statistics: statistics || {},
+      province,
+      district,
+      sector,
+      specialization,
+      experience,
+      certification,
+    },
+    update: {
+      territory: territory !== undefined ? territory : undefined,
+      statistics: statistics !== undefined ? statistics : undefined,
+      province: province !== undefined ? province : undefined,
+      district: district !== undefined ? district : undefined,
+      sector: sector !== undefined ? sector : undefined,
+      specialization: specialization !== undefined ? specialization : undefined,
+      experience: experience !== undefined ? experience : undefined,
+      certification: certification !== undefined ? certification : undefined,
+    },
+  });
+
+  sendSuccess(res, profile, 'Agent profile updated successfully');
+}));
+
 // PUT /api/agent-information/:id
 router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const agentId = req.params.id;
@@ -179,6 +213,37 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
   });
 
   sendSuccess(res, profile, 'Agent profile updated successfully');
+}));
+
+// PUT /api/agent-information/:id/performance
+router.put('/:id/performance', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { farmersAssisted, totalTransactions, performance, statistics } = req.body;
+
+  const agent = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!agent || agent.role !== 'agent') {
+    sendNotFound(res, 'Agent not found');
+    return;
+  }
+
+  const profile = await prisma.agentProfile.upsert({
+    where: { user_id: req.params.id },
+    create: {
+      user_id: req.params.id,
+      agentId: req.params.id,
+      farmersAssisted: farmersAssisted ?? 0,
+      totalTransactions: totalTransactions ?? 0,
+      performance,
+      statistics: statistics || {},
+    },
+    update: {
+      farmersAssisted: farmersAssisted !== undefined ? farmersAssisted : undefined,
+      totalTransactions: totalTransactions !== undefined ? totalTransactions : undefined,
+      performance: performance !== undefined ? performance : undefined,
+      statistics: statistics !== undefined ? statistics : undefined,
+    },
+  });
+
+  sendSuccess(res, profile, 'Agent performance updated successfully');
 }));
 
 export default router;

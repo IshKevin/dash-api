@@ -72,6 +72,65 @@ export const validateUserRegistration = [
   validate
 ];
 
+export const validateComprehensiveRegistration = [
+  body('email')
+    .isEmail()
+    .withMessage('Please provide a valid email address')
+    .normalizeEmail(),
+
+  body('password')
+    .isLength({ min: 8 })
+    .withMessage('Password must be at least 8 characters long')
+    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+    .withMessage('Password must contain at least one uppercase letter, one lowercase letter, one number and one special character'),
+
+  body('full_name')
+    .isLength({ min: 2 })
+    .withMessage('Full name must be at least 2 characters long')
+    .trim(),
+
+  body('phone')
+    .notEmpty()
+    .withMessage('Phone number is required')
+    .isMobilePhone('any')
+    .withMessage('Please provide a valid phone number'),
+
+  body('role')
+    .isIn(['agent', 'farmer', 'shop_manager'])
+    .withMessage('Role must be one of: agent, farmer, shop_manager'),
+
+  validate,
+
+  (req: Request, res: Response, next: NextFunction): void => {
+    const { role, ...rest } = req.body;
+    const missing: string[] = [];
+
+    if (role === 'farmer') {
+      if (!rest.gender) missing.push('gender');
+      if (!rest.province) missing.push('province');
+      if (!rest.district) missing.push('district');
+      if (!rest.farm_size) missing.push('farm_size');
+      if (!rest.avocado_type) missing.push('avocado_type');
+    } else if (role === 'agent') {
+      if (!rest.province) missing.push('province');
+      if (!rest.district) missing.push('district');
+      if (!rest.specialization) missing.push('specialization');
+    } else if (role === 'shop_manager') {
+      if (!rest.shopName) missing.push('shopName');
+      if (!rest.description) missing.push('description');
+      if (!rest.province) missing.push('province');
+      if (!rest.district) missing.push('district');
+    }
+
+    if (missing.length > 0) {
+      sendError(res, `Missing required fields for role "${role}": ${missing.join(', ')}`, 400);
+      return;
+    }
+
+    next();
+  },
+];
+
 export const validateUserLogin = [
   body('email')
     .isEmail()

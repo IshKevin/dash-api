@@ -5,6 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { getManagedShopId } from '../utils/shopScope';
 
 const router = Router();
 
@@ -14,7 +15,11 @@ router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagina
   const limit = parseInt(req.query.limit as string) || 20;
   const where: any = {};
 
-  if (req.query.shop_id) where.shop_id = req.query.shop_id;
+  if (req.user?.role === 'shop_manager') {
+    where.shop_id = await getManagedShopId(req);
+  } else if (req.query.shop_id) {
+    where.shop_id = req.query.shop_id;
+  }
   if (req.query.status) where.status = req.query.status;
 
   if (req.query.search) {
@@ -43,15 +48,25 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
     return;
   }
 
+  if (req.user?.role === 'shop_manager' && customer.shop_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
   sendSuccess(res, customer, 'Customer retrieved successfully');
 }));
 
 // POST /api/customers
 router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { name, email, phone, address, shop_id, status } = req.body;
+  const {
+    name, first_name, last_name, email, phone, address, shop_id, status,
+    type, company, address_details, preferences, tags, notes,
+  } = req.body;
 
-  if (!name || !email || !phone) {
-    sendError(res, 'Name, email, and phone are required', 400);
+  const resolvedName = name || [first_name, last_name].filter(Boolean).join(' ');
+
+  if (!resolvedName || !email || !phone) {
+    sendError(res, 'Name (or first/last name), email, and phone are required', 400);
     return;
   }
 
@@ -61,8 +76,14 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
     return;
   }
 
+  const resolvedShopId = req.user?.role === 'shop_manager' ? await getManagedShopId(req) : shop_id;
+
   const customer = await prisma.customer.create({
-    data: { name, email: email.toLowerCase(), phone, address, shop_id, status: (status || 'active') as any },
+    data: {
+      name: resolvedName, email: email.toLowerCase(), phone, address, shop_id: resolvedShopId, status: (status || 'active') as any,
+      first_name, last_name, type: type || 'individual', company, address_details, preferences,
+      tags: tags || [], notes,
+    },
   });
 
   sendCreated(res, customer, 'Customer created successfully');
@@ -70,8 +91,28 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
 
 // PUT /api/customers/:id
 router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { email, ...rest } = req.body;
-  const updateData: any = { ...rest };
+  const existing = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { shop_id: true } });
+  if (!existing) {
+    sendNotFound(res, 'Customer not found');
+    return;
+  }
+  if (req.user?.role === 'shop_manager' && existing.shop_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
+  const { email, name, first_name, last_name, shop_id, ...rest } = req.body;
+  const updateData: any = { ...rest, first_name, last_name };
+  // shop_managers cannot move a customer to a shop they don't manage
+  if (shop_id !== undefined && req.user?.role !== 'shop_manager') {
+    updateData.shop_id = shop_id;
+  }
+
+  if (name) {
+    updateData.name = name;
+  } else if (first_name || last_name) {
+    updateData.name = [first_name, last_name].filter(Boolean).join(' ');
+  }
 
   if (email) {
     const conflict = await prisma.customer.findFirst({
@@ -111,6 +152,16 @@ router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHa
 
 // GET /api/customers/:id/orders
 router.get('/:id/orders', authenticate, authorize('admin', 'shop_manager'), validateIdParam, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const targetCustomer = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { shop_id: true } });
+  if (!targetCustomer) {
+    sendNotFound(res, 'Customer not found');
+    return;
+  }
+  if (req.user?.role === 'shop_manager' && targetCustomer.shop_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
+
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
 
@@ -134,6 +185,10 @@ router.get('/:id/statistics', authenticate, authorize('admin', 'shop_manager'), 
 
   if (!customer) {
     sendNotFound(res, 'Customer not found');
+    return;
+  }
+  if (req.user?.role === 'shop_manager' && customer.shop_id !== (await getManagedShopId(req))) {
+    sendError(res, 'Access denied', 403);
     return;
   }
 

@@ -91,7 +91,7 @@ router.get('/farm/:farmId', authenticate, authorize('admin', 'agent'), asyncHand
 }));
 
 // GET /api/visits/:id
-router.get('/:id', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
 
   const visit = await prisma.farmVisit.findUnique({
@@ -104,6 +104,10 @@ router.get('/:id', authenticate, asyncHandler(async (req: AuthenticatedRequest, 
 
   if (!visit) {
     return sendNotFound(res, 'Visit not found');
+  }
+
+  if (req.user?.role === 'agent' && visit.agent_id !== req.user.id) {
+    return sendError(res, 'Access denied: this visit is not assigned to you', 403);
   }
 
   return sendSuccess(res, visit, 'Visit retrieved successfully');

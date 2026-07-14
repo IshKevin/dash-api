@@ -182,6 +182,7 @@ router.get(
 router.get(
   '/:id',
   authenticate,
+  authorize('admin', 'agent'),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
 

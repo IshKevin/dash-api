@@ -1,13 +1,18 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { Resend } from 'resend';
+import QRCode from 'qrcode';
 import { prisma } from '../lib/prisma';
-import { generateToken } from '../utils/jwt';
+import { emailService } from '../services/emailService';
+import { smsService } from '../services/smsService';
+import { documentService } from '../services/documentService';
+import { generateToken, generateRefreshToken, verifyRefreshToken } from '../utils/jwt';
+import { generateQRToken } from '../utils/accessKey';
+import { putObject, PRIVATE_PREFIX } from '../config/minio';
 import { sendSuccess, sendError, sendCreated } from '../utils/responses';
-import { AuthResponse, RegisterRequest, LoginRequest, PasswordChangeRequest } from '../types/auth';
+import { AuthResponse, LoginRequest, PasswordChangeRequest } from '../types/auth';
 import {
-  validateUserRegistration,
+  validateComprehensiveRegistration,
   validateUserLogin,
   validatePasswordChange,
 } from '../middleware/validation';
@@ -15,12 +20,60 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types/auth';
 import { env } from '../config/environment';
+import logger from '../config/logger';
+import { createFarmerProfileForUser, createAgentProfileForUser, createShopForManager, createFarmForUser } from '../utils/profileCreation';
+
+// Best-effort: generate a QR profile token plus downloadable profile-card and
+// contract documents for a newly registered user, then email links to them.
+// Registration itself has already succeeded by the time this runs — failures
+// here are logged, not surfaced to the client.
+async function generateAndEmailRegistrationDocuments(user: { id: string; email: string; full_name: string; role: string; phone?: string | null }): Promise<void> {
+  try {
+    const qrToken = generateQRToken();
+    await prisma.user.update({ where: { id: user.id }, data: { qr_code_token: qrToken } });
+    const qrDataUrl = await QRCode.toDataURL(qrToken);
+
+    const profileCardBytes = await documentService.generateProfileCard(
+      { id: user.id, full_name: user.full_name, email: user.email, phone: user.phone ?? null, role: user.role },
+      qrDataUrl
+    );
+    const contractBytes = await documentService.generateContract({ full_name: user.full_name, email: user.email, role: user.role });
+
+    const profileCardKey = `${PRIVATE_PREFIX}/profile-card-${user.id}-${Date.now()}.pdf`;
+    const contractKey = `${PRIVATE_PREFIX}/contract-${user.id}-${Date.now()}.pdf`;
+
+    await putObject(profileCardKey, profileCardBytes, 'application/pdf');
+    await putObject(contractKey, contractBytes, 'application/pdf');
+
+    const [profileCardDoc, contractDoc] = await Promise.all([
+      prisma.document.create({
+        data: { owner_id: user.id, type: 'profile_card', file_url: profileCardKey, file_key: profileCardKey, mimetype: 'application/pdf' },
+      }),
+      prisma.document.create({
+        data: { owner_id: user.id, type: 'contract', file_url: contractKey, file_key: contractKey, mimetype: 'application/pdf' },
+      }),
+    ]);
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    emailService.sendRegistrationDocuments(
+      user.email,
+      user.full_name,
+      `${frontendUrl}/documents/${profileCardDoc.id}`,
+      `${frontendUrl}/documents/${contractDoc.id}`
+    );
+    if (user.phone) {
+      smsService.sendRegistrationDocumentsNotice(user.phone, user.full_name);
+    }
+  } catch (error) {
+    logger.error(`Failed to generate registration documents for user ${user.id}: ${error}`);
+  }
+}
 
 const router = Router();
 
 // POST /api/auth/register
-router.post('/register', validateUserRegistration, asyncHandler(async (req: Request, res: Response) => {
-  const { email, password, full_name, phone, role, profile }: RegisterRequest = req.body;
+router.post('/register', validateComprehensiveRegistration, asyncHandler(async (req: Request, res: Response) => {
+  const { email, password, full_name, phone, role, ...profileFields } = req.body;
 
   const existingUser = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
   if (existingUser) {
@@ -30,24 +83,50 @@ router.post('/register', validateUserRegistration, asyncHandler(async (req: Requ
 
   const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
 
-  const user = await prisma.user.create({
-    data: {
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      full_name,
-      phone,
-      role: (role || 'farmer') as any,
-      profile: (profile || {}) as any,
-    },
-    select: { id: true, email: true, full_name: true, role: true, status: true },
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: {
+        email: email.toLowerCase(),
+        password: hashedPassword,
+        full_name,
+        phone,
+        role: role as any,
+      },
+      select: { id: true, email: true, full_name: true, role: true, status: true },
+    });
+
+    if (role === 'farmer') {
+      await createFarmerProfileForUser(tx, created.id, profileFields);
+      await createFarmForUser(tx, created.id, full_name, profileFields);
+    } else if (role === 'agent') {
+      await createAgentProfileForUser(tx, created.id, profileFields);
+    } else if (role === 'shop_manager') {
+      await createShopForManager(
+        tx,
+        created.id,
+        { ownerName: full_name, ownerEmail: created.email, ownerPhone: phone },
+        {
+          shopName: profileFields.shopName,
+          description: profileFields.description,
+          province: profileFields.province,
+          district: profileFields.district,
+        }
+      );
+    }
+
+    return created;
   });
 
   const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
+  const refreshToken = generateRefreshToken({ id: user.id, email: user.email, role: user.role as any });
 
   const responseData: AuthResponse = {
     token,
+    refreshToken,
     user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status },
   };
+
+  await generateAndEmailRegistrationDocuments({ id: user.id, email: user.email, full_name: user.full_name, role: user.role, phone });
 
   sendCreated(res, responseData, 'User registered successfully');
 }));
@@ -77,9 +156,11 @@ router.post('/login', validateUserLogin, asyncHandler(async (req: Request, res: 
   }
 
   const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
+  const refreshToken = generateRefreshToken({ id: user.id, email: user.email, role: user.role as any });
 
   const responseData: AuthResponse = {
     token,
+    refreshToken,
     user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status },
   };
 
@@ -167,14 +248,32 @@ router.put('/password', authenticate, validatePasswordChange, asyncHandler(async
 }));
 
 // POST /api/auth/refresh
-router.post('/refresh', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const token = generateToken({
-    id: req.user!.id,
-    email: req.user!.email,
-    role: req.user!.role,
-  });
+router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
+  const { refreshToken: incomingRefreshToken } = req.body;
 
-  sendSuccess(res, { token, user: req.user }, 'Token refreshed successfully');
+  if (!incomingRefreshToken) {
+    sendError(res, 'Refresh token is required', 400);
+    return;
+  }
+
+  const decoded = verifyRefreshToken(incomingRefreshToken);
+  if (!decoded) {
+    sendError(res, 'Invalid or expired refresh token', 401);
+    return;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+  if (!user || user.status !== 'active') {
+    sendError(res, 'Invalid or expired refresh token', 401);
+    return;
+  }
+
+  const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
+
+  sendSuccess(res, {
+    token,
+    user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, status: user.status },
+  }, 'Token refreshed successfully');
 }));
 
 // GET /api/auth/verify
@@ -210,22 +309,9 @@ router.post('/forgot-password', asyncHandler(async (req: Request, res: Response)
     data: { user_id: user.id, token, expires_at: expiresAt },
   });
 
-  // Attempt email send via Resend if API key is configured
-  if (process.env.RESEND_API_KEY) {
-    try {
-      const resend = new Resend(process.env.RESEND_API_KEY);
-      const resetUrl = (process.env.FRONTEND_URL || 'http://localhost:3000') + '/reset-password?token=' + token;
-      await resend.emails.send({
-        from: process.env.FROM_EMAIL || 'noreply@avocadodashboard.com',
-        to: user.email,
-        subject: 'Password Reset Request',
-        html: '<p>Click <a href="' + resetUrl + '">here</a> to reset your password. This link expires in 1 hour.</p><p>If you did not request this, ignore this email.</p>',
-      });
-    } catch (emailError) {
-      // Log but don't fail – token is still valid
-      console.error('Email send failed:', emailError);
-    }
-  }
+  // Best-effort email send – token remains valid even if this fails
+  const resetUrl = (process.env.FRONTEND_URL || 'http://localhost:3000') + '/reset-password?token=' + token;
+  await emailService.sendPasswordReset(user.email, resetUrl);
 
   sendSuccess(res, { token: process.env.NODE_ENV !== 'production' ? token : undefined }, 'If that email exists, a reset link has been sent');
 }));

@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, authorize, adminOnly } from '../middleware/auth';
+import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { Prisma } from '@prisma/client';
@@ -449,8 +449,8 @@ router.get('/regional', authenticate, authorize('admin', 'agent'), asyncHandler(
   sendSuccess(res, { year, regions: regional }, 'Regional analytics retrieved');
 }));
 
-// GET /api/analytics/agents  (authenticate, adminOnly)
-router.get('/agents', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+// GET /api/analytics/agents  (authenticate, admin)
+router.get('/agents', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const agents = await prisma.user.findMany({
     where: { role: 'agent', status: 'active' },
     select: { id: true, full_name: true, email: true, agent_profile: { select: { farmersAssisted: true, performance: true, province: true } } },

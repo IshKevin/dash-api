@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
-import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound } from '../utils/responses';
+import { sendSuccess, sendError, sendCreated, sendPaginatedResponse, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
@@ -100,6 +100,9 @@ router.get(
     if (!farm) {
       return sendNotFound(res, 'Farm not found');
     }
+    if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+      return sendError(res, 'Access denied: this farm does not belong to you', 403);
+    }
 
     const diseases = await prisma.treeDisease.findMany({
       where: { farm_id: farmId },
@@ -181,12 +184,16 @@ router.put(
 router.get(
   '/farm/:farmId/summary',
   authenticate,
+  authorize('admin', 'agent', 'farmer'),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const { farmId } = req.params;
 
     const farm = await prisma.farm.findUnique({ where: { id: farmId } });
     if (!farm) {
       return sendNotFound(res, 'Farm not found');
+    }
+    if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+      return sendError(res, 'Access denied: this farm does not belong to you', 403);
     }
 
     const [latest_record, untreated_diseases_count, all_diseases] = await Promise.all([

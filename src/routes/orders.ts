@@ -109,6 +109,14 @@ router.post('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, re
   }
   const customerId = customer_id;
 
+  if (req.user?.role !== 'admin' && req.user?.role !== 'shop_manager') {
+    const customer = await prisma.customer.findUnique({ where: { id: customerId }, select: { email: true } });
+    if (!customer || customer.email.toLowerCase() !== req.user!.email.toLowerCase()) {
+      sendError(res, 'customer_id must refer to a customer record matching your own account email', 403);
+      return;
+    }
+  }
+
   if (!items || !Array.isArray(items) || items.length === 0) {
     sendError(res, 'Order must contain at least one item', 400);
     return;

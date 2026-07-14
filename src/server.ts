@@ -10,6 +10,8 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import { swaggerOptions } from './swagger';
 import { database } from './config/database';
 import { env } from './config/environment';
+import { ensureBucketExists } from './config/minio';
+import { startEscalationJob } from './jobs/escalationJob';
 import logger from './config/logger';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import { sendSuccess } from './utils/responses';
@@ -49,6 +51,8 @@ import trainingRoutes from './routes/training';
 import geographyRoutes from './routes/geography';
 import cartRoutes from './routes/cart';
 import visitsRoutes from './routes/visits';
+import pendingFarmersRoutes from './routes/pendingFarmers';
+import documentsRoutes from './routes/documents';
 
 dotenv.config();
 
@@ -164,6 +168,8 @@ app.use('/api/training', trainingRoutes);
 app.use('/api/geography', geographyRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/visits', visitsRoutes);
+app.use('/api/pending-farmers', pendingFarmersRoutes);
+app.use('/api/documents', documentsRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
@@ -186,6 +192,15 @@ const startServer = async (): Promise<void> => {
   try {
     await database.connect();
     logger.info('✅ Database connection established');
+
+    try {
+      await ensureBucketExists();
+      logger.info('✅ MinIO bucket ready');
+    } catch (error) {
+      logger.warn(`⚠️  MinIO bucket check failed (uploads may not work): ${error}`);
+    }
+
+    startEscalationJob();
 
     const server = app.listen(env.PORT, () => {
       logger.info(`🚀 Server running on port ${env.PORT}`);

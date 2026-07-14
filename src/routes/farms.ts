@@ -211,9 +211,14 @@ router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHa
 }));
 
 // GET /api/farms/:id/history
-router.get('/:id/history', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/history', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const farm = await prisma.farm.findUnique({ where: { id: req.params.id } });
   if (!farm) { sendNotFound(res, 'Farm not found'); return; }
+
+  if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+    sendError(res, 'Access denied', 403);
+    return;
+  }
 
   const [serviceRequests, reports, visits] = await Promise.all([
     prisma.serviceRequest.findMany({
