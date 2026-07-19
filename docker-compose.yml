@@ -72,9 +72,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
     ports:
       - '${PORT:-5000}:5000'
-    # Run migrations before starting the server
-    command: >
-      sh -c "npx prisma migrate deploy && node dist/src/server.js"
+    # Uses the image's default CMD (entrypoint.sh): migrate deploy -> seed demo accounts -> start server
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:5000/health || exit 1']
       interval: 30s

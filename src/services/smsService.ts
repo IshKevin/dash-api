@@ -59,6 +59,7 @@ function sendFarmerImportantNotice(to: string, message: string): Promise<SendRes
 }
 
 export const smsService = {
+  send,
   sendRegistrationDocumentsNotice,
   sendFarmerApprovalCredentials,
   sendUrgentAdminAlert,

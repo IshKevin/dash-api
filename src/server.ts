@@ -53,6 +53,7 @@ import cartRoutes from './routes/cart';
 import visitsRoutes from './routes/visits';
 import pendingFarmersRoutes from './routes/pendingFarmers';
 import documentsRoutes from './routes/documents';
+import smsRoutes from './routes/sms';
 
 dotenv.config();
 
@@ -170,6 +171,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/visits', visitsRoutes);
 app.use('/api/pending-farmers', pendingFarmersRoutes);
 app.use('/api/documents', documentsRoutes);
+app.use('/api/sms', smsRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

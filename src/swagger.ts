@@ -647,6 +647,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       { name: 'Visits', description: 'Agent farm visit scheduling and reporting' },
       { name: 'Documents', description: 'Generated/uploaded documents, e-signatures, and notarization workflow' },
       { name: 'PendingFarmers', description: 'Farmers registered by staff without a login account yet, pending approval' },
+      { name: 'SMS', description: 'Ad-hoc SMS sending via Africa\'s Talking (admin only)' },
     ],
     paths: {
 
@@ -4369,6 +4370,39 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           tags: ['PendingFarmers'],
           parameters: [{ $ref: '#/components/parameters/idParam' }],
           responses: { 200: { description: 'Pending farmer removed' } },
+        },
+      },
+
+      // ═══════════════════════════════════════════════════════════════════
+      // SMS
+      // ═══════════════════════════════════════════════════════════════════
+      '/api/sms/send': {
+        post: {
+          summary: 'Send an ad-hoc SMS via Africa\'s Talking (admin only). Thin passthrough over the internal SMS service used by auth/pending-farmer flows — no template or history tracking.',
+          tags: ['SMS'],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['to', 'message'],
+                  properties: {
+                    to: {
+                      oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+                      description: 'Recipient phone number(s), e.g. +250788123456',
+                    },
+                    message: { type: 'string', minLength: 1, maxLength: 1600 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: 'SMS sent' },
+            400: { description: 'Validation failed' },
+            502: { description: 'SMS provider not configured or send failed' },
+          },
         },
       },
     },
