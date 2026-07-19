@@ -30,6 +30,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       },
     },
     servers: [
+      { url: 'https://api.rwandaavocados.rw', description: 'Production' },
       { url: 'http://localhost:5000', description: 'Local development' },
     ],
     components: {
