@@ -13,6 +13,7 @@ import { sendSuccess, sendError, sendCreated } from '../utils/responses';
 import { AuthResponse, LoginRequest, PasswordChangeRequest } from '../types/auth';
 import {
   validateComprehensiveRegistration,
+  validateVerifyPhone,
   validateUserLogin,
   validatePasswordChange,
 } from '../middleware/validation';
@@ -91,6 +92,7 @@ router.post('/register', validateComprehensiveRegistration, asyncHandler(async (
         full_name,
         phone,
         role: role as any,
+        credentials_claimed: true,
       },
       select: { id: true, email: true, full_name: true, role: true, status: true },
     });
@@ -129,6 +131,48 @@ router.post('/register', validateComprehensiveRegistration, asyncHandler(async (
   await generateAndEmailRegistrationDocuments({ id: user.id, email: user.email, full_name: user.full_name, role: user.role, phone });
 
   sendCreated(res, responseData, 'User registered successfully');
+}));
+
+// POST /api/auth/verify-phone
+// For farmers whose account was already created by an admin: confirms the
+// phone number matches a registered farmer account, then lets them set the
+// email and password they'll use to log in from now on. This can only be
+// done once per account (credentials_claimed) — after that, farmers use
+// POST /api/auth/login as normal. TODO: send an SMS OTP as part of this check.
+router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Request, res: Response) => {
+  const { phone, email, password } = req.body;
+
+  const user = await prisma.user.findFirst({ where: { phone, role: 'farmer' } });
+
+  if (!user) {
+    sendError(res, 'Phone number not found. Please contact an admin to register.', 404);
+    return;
+  }
+
+  if (user.status !== 'active') {
+    sendError(res, 'This account is inactive. Please contact an admin.', 403);
+    return;
+  }
+
+  if (user.credentials_claimed) {
+    sendError(res, 'This account has already set up its login credentials. Please log in, or use forgot password.', 409);
+    return;
+  }
+
+  const normalizedEmail = email.toLowerCase();
+  const emailOwner = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  if (emailOwner && emailOwner.id !== user.id) {
+    sendError(res, 'This email is already in use by another account', 409);
+    return;
+  }
+
+  const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { email: normalizedEmail, password: hashedPassword, credentials_claimed: true },
+  });
+
+  sendSuccess(res, { verified: true }, 'Registration complete. Please log in with your new email and password.');
 }));
 
 // POST /api/auth/login

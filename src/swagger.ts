@@ -755,6 +755,36 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
           },
         },
       },
+      '/api/auth/verify-phone': {
+        post: {
+          summary: 'One-time claim step for farmer accounts created by an admin: confirms the phone number matches an existing farmer account, then sets the email/password the farmer will use to log in going forward. Can only be done once per account (see credentials_claimed). Does not log the user in — follow up with POST /api/auth/login.',
+          tags: ['Auth'],
+          security: [],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['phone', 'email', 'password'],
+                  properties: {
+                    phone: { type: 'string', example: '+250788123456' },
+                    email: { type: 'string', format: 'email', example: 'farmer@example.com' },
+                    password: { type: 'string', example: 'Farmer123!' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: 'Credentials set successfully', content: { 'application/json': { schema: { type: 'object', properties: { verified: { type: 'boolean' } } } } } },
+            400: { description: 'Validation failed' },
+            403: { description: 'Account exists but is inactive' },
+            404: { description: 'No farmer account found for this phone number' },
+            409: { description: 'Credentials already claimed for this account, or email already in use by another account' },
+          },
+        },
+      },
       '/api/auth/login': {
         post: {
           summary: 'Login and receive JWT token',

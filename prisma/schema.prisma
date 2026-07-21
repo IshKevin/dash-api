@@ -295,6 +295,8 @@ model User {
   phone         String?
   role          UserRole   @default(farmer)
   status        UserStatus @default(active)
+  /// True once the user has set their own login credentials via POST /api/auth/verify-phone (or self-registered). Admin-created accounts start false so that flow can claim them exactly once.
+  credentials_claimed Boolean @default(false)
   /// Embedded profile object (age, gender, location, farm_details, etc.)
   profile       Json?
   qr_code_token String?    @unique
