@@ -10,7 +10,8 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import { swaggerOptions } from './swagger';
 import { database } from './config/database';
 import { env } from './config/environment';
-import { ensureBucketReady } from './config/storage';
+import { ensureBucketReady, checkStorageHealth } from './config/storage';
+import { prisma } from './lib/prisma';
 import { startEscalationJob } from './jobs/escalationJob';
 import logger from './config/logger';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
@@ -65,6 +66,11 @@ dotenv.config();
 
 const app: Application = express();
 
+// Behind a reverse proxy (Coolify/Traefik/nginx) the client IP is in
+// X-Forwarded-For; rate limiting and logs need the real one.
+if (env.TRUST_PROXY) app.set('trust proxy', env.TRUST_PROXY);
+app.disable('x-powered-by');
+
 // Security Middleware
 app.use(helmet());
 app.use(compression());
@@ -83,6 +89,18 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
+// Much stricter limit on credential endpoints (brute force / SMS abuse).
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: env.AUTH_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts. Please wait 15 minutes and try again.' },
+});
+for (const path of ['/api/auth/login', '/api/auth/register', '/api/auth/forgot-password', '/api/auth/reset-password', '/api/auth/verify-phone']) {
+  app.use(path, authLimiter);
+}
+
 // HTTP Request Logging
 const morganFormat = env.NODE_ENV === 'development' ? 'dev' : 'combined';
 app.use(
@@ -94,11 +112,12 @@ app.use(
 // Custom Request Logging
 app.use(requestLogger);
 
-// CORS Configuration
+// CORS Configuration — CORS_ORIGIN may list several origins, comma-separated.
 if (env.CORS_PUBLIC) {
   app.use(cors({ origin: '*', credentials: false }));
 } else {
-  app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
+  const origins = env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+  app.use(cors({ origin: origins.length === 1 ? origins[0] : origins, credentials: true }));
 }
 
 app.use(express.json({ limit: '10mb' }));
@@ -123,6 +142,19 @@ app.get('/health', (_req: Request, res: Response) => {
     },
     'Service is healthy'
   );
+});
+
+// Readiness: dependencies reachable (use for load balancer / deploy checks).
+app.get('/health/ready', async (_req: Request, res: Response) => {
+  const [db, storage] = await Promise.all([
+    prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false),
+    checkStorageHealth(),
+  ]);
+  res.status(db && storage ? 200 : 503).json({
+    success: db && storage,
+    message: db && storage ? 'Ready' : 'Not ready',
+    data: { database: db ? 'up' : 'down', storage: storage ? 'up' : 'down' },
+  });
 });
 
 // API Routes
@@ -239,14 +271,22 @@ const startServer = async (): Promise<void> => {
       }
     });
 
-    process.on('SIGINT', async () => {
-      logger.info('🔄 Shutting down server...');
+    // Docker/Coolify stop containers with SIGTERM; finish in-flight requests first.
+    let shuttingDown = false;
+    const shutdown = (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      logger.info(`🔄 ${signal} received, shutting down…`);
+      const force = setTimeout(() => process.exit(1), 15000);
+      force.unref();
       server.close(async () => {
-        logger.info('🛑 Server closed');
         await database.disconnect();
+        logger.info('🛑 Server closed');
         process.exit(0);
       });
-    });
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 
     process.on('unhandledRejection', (reason, promise) => {
       logger.error(`🚨 Unhandled Rejection at: ${promise}, reason: ${reason}`);

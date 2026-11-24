@@ -133,11 +133,110 @@ router.post('/register', validateComprehensiveRegistration, asyncHandler(async (
   sendCreated(res, responseData, 'User registered successfully');
 }));
 
-// POST /api/auth/verify-phone
-// For farmers whose account was already created by an admin: confirms the
-// phone number matches a registered farmer account, then lets them set the
-// email and password they'll use to log in from now on. This can only be
-// done once per account (credentials_claimed) — after that, farmers use
+// ── Account activation for farmers created by an agent / survey import ──────
+// Step 1: POST /api/auth/verify-phone/send-code { phone } → SMS with a 6-digit code.
+// Step 2: POST /api/auth/verify-phone { phone, code, email, password } → sets the
+//         login credentials once (credentials_claimed). The code proves the
+//         person owns the phone number, so nobody can take over an account
+//         just by knowing a farmer's number.
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_MAX_PER_HOUR = 3;
+const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
+const GENERIC_SENT = 'If this number belongs to an account that is not yet activated, a 6-digit code has been sent by SMS.';
+
+router.post('/verify-phone/send-code', asyncHandler(async (req: Request, res: Response) => {
+  const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+  if (!/^\+2507\d{8}$/.test(phone)) {
+    sendError(res, 'Enter the phone number in the format +2507XXXXXXXX', 400);
+    return;
+  }
+
+  const recent = await prisma.phoneVerificationCode.count({
+    where: { phone, created_at: { gte: new Date(Date.now() - 60 * 60 * 1000) } },
+  });
+  if (recent >= OTP_MAX_PER_HOUR) {
+    sendError(res, 'Too many codes requested for this number. Try again in an hour.', 429);
+    return;
+  }
+
+  const user = await prisma.user.findFirst({ where: { phone, role: 'farmer', status: 'active', credentials_claimed: false } });
+  // Same answer whether or not the number exists (no account enumeration).
+  if (!user) {
+    sendSuccess(res, { sent: true }, GENERIC_SENT);
+    return;
+  }
+
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  await prisma.phoneVerificationCode.updateMany({ where: { phone, consumed_at: null }, data: { consumed_at: new Date() } });
+  await prisma.phoneVerificationCode.create({
+    data: { phone, code_hash: sha256(code), expires_at: new Date(Date.now() + OTP_TTL_MS) },
+  });
+  const sms = await smsService.send(phone, `Your Avocado Society of Rwanda activation code is ${code}. It expires in 10 minutes. Do not share it.`);
+
+  // Without an SMS provider (local/staging) expose the code so testers can activate.
+  const exposeCode = !sms.sent && env.NODE_ENV !== 'production';
+  if (!sms.sent && env.NODE_ENV === 'production') {
+    logger.error(`Activation SMS to ${phone} failed: ${sms.error}`);
+  }
+  sendSuccess(res, { sent: true, ...(exposeCode ? { dev_code: code } : {}) }, GENERIC_SENT);
+}));
+
+router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Request, res: Response) => {
+  const { phone, email, password } = req.body;
+  const code = typeof req.body.code === 'string' ? req.body.code.trim() : '';
+  if (!/^\d{6}$/.test(code)) {
+    sendError(res, 'Enter the 6-digit code sent to your phone', 400);
+    return;
+  }
+
+  const otp = await prisma.phoneVerificationCode.findFirst({
+    where: { phone, consumed_at: null },
+    orderBy: { created_at: 'desc' },
+  });
+  if (!otp || otp.expires_at < new Date() || otp.attempts >= OTP_MAX_ATTEMPTS) {
+    sendError(res, 'The code has expired. Request a new one.', 400);
+    return;
+  }
+  if (otp.code_hash !== sha256(code)) {
+    await prisma.phoneVerificationCode.update({ where: { id: otp.id }, data: { attempts: { increment: 1 } } });
+    sendError(res, 'Incorrect code', 400);
+    return;
+  }
+
+  const user = await prisma.user.findFirst({ where: { phone, role: 'farmer' } });
+  if (!user) {
+    sendError(res, 'Phone number not found. Please contact an admin to register.', 404);
+    return;
+  }
+  if (user.status !== 'active') {
+    sendError(res, 'This account is inactive. Please contact an admin.', 403);
+    return;
+  }
+  if (user.credentials_claimed) {
+    sendError(res, 'This account has already set up its login credentials. Please log in, or use forgot password.', 409);
+    return;
+  }
+
+  const normalizedEmail = email.toLowerCase();
+  const emailOwner = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  if (emailOwner && emailOwner.id !== user.id) {
+    sendError(res, 'This email is already in use by another account', 409);
+    return;
+  }
+
+  const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: user.id },
+      data: { email: normalizedEmail, password: hashedPassword, credentials_claimed: true },
+    }),
+    prisma.phoneVerificationCode.update({ where: { id: otp.id }, data: { consumed_at: new Date() } }),
+  ]);
+
+  sendSuccess(res, { verified: true }, 'Registration complete. Please log in with your new email and password.');
+}));
+
 // POST /api/auth/login as normal. TODO: send an SMS OTP as part of this check.
 router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Request, res: Response) => {
   const { phone, email, password } = req.body;
@@ -349,8 +448,9 @@ router.post('/forgot-password', asyncHandler(async (req: Request, res: Response)
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
+  // Only a hash is stored, so a database leak doesn't hand out reset links.
   await prisma.passwordResetToken.create({
-    data: { user_id: user.id, token, expires_at: expiresAt },
+    data: { user_id: user.id, token: sha256(token), expires_at: expiresAt },
   });
 
   // Best-effort email send – token remains valid even if this fails
@@ -373,7 +473,7 @@ router.post('/reset-password', asyncHandler(async (req: Request, res: Response) 
   }
 
   const resetToken = await prisma.passwordResetToken.findUnique({
-    where: { token },
+    where: { token: sha256(String(token)) },
     include: { user: true },
   });
 

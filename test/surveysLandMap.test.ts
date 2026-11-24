@@ -51,6 +51,7 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
     const batches = await prisma.surveyImportBatch.findMany({ where: { file_name: { startsWith: `survey-${uniq}` } }, select: { id: true, result: true } });
     for (const b of batches) for (const a of ((b.result as any)?.new_accounts ?? [])) cleanupUserIds.push(a.farmer_id);
     await prisma.farmSurvey.deleteMany({ where: { batch_id: { in: batches.map((b) => b.id) } } });
+    await prisma.phoneVerificationCode.deleteMany({ where: { phone: { startsWith: '+25078' } } });
     await prisma.surveyImportBatch.deleteMany({ where: { id: { in: batches.map((b) => b.id) } } });
     await prisma.notification.deleteMany({ where: { recipient_id: { in: cleanupUserIds } } });
     await prisma.signature.deleteMany({ where: { signer_id: { in: cleanupUserIds } } });
@@ -150,13 +151,30 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       expect(existingFarm!.latitude).to.equal(-1.6);
       expect(existingFarm!.tree_count).to.equal(30);
 
-      // the imported farmer can claim the account with their phone
+      // the imported farmer activates the account: SMS code first (no SMS provider in tests → dev_code)
+      const phone = `+250${phoneLocal(1)}`;
+      const noCode = await request(app).post('/api/auth/verify-phone').send({ phone, email: `claimed-${uniq}@example.com`, password: 'ClaimPass123!' });
+      expect(noCode.status).to.equal(400);
+      const sent = await request(app).post('/api/auth/verify-phone/send-code').send({ phone });
+      expect(sent.status).to.equal(200);
+      const code = sent.body.data.dev_code;
+      expect(code).to.match(/^\d{6}$/);
+      const wrong = await request(app).post('/api/auth/verify-phone').send({ phone, code: code === '000000' ? '111111' : '000000', email: `claimed-${uniq}@example.com`, password: 'ClaimPass123!' });
+      expect(wrong.status).to.equal(400);
+      expect(wrong.body.message).to.match(/Incorrect code/);
+      // unknown numbers get the same answer and no code
+      const unknown = await request(app).post('/api/auth/verify-phone/send-code').send({ phone: '+250799999990' });
+      expect(unknown.status).to.equal(200);
+      expect(unknown.body.data).to.not.have.property('dev_code');
       const claim = await request(app).post('/api/auth/verify-phone').send({
-        phone: `+250${phoneLocal(1)}`, email: `claimed-${uniq}@example.com`, password: 'ClaimPass123!',
+        phone, code, email: `claimed-${uniq}@example.com`, password: 'ClaimPass123!',
       });
       expect(claim.status, JSON.stringify(claim.body)).to.be.oneOf([200, 201]);
       const login2 = await request(app).post('/api/auth/login').send({ email: `claimed-${uniq}@example.com`, password: 'ClaimPass123!' });
       expect(login2.status).to.equal(200);
+      // a used code cannot be replayed
+      const replay = await request(app).post('/api/auth/verify-phone').send({ phone, code, email: `again-${uniq}@example.com`, password: 'ClaimPass123!' });
+      expect(replay.status).to.equal(400);
     });
 
     it('lists, filters, analyses and exports surveys', async () => {

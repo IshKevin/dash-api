@@ -1527,3 +1527,19 @@ model FarmSurvey {
   @@index([farmer_id])
   @@index([interview_date])
 }
+
+// ── Phone verification (account activation OTP) ──────────────────────────────
+// Farmers created by agents or the survey import activate their account by
+// proving they own the phone number: a 6-digit code is sent by SMS.
+model PhoneVerificationCode {
+  id          String    @id @default(uuid())
+  phone       String
+  /// sha256 of the code — never stored in clear
+  code_hash   String
+  attempts    Int       @default(0)
+  expires_at  DateTime
+  consumed_at DateTime?
+  created_at  DateTime  @default(now())
+
+  @@index([phone, created_at])
+}

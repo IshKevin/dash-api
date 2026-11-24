@@ -20,6 +20,8 @@ interface EnvironmentConfig {
   S3_BUCKET: string;
   PUBLIC_API_URL: string | undefined;
   DRY_MATTER_MIN_PCT: number;
+  TRUST_PROXY: number | false;
+  AUTH_RATE_LIMIT_MAX: number;
   RESEND_API_KEY: string | undefined;
   FROM_EMAIL: string | undefined;
   AFRICASTALKING_USERNAME: string | undefined;
@@ -60,6 +62,13 @@ const validateEnvironment = (): EnvironmentConfig => {
     PUBLIC_API_URL: process.env.PUBLIC_API_URL,
     // Minimum dry-matter % for a Hass lot to pass the export maturity check.
     DRY_MATTER_MIN_PCT: parseFloat(process.env.DRY_MATTER_MIN_PCT || '23'),
+    // Number of reverse proxies in front of the API (0 = none). Defaults to 1 in production.
+    TRUST_PROXY: (() => {
+      const v = process.env.TRUST_PROXY ?? (process.env.NODE_ENV === 'production' ? '1' : '0');
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) && n > 0 ? n : false;
+    })(),
+    AUTH_RATE_LIMIT_MAX: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '20', 10),
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     FROM_EMAIL: process.env.FROM_EMAIL,
     AFRICASTALKING_USERNAME: process.env.AFRICASTALKING_USERNAME,
@@ -79,11 +88,15 @@ const validateEnvironment = (): EnvironmentConfig => {
     throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
   }
 
-  if (
-    config.JWT_SECRET === 'supersecret-change-in-prod' &&
-    config.NODE_ENV === 'production'
-  ) {
-    throw new Error('Please change the default JWT_SECRET in production environment');
+  if (config.NODE_ENV === 'production') {
+    const weak = ['supersecret-change-in-prod', 'change-me-to-a-long-random-secret', 'your-super-secret-jwt-key-change-in-production'];
+    if (config.JWT_SECRET.length < 32 || weak.includes(config.JWT_SECRET)) {
+      throw new Error('JWT_SECRET must be a random value of at least 32 characters in production (e.g. `openssl rand -hex 32`)');
+    }
+    if (['seaweedadmin123', 'minioadmin123'].includes(config.S3_SECRET_KEY)) {
+      // eslint-disable-next-line no-console
+      console.warn('⚠️  S3_SECRET_KEY is still the default value — set a random secret before going live');
+    }
   }
 
   return config;
