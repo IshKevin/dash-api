@@ -8,7 +8,7 @@ import { smsService } from '../services/smsService';
 import { documentService } from '../services/documentService';
 import { generateToken, generateRefreshToken, verifyRefreshToken } from '../utils/jwt';
 import { generateQRToken } from '../utils/accessKey';
-import { putObject, PRIVATE_PREFIX } from '../config/minio';
+import { putObject, PRIVATE_PREFIX } from '../config/storage';
 import { sendSuccess, sendError, sendCreated } from '../utils/responses';
 import { AuthResponse, LoginRequest, PasswordChangeRequest } from '../types/auth';
 import {

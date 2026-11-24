@@ -7,9 +7,6 @@ dist
 .env.*
 !.env.example
 coverage
-test
-*.test.ts
-*.spec.ts
 .nyc_output
 docker-compose*.yml
 Dockerfile*

@@ -1,3 +1,17 @@
+# Backend stack: PostgreSQL + SeaweedFS (S3 object storage) + API.
+#
+# Runs on its own. The frontend (Dashboard-avocado) has its own compose file;
+# the two connect over HTTP (browser -> http://localhost:5000/api) and also
+# share the "avocado-net" Docker network so containers can reach each other by
+# name (e.g. http://dash-api:5000) when a reverse proxy is used.
+#
+#   docker compose up -d --build        # start everything
+#   docker compose logs -f api          # follow API logs
+#   docker compose down                 # stop (data kept in volumes)
+#   docker compose down -v              # stop and wipe DB + files
+
+name: avocado-backend
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -8,7 +22,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dashpass}
       POSTGRES_DB: ${POSTGRES_DB:-dashboard_avocado}
     ports:
-      - '5432:5432'
+      - '${POSTGRES_HOST_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -16,54 +30,62 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [avocado-net]
 
-  minio:
-    image: minio/minio:latest
-    container_name: dash-api-minio
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.97
+    container_name: dash-api-seaweedfs
     restart: unless-stopped
+    entrypoint: ['/bin/sh', '/opt/seaweedfs/start.sh']
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-seaweedadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-seaweedadmin123}
+      SEAWEED_ADVERTISE_IP: seaweedfs
     ports:
-      - '9000:9000'
-      - '9001:9001'
+      # S3 API — exposed for local debugging (aws cli / s3 browser). Remove in production.
+      - '${S3_HOST_PORT:-8333}:8333'
     volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
+      - seaweedfs_data:/data
+      - ./docker/seaweedfs/start.sh:/opt/seaweedfs/start.sh:ro
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      # The S3 gateway only answers once master, volume and filer are all up.
+      test: ['CMD-SHELL', 'wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q "HTTP/1.1"']
       interval: 10s
       timeout: 5s
-      retries: 5
+      start_period: 30s
+      retries: 10
+    networks: [avocado-net]
 
   api:
     build:
       context: .
       target: production
+    image: avocado/dash-api:latest
     container_name: dash-api
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-dashuser}:${POSTGRES_PASSWORD:-dashpass}@postgres:5432/${POSTGRES_DB:-dashboard_avocado}
-      PORT: ${PORT:-5000}
+      PORT: 5000
       NODE_ENV: ${NODE_ENV:-production}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - copy .env.example to .env}
       JWT_EXPIRE: ${JWT_EXPIRE:-7d}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       CORS_PUBLIC: ${CORS_PUBLIC:-false}
       APP_NAME: ${APP_NAME:-Dashboard Avocado Backend}
-      APP_VERSION: ${APP_VERSION:-2.0.0}
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: 9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
-      MINIO_BUCKET: ${MINIO_BUCKET:-avocado-dashboard}
-      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
-      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
+      APP_VERSION: ${APP_VERSION:-2.1.0}
+      S3_ENDPOINT: http://seaweedfs:8333
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-seaweedadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-seaweedadmin123}
+      S3_BUCKET: ${S3_BUCKET:-avocado-dashboard}
+      # Base URL browsers use to reach this API; public image URLs are built from it.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:5000}
+      DRY_MATTER_MIN_PCT: ${DRY_MATTER_MIN_PCT:-23}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       FROM_EMAIL: ${FROM_EMAIL:-noreply@avocadodashboard.com}
       AFRICASTALKING_USERNAME: ${AFRICASTALKING_USERNAME:-}
@@ -71,15 +93,20 @@ services:
       AFRICASTALKING_SENDER_ID: ${AFRICASTALKING_SENDER_ID:-}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
     ports:
-      - '${PORT:-5000}:5000'
-    # Uses the image's default CMD (entrypoint.sh): migrate deploy -> seed demo accounts -> start server
+      - '${API_HOST_PORT:-5000}:5000'
+    # Image CMD (entrypoint.sh): migrate deploy -> seed demo accounts -> start server
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:5000/health || exit 1']
       interval: 30s
       timeout: 10s
       start_period: 40s
       retries: 3
+    networks: [avocado-net]
+
+networks:
+  avocado-net:
+    name: avocado-net
 
 volumes:
   postgres_data:
-  minio_data:
+  seaweedfs_data:

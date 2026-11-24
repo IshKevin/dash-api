@@ -16,6 +16,11 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
+# ── Stage 1b: Test runner (used by docker-compose.test.yml) ───────────────────
+FROM builder AS test
+COPY test ./test
+CMD ["sh", "-c", "npx prisma migrate deploy && npx ts-node src/scripts/seed.ts && npm test"]
+
 # ── Stage 2: Production ───────────────────────────────────────────────────────
 FROM node:20-alpine AS production
 

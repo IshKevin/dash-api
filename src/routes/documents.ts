@@ -7,7 +7,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { validateIdParam, validatePagination } from '../middleware/validation';
 import { sendSuccess, sendCreated, sendError, sendNotFound, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { putObject, getPrivateObjectStream, PRIVATE_PREFIX } from '../config/minio';
+import { putObject, getPrivateObjectStream, PRIVATE_PREFIX } from '../config/storage';
 
 const router = Router();
 

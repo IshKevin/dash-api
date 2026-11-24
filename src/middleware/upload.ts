@@ -1,7 +1,7 @@
 import multer, { StorageEngine } from 'multer';
 import { Request } from 'express';
 import crypto from 'crypto';
-import { putObject, getPublicUrl, PUBLIC_PREFIX } from '../config/minio';
+import { putObject, getPublicUrl, PUBLIC_PREFIX } from '../config/storage';
 
 const memoryStorage = multer.memoryStorage();
 
@@ -17,7 +17,7 @@ function buildObjectKey(originalName: string): string {
 // documents (contracts, signatures, notarized uploads) use putObject directly
 // with a private/ key from src/services/documentService.ts instead of this
 // middleware.
-class MinioStorage implements StorageEngine {
+class S3Storage implements StorageEngine {
   _handleFile(req: Request, file: Express.Multer.File, cb: (error?: any, info?: Partial<Express.Multer.File>) => void) {
     memoryStorage._handleFile(req, file, async (err, info) => {
       if (err) {
@@ -60,7 +60,7 @@ const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFil
 };
 
 export const upload = multer({
-  storage: new MinioStorage(),
+  storage: new S3Storage(),
   fileFilter,
   limits: {
     fileSize: 5 * 1024 * 1024, // 5MB limit

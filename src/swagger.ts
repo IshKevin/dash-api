@@ -633,7 +633,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       { name: 'AgentInformation', description: 'Extended agent profiles' },
       { name: 'ProfileAccess', description: 'QR code and access key system' },
       { name: 'Weather', description: 'Weather data and farm conditions' },
-      { name: 'Upload', description: 'File upload (MinIO object storage)' },
+      { name: 'Upload', description: 'File upload (object storage (SeaweedFS))' },
       { name: 'Logs', description: 'System logs (admin)' },
       { name: 'Monitoring', description: 'Health and system metrics' },
       { name: 'Welcome', description: 'Public platform overview' },
@@ -2852,7 +2852,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       // ═══════════════════════════════════════════════════════════════════
       '/api/upload': {
         post: {
-          summary: 'Upload a single file to MinIO object storage (max 5MB: jpg, png, webp, pdf)',
+          summary: 'Upload a single file to object storage (SeaweedFS) (max 5MB: jpg, png, webp, pdf)',
           tags: ['Upload'],
           requestBody: {
             required: true,
@@ -2872,7 +2872,7 @@ One-time access keys (format: \`XXXX-XXXX-XXXX\`) provide an alternative access 
       },
       '/api/upload/multiple': {
         post: {
-          summary: 'Upload multiple files to MinIO object storage (max 5 files)',
+          summary: 'Upload multiple files to object storage (SeaweedFS) (max 5 files)',
           tags: ['Upload'],
           requestBody: {
             required: true,

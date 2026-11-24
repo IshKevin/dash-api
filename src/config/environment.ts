@@ -13,13 +13,13 @@ interface EnvironmentConfig {
   CORS_PUBLIC: boolean;
   APP_NAME: string;
   APP_VERSION: string;
-  MINIO_ENDPOINT: string;
-  MINIO_PORT: number;
-  MINIO_ACCESS_KEY: string;
-  MINIO_SECRET_KEY: string;
-  MINIO_BUCKET: string;
-  MINIO_USE_SSL: boolean;
-  MINIO_PUBLIC_URL: string | undefined;
+  S3_ENDPOINT: string;
+  S3_REGION: string;
+  S3_ACCESS_KEY: string;
+  S3_SECRET_KEY: string;
+  S3_BUCKET: string;
+  PUBLIC_API_URL: string | undefined;
+  DRY_MATTER_MIN_PCT: number;
   RESEND_API_KEY: string | undefined;
   FROM_EMAIL: string | undefined;
   AFRICASTALKING_USERNAME: string | undefined;
@@ -30,6 +30,12 @@ interface EnvironmentConfig {
   BCRYPT_ROUNDS: number;
   ACCESS_KEY_EXPIRY_DAYS: number;
   QR_CODE_EXPIRY_DAYS: number;
+}
+
+function legacyMinioEndpoint(): string | undefined {
+  if (!process.env.MINIO_ENDPOINT) return undefined;
+  const scheme = process.env.MINIO_USE_SSL === 'true' ? 'https' : 'http';
+  return `${scheme}://${process.env.MINIO_ENDPOINT}:${process.env.MINIO_PORT || '9000'}`;
 }
 
 const validateEnvironment = (): EnvironmentConfig => {
@@ -44,13 +50,16 @@ const validateEnvironment = (): EnvironmentConfig => {
     CORS_PUBLIC: process.env.CORS_PUBLIC === 'true',
     APP_NAME: process.env.APP_NAME || 'Dashboard Avocado Backend',
     APP_VERSION: process.env.APP_VERSION || '2.0.0',
-    MINIO_ENDPOINT: process.env.MINIO_ENDPOINT || 'localhost',
-    MINIO_PORT: parseInt(process.env.MINIO_PORT || '9000', 10),
-    MINIO_ACCESS_KEY: process.env.MINIO_ACCESS_KEY || 'minioadmin',
-    MINIO_SECRET_KEY: process.env.MINIO_SECRET_KEY || 'minioadmin123',
-    MINIO_BUCKET: process.env.MINIO_BUCKET || 'avocado-dashboard',
-    MINIO_USE_SSL: process.env.MINIO_USE_SSL === 'true',
-    MINIO_PUBLIC_URL: process.env.MINIO_PUBLIC_URL,
+    // S3-compatible object storage (SeaweedFS by default). Legacy MINIO_* names
+    // are still honoured so older .env files keep working.
+    S3_ENDPOINT: process.env.S3_ENDPOINT || legacyMinioEndpoint() || 'http://localhost:8333',
+    S3_REGION: process.env.S3_REGION || 'us-east-1',
+    S3_ACCESS_KEY: process.env.S3_ACCESS_KEY || process.env.MINIO_ACCESS_KEY || 'seaweedadmin',
+    S3_SECRET_KEY: process.env.S3_SECRET_KEY || process.env.MINIO_SECRET_KEY || 'seaweedadmin123',
+    S3_BUCKET: process.env.S3_BUCKET || process.env.MINIO_BUCKET || 'avocado-dashboard',
+    PUBLIC_API_URL: process.env.PUBLIC_API_URL,
+    // Minimum dry-matter % for a Hass lot to pass the export maturity check.
+    DRY_MATTER_MIN_PCT: parseFloat(process.env.DRY_MATTER_MIN_PCT || '23'),
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     FROM_EMAIL: process.env.FROM_EMAIL,
     AFRICASTALKING_USERNAME: process.env.AFRICASTALKING_USERNAME,

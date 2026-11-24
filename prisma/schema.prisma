@@ -336,6 +336,9 @@ model User {
   pending_farmer_approved    PendingFarmer?        @relation("PendingFarmerApprovedUser")
   documents_owned            Document[]            @relation("DocumentOwner")
   signatures_made            Signature[]           @relation("SignatureSigner")
+  market_prices_recorded     MarketPrice[]         @relation("MarketPriceRecorder")
+  harvest_lots               HarvestLot[]          @relation("HarvestLotFarmer")
+  harvest_lots_verified      HarvestLot[]          @relation("HarvestLotVerifier")
 
   @@index([role, status])
   @@index([created_at])
@@ -576,6 +579,7 @@ model Farm {
   disease_cases    DiseaseCase[]
   farm_visits      FarmVisit[]
   forecasts        HarvestForecast[]
+  harvest_lots     HarvestLot[]
 
   @@index([farmer_id, status])
   @@index([crop_type, status])
@@ -1296,4 +1300,98 @@ model SupplierEvaluation {
   updated_at     DateTime @updatedAt
 
   @@index([supplier_id])
+}
+
+// ── Market Price Information (e-Soko style) ─────────────────────────────────
+// Periodic avocado price observations per market/district, so farmers can see
+// what buyers pay before selling and admins can watch regional trends.
+
+enum MarketPriceType {
+  farm_gate
+  wholesale
+  retail
+  export
+}
+
+enum ProduceGrade {
+  export
+  grade_a
+  grade_b
+  processing
+  reject
+}
+
+model MarketPrice {
+  id           String          @id @default(uuid())
+  commodity    String          @default("avocado")
+  variety      String          @default("Hass")
+  grade        ProduceGrade    @default(grade_a)
+  price_type   MarketPriceType @default(farm_gate)
+  /// Price in RWF per kilogram
+  price_per_kg Float
+  currency     String          @default("RWF")
+  province     String
+  district     String
+  market_name  String?
+  source       String?
+  price_date   DateTime        @default(now())
+  notes        String?
+  recorded_by  String?
+  recorder     User?           @relation("MarketPriceRecorder", fields: [recorded_by], references: [id])
+  created_at   DateTime        @default(now())
+  updated_at   DateTime        @updatedAt
+
+  @@index([commodity, variety, price_type, price_date])
+  @@index([district, price_date])
+  @@index([price_date])
+}
+
+// ── Harvest Lots & Traceability (NAEB / GlobalGAP style) ────────────────────
+// Each harvest a farmer brings to market is a lot with a unique, QR-printable
+// code. Agents verify quantity, grade and maturity (dry matter); the lot is
+// then sold and delivered. A public trace endpoint lets buyers/exporters scan
+// the code and see origin without exposing the farmer's personal data.
+
+enum HarvestLotStatus {
+  recorded
+  verified
+  sold
+  delivered
+  rejected
+}
+
+model HarvestLot {
+  id              String           @id @default(uuid())
+  lot_code        String           @unique
+  farm_id         String
+  farm            Farm             @relation(fields: [farm_id], references: [id])
+  farmer_id       String
+  farmer          User             @relation("HarvestLotFarmer", fields: [farmer_id], references: [id])
+  variety         String           @default("Hass")
+  harvest_date    DateTime
+  quantity_kg     Float
+  crates          Int?
+  grade           ProduceGrade     @default(grade_a)
+  /// Dry matter % (maturity indicator). Hass export typically needs >= 23%.
+  dry_matter_pct  Float?
+  maturity_passed Boolean?
+  status          HarvestLotStatus @default(recorded)
+  verified_by     String?
+  verifier        User?            @relation("HarvestLotVerifier", fields: [verified_by], references: [id])
+  verified_at     DateTime?
+  rejection_reason String?
+  buyer_name      String?
+  buyer_contact   String?
+  price_per_kg    Float?
+  total_value     Float?
+  sold_at         DateTime?
+  delivered_at    DateTime?
+  notes           String?
+  created_by      String?
+  created_at      DateTime         @default(now())
+  updated_at      DateTime         @updatedAt
+
+  @@index([farmer_id, status])
+  @@index([farm_id])
+  @@index([status, harvest_date])
 }

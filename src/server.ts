@@ -10,7 +10,7 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import { swaggerOptions } from './swagger';
 import { database } from './config/database';
 import { env } from './config/environment';
-import { ensureBucketExists } from './config/minio';
+import { ensureBucketReady } from './config/storage';
 import { startEscalationJob } from './jobs/escalationJob';
 import logger from './config/logger';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
@@ -54,6 +54,9 @@ import visitsRoutes from './routes/visits';
 import pendingFarmersRoutes from './routes/pendingFarmers';
 import documentsRoutes from './routes/documents';
 import smsRoutes from './routes/sms';
+import filesRoutes from './routes/files';
+import marketPricesRoutes from './routes/marketPrices';
+import harvestLotsRoutes, { traceabilityRouter } from './routes/harvestLots';
 
 dotenv.config();
 
@@ -172,6 +175,10 @@ app.use('/api/visits', visitsRoutes);
 app.use('/api/pending-farmers', pendingFarmersRoutes);
 app.use('/api/documents', documentsRoutes);
 app.use('/api/sms', smsRoutes);
+app.use('/api/files', filesRoutes);
+app.use('/api/market-prices', marketPricesRoutes);
+app.use('/api/harvest-lots', harvestLotsRoutes);
+app.use('/api/traceability', traceabilityRouter);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
@@ -195,11 +202,21 @@ const startServer = async (): Promise<void> => {
     await database.connect();
     logger.info('✅ Database connection established');
 
-    try {
-      await ensureBucketExists();
-      logger.info('✅ MinIO bucket ready');
-    } catch (error) {
-      logger.warn(`⚠️  MinIO bucket check failed (uploads may not work): ${error}`);
+    // Object storage may still be starting (SeaweedFS needs ~20s on a cold
+    // start); retry for a while. Uploads also re-check lazily, so a failure
+    // here is not fatal.
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        await ensureBucketReady();
+        logger.info('✅ Object storage bucket ready');
+        break;
+      } catch (error) {
+        if (attempt === 10) {
+          logger.warn(`⚠️  Object storage not reachable yet (uploads will retry on demand): ${error}`);
+        } else {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
     }
 
     startEscalationJob();

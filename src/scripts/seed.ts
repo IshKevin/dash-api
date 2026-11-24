@@ -277,6 +277,96 @@ async function seed() {
       }
     }
 
+    // ── Market prices: 12 weeks of sample observations (only if table empty) ──
+    if ((await prisma.marketPrice.count()) === 0) {
+      const admin = await prisma.user.findFirst({ where: { role: 'admin' } });
+      const markets = [
+        { province: 'Eastern Province', district: 'Rwamagana', market_name: 'Rwamagana Market', base: 420 },
+        { province: 'Eastern Province', district: 'Kayonza', market_name: 'Kayonza Market', base: 400 },
+        { province: 'Kigali City', district: 'Nyarugenge', market_name: 'Kimironko / Nyabugogo', base: 520 },
+        { province: 'Southern Province', district: 'Huye', market_name: 'Huye Market', base: 390 },
+        { province: 'Western Province', district: 'Rubavu', market_name: 'Gisenyi Market', base: 410 },
+      ];
+      const typeFactor: Record<string, number> = { farm_gate: 1, wholesale: 1.25, retail: 1.6, export: 1.9 };
+      const rows: any[] = [];
+      for (let week = 11; week >= 0; week--) {
+        const date = new Date(Date.now() - week * 7 * 24 * 3600 * 1000);
+        const seasonal = 1 + 0.08 * Math.sin((12 - week) / 2); // gentle seasonal swing
+        for (const m of markets) {
+          for (const [price_type, factor] of Object.entries(typeFactor)) {
+            if (price_type === 'export' && m.district !== 'Nyarugenge') continue; // export price quoted in Kigali
+            rows.push({
+              variety: 'Hass',
+              grade: price_type === 'export' ? 'export' : 'grade_a',
+              price_type,
+              price_per_kg: Math.round(m.base * factor * seasonal),
+              province: m.province,
+              district: m.district,
+              market_name: m.market_name,
+              source: 'Sample weekly market survey',
+              price_date: date,
+              recorded_by: admin?.id,
+            });
+          }
+        }
+      }
+      await prisma.marketPrice.createMany({ data: rows });
+      logger.info(`Sample market prices created (${rows.length})`);
+    }
+
+    // ── Demo farm + harvest lots for the sample farmer ──
+    const demoFarmer = await prisma.user.findUnique({ where: { email: 'farmer@dashboardavocado.com' } });
+    if (demoFarmer) {
+      let demoFarm = await prisma.farm.findFirst({ where: { farmer_id: demoFarmer.id } });
+      if (!demoFarm) {
+        demoFarm = await prisma.farm.create({
+          data: {
+            farmName: 'Musha Avocado Farm',
+            farmerName: demoFarmer.full_name,
+            farmer_id: demoFarmer.id,
+            location: { province: 'Eastern Province', district: 'Rwamagana', sector: 'Musha' },
+            farm_size: 2.5,
+            tree_count: 120,
+            varieties: ['Hass'],
+            planting_date: new Date('2019-03-15'),
+            status: 'producing' as any,
+            irrigation_system: 'Drip irrigation',
+            soil_type: 'Loam',
+          },
+        });
+        logger.info('Demo farm created for sample farmer');
+      }
+      if ((await prisma.harvestLot.count({ where: { farmer_id: demoFarmer.id } })) === 0) {
+        const agent = await prisma.user.findFirst({ where: { role: 'agent' } });
+        const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 3600 * 1000);
+        await prisma.harvestLot.createMany({
+          data: [
+            {
+              lot_code: 'AVO-' + daysAgo(30).toISOString().slice(0, 10).replace(/-/g, '') + '-0DE001',
+              farm_id: demoFarm.id, farmer_id: demoFarmer.id, variety: 'Hass', harvest_date: daysAgo(30),
+              quantity_kg: 850, crates: 34, grade: 'export', dry_matter_pct: 24.5, maturity_passed: true,
+              status: 'delivered', verified_by: agent?.id, verified_at: daysAgo(29),
+              buyer_name: 'Kigali Fresh Exports Ltd', price_per_kg: 780, total_value: 663000,
+              sold_at: daysAgo(28), delivered_at: daysAgo(27), created_by: demoFarmer.id,
+            },
+            {
+              lot_code: 'AVO-' + daysAgo(9).toISOString().slice(0, 10).replace(/-/g, '') + '-0DE002',
+              farm_id: demoFarm.id, farmer_id: demoFarmer.id, variety: 'Hass', harvest_date: daysAgo(9),
+              quantity_kg: 620, crates: 25, grade: 'grade_a', dry_matter_pct: 23.1, maturity_passed: true,
+              status: 'verified', verified_by: agent?.id, verified_at: daysAgo(8), created_by: demoFarmer.id,
+            },
+            {
+              lot_code: 'AVO-' + daysAgo(1).toISOString().slice(0, 10).replace(/-/g, '') + '-0DE003',
+              farm_id: demoFarm.id, farmer_id: demoFarmer.id, variety: 'Hass', harvest_date: daysAgo(1),
+              quantity_kg: 400, crates: 16, grade: 'grade_a', status: 'recorded', created_by: demoFarmer.id,
+            },
+          ],
+          skipDuplicates: true,
+        });
+        logger.info('Demo harvest lots created');
+      }
+    }
+
     logger.info('Database seeding completed successfully');
     logger.info('Credentials:');
     logger.info('  Admin:        admin@dashboardavocado.com / admin123456');

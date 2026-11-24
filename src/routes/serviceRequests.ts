@@ -8,7 +8,7 @@ import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendErro
 import { AuthenticatedRequest } from '../types/auth';
 import { notifyAllAdmins, notifyAgentAssignment, notifyFarmerServiceUpdate } from '../utils/notificationService';
 import { documentService } from '../services/documentService';
-import { putObject, PRIVATE_PREFIX } from '../config/minio';
+import { putObject, PRIVATE_PREFIX } from '../config/storage';
 import logger from '../config/logger';
 
 const router = Router();
