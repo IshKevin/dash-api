@@ -11,6 +11,9 @@ import { isRegistryEnabled, lookupParcel } from '../services/landRegistry';
 
 const router = Router();
 
+/** Largest believable parcel for one farm. Bigger usually means a mis-drawn boundary. */
+const MAX_PARCEL_HA = 500;
+
 /** Validate a GeoJSON Polygon inside Rwanda. Returns [polygon, error]. */
 function validatePolygon(input: any): [{ type: 'Polygon'; coordinates: number[][][] } | null, string | null] {
   if (input === null) return [null, null];
@@ -181,6 +184,10 @@ router.put(
       data.parcel_boundary = polygon === null ? Prisma.DbNull : (polygon as unknown as Prisma.InputJsonValue);
       if (polygon) {
         const area = ringAreaSqm(polygon.coordinates[0]);
+        if (area > MAX_PARCEL_HA * 10000) {
+          return sendError(res, `The boundary covers ${Math.round(area / 10000).toLocaleString()} ha — too large for one farm (max ${MAX_PARCEL_HA} ha). Zoom in and draw around the field.`, 400);
+        }
+        if (area < 10) return sendError(res, 'The boundary is too small — check the corners', 400);
         if (b.parcel_area_sqm === undefined) data.parcel_area_sqm = Math.round(area);
         if (data.latitude === undefined && farm.latitude === null) {
           const c = ringCentroid(polygon.coordinates[0]);

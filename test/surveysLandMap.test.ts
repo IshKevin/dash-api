@@ -217,6 +217,11 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
         .send({ parcel_boundary: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } });
       expect(outside.status).to.equal(400);
 
+      const huge = await request(app).put(`/api/land/farms/${farmId}`).set('Authorization', `Bearer ${existingFarmer.token}`)
+        .send({ parcel_boundary: { type: 'Polygon', coordinates: [[[29.5, -1.7], [30.2, -1.7], [30.2, -2.2], [29.5, -2.2], [29.5, -1.7]]] } });
+      expect(huge.status).to.equal(400);
+      expect(huge.body.message).to.match(/too large/);
+
       const other = await prisma.farm.findFirstOrThrow({ where: { farmer: { farmer_profile: { id_number: nid(2) } } } });
       const forbidden = await request(app).put(`/api/land/farms/${other.id}`).set('Authorization', `Bearer ${existingFarmer.token}`).send({ land_use: 'x' });
       expect(forbidden.status).to.equal(403);

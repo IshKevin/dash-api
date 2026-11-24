@@ -55,6 +55,9 @@ Defined in `src/middleware/auth.ts`:
 | Market prices (`/api/market-prices`) | R/W all, bulk import, delete | R all, create, update own | R | R |
 | Harvest lots (`/api/harvest-lots`) | R/W all | R/W all, verify/reject | create on own farm, R/W own, sell/deliver own | — |
 | Traceability (`/api/traceability/:code`) | public | public | public | public |
+| Farmer surveys (`/api/surveys`) | R/W all, commit imports, delete | R all, preview imports, export | — | — |
+| Land / UPI (`/api/land`) | R/W all, verify | R/W all, verify | R/W own farm's land, check UPI (other owners hidden) | — |
+| Farm map (`/api/map/farms`) | all farms | all farms | own farms only, no phone numbers | — |
 | Public files (`/api/files/public/*`) | public | public | public | public |
 | Visits (`/api/visits`) | R/W all | R/W own (assigned) | — | — |
 | Reports (`/api/reports`) | R/W all | R/W own (`agent_id`) | — | — |

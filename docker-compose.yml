@@ -86,6 +86,8 @@ services:
       # Base URL browsers use to reach this API; public image URLs are built from it.
       PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:5000}
       DRY_MATTER_MIN_PCT: ${DRY_MATTER_MIN_PCT:-23}
+      LAND_REGISTRY_API_URL: ${LAND_REGISTRY_API_URL:-}
+      LAND_REGISTRY_API_KEY: ${LAND_REGISTRY_API_KEY:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       FROM_EMAIL: ${FROM_EMAIL:-noreply@avocadodashboard.com}
       AFRICASTALKING_USERNAME: ${AFRICASTALKING_USERNAME:-}

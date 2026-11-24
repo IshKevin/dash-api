@@ -368,6 +368,53 @@ Every harvest is recorded as a **lot** with a unique code (`AVO-YYYYMMDD-XXXXXX`
 | DELETE | `/api/harvest-lots/:id` | Farmer (own, recorded only), Admin | Delete |
 | GET | `/api/traceability/:lotCode` | **Public** | Origin & quality for a scanned lot — no farmer name/phone, buyer or price |
 
+### Farmer Surveys (Excel import) — `/api/surveys`
+
+Baseline field-survey data (one row per farmer interview). Upload the spreadsheet,
+review a validated preview, then commit. Every original column is kept in
+`FarmSurvey.raw`; the commonly analysed answers are typed columns.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/template` | Admin, Agent | Empty .xlsx with the expected columns |
+| POST | `/import/preview` | Admin, Agent | Upload .xlsx/.xls/.csv (`file`, ≤5,000 rows) → validation report, farmer matching (national ID, then phone). Nothing is imported yet |
+| GET | `/import/batches` | Admin, Agent | Previous imports |
+| GET | `/import/batches/:id` | Admin, Agent | Preview rows (`filter=errors|warnings|all`) |
+| POST | `/import/batches/:id/commit` | Admin | Import valid rows: link/create farmer accounts, profiles, farms (with GPS), survey records. Body `{ create_accounts=true, update_profiles=true }`. Runs once per batch |
+| GET | `/` | Admin, Agent | List (filters: `province, district, sector, sex, batch_id, has_location, linked, search`) |
+| GET | `/analytics` | Admin, Agent | Indicators: demographics, adoption rates, trees, production, top challenges/channels/credit sources |
+| GET | `/export` | Admin, Agent | Filtered surveys as .xlsx |
+| GET | `/:id` | Admin, Agent | Full record incl. raw columns |
+| DELETE | `/:id` | Admin | Delete a survey record |
+
+What the importer does with messy spreadsheets:
+- It recognises both "Province/District" pairs: the first is the enumerator's area, the second is the farm's.
+- It normalises phones to `+2507…`, reads y/n/yes/no/yego/oya, dd/mm/yyyy and Excel dates, and canonicalises province and district names, including Kinyarwanda province names.
+- It fixes swapped lat/long, drops coordinates outside Rwanda, and treats farm areas over 100 as m² (converted to hectares).
+- It warns when a 16-digit national ID was stored as a number, because Excel truncates those.
+
+Rows without consent, without a name or without a district, and duplicate national IDs, are skipped.
+
+Imported farmers get an account with a placeholder email (`credentials_claimed=false`). They activate it in the app ("Activate your account", which calls `POST /api/auth/verify-phone`) using the phone number from the survey.
+
+### Land parcels & UPI — `/api/land`
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/status` | Any auth | Whether the national land-registry connector is configured |
+| GET | `/upi?upi=5/01/02/03/1234` | Admin, Agent, Farmer | Validate + decode a UPI (province/district from its codes), check if another farm uses it, query the registry if connected |
+| GET | `/farms/:farmId` | Admin, Agent, Farmer (own) | Land details of a farm |
+| PUT | `/farms/:farmId` | Admin, Agent, Farmer (own) | Set `upi`, `latitude/longitude`, `parcel_boundary` (GeoJSON Polygon, must be in Rwanda; area computed), `land_use`, `land_tenure`. Clears verification |
+| POST | `/farms/:farmId/verify` | Admin, Agent | Stamp as verified after a field visit; fills gaps from the registry when connected |
+
+**Rwanda land registry (LAIS):** there is no public API. The connector in `src/services/landRegistry.ts` stays disabled until you obtain access from the National Land Authority (NLA/RLMUA) and set `LAND_REGISTRY_API_URL` and `LAND_REGISTRY_API_KEY`. The response format it expects is documented in that file; adjust `mapRegistryResponse()` to the real contract. Until then, UPIs are checked by format and by their province and district codes, and parcels are captured by drawing on the map.
+
+### Farm map — `/api/map`
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/farms` | Admin, Agent, Farmer (own) | GeoJSON FeatureCollection of farms with GPS (+ parcel polygons with `boundaries=true`). Filters: `province, district, variety, status, has_upi, verified`. `meta` reports farms missing a location |
+
 ### Files — `/api/files`
 
 | Method | Path | Auth | Description |
@@ -450,6 +497,7 @@ See `.env.example` for the full annotated list. The most important:
 | `PUBLIC_API_URL` | No | `http://localhost:5000` | API base URL as browsers see it; public image URLs are built from it |
 | `FRONTEND_URL` | No | `http://localhost:3000` | Used in emails and harvest-lot QR codes (`/trace/<code>`) |
 | `DRY_MATTER_MIN_PCT` | No | `23` | Minimum dry matter % for an export-grade (Hass) lot to pass verification |
+| `LAND_REGISTRY_API_URL` / `LAND_REGISTRY_API_KEY` | No | — | National land registry connector (disabled when unset) |
 | `API_HOST_PORT` / `POSTGRES_HOST_PORT` / `S3_HOST_PORT` | No | `5000` / `5432` / `8333` | Host ports published by compose |
 
 ---
