@@ -57,6 +57,9 @@ import smsRoutes from './routes/sms';
 import filesRoutes from './routes/files';
 import marketPricesRoutes from './routes/marketPrices';
 import harvestLotsRoutes, { traceabilityRouter } from './routes/harvestLots';
+import surveysRoutes from './routes/surveys';
+import landRoutes from './routes/land';
+import mapRoutes from './routes/map';
 
 dotenv.config();
 
@@ -179,6 +182,9 @@ app.use('/api/files', filesRoutes);
 app.use('/api/market-prices', marketPricesRoutes);
 app.use('/api/harvest-lots', harvestLotsRoutes);
 app.use('/api/traceability', traceabilityRouter);
+app.use('/api/surveys', surveysRoutes);
+app.use('/api/land', landRoutes);
+app.use('/api/map', mapRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

@@ -6,62 +6,59 @@ Agricultural management platform for Rwanda's avocado supply chain. Connects fou
 
 ## Quick Start
 
+The backend runs as its **own Docker stack** — PostgreSQL, SeaweedFS (S3-compatible
+object storage for images/documents) and the API. The frontend
+(`Dashboard-avocado`) is a separate stack; the two talk over HTTP and share the
+`avocado-net` Docker network.
+
+```
+ browser ──► dashboard-web :3000 (nginx, SPA)          ← Dashboard-avocado/docker-compose.yml
+    │
+    └──────► dash-api :5000 ──► dash-api-postgres :5432  ← dash-api/docker-compose.yml
+                    └─────────► dash-api-seaweedfs :8333 (S3, private bucket)
+```
+
 ### Prerequisites
-- [Docker](https://docs.docker.com/get-docker/) (for PostgreSQL)
-- Node.js 18+
-- npm
+- [Docker](https://docs.docker.com/get-docker/) with Compose v2
+- Node.js 20+ and npm (only if you run the API outside Docker)
 
-### 1. Clone and install
+### Option A — everything in Docker (recommended for testing)
 
 ```bash
-git clone <repo-url>
 cd dash-api
+cp .env.example .env            # then set JWT_SECRET and S3_SECRET_KEY to random values
+docker compose up -d --build    # postgres + seaweedfs + api
+docker compose ps               # all three should be "healthy"
+```
+
+On start the API container runs `prisma migrate deploy`, seeds demo data
+(idempotent) and starts the server. SeaweedFS needs ~20 s on a cold start; the
+API waits for it.
+
+- API: **http://localhost:5000** · Swagger UI: **http://localhost:5000/api-docs**
+- Then start the frontend stack: `cd ../Dashboard-avocado && docker compose up -d --build` → **http://localhost:3000**
+
+### Option B — API on the host (hot reload), DB + storage in Docker
+
+```bash
+cp .env.example .env   # DATABASE_URL / S3_ENDPOINT already point at localhost
 npm install
+docker compose up -d --wait postgres seaweedfs
+npx prisma migrate dev
+npm run db:seed
+npm run dev
 ```
 
-### 2. Configure environment
+### Running the tests
 
-Create a `.env` file in the project root:
-
-```env
-DATABASE_URL="postgresql://dashuser:dashpassword@localhost:5432/dashboard_avocado?schema=public"
-PORT=5000
-NODE_ENV=development
-JWT_SECRET=your-super-secret-jwt-key-change-in-production
-JWT_EXPIRES_IN=7d
-BCRYPT_ROUNDS=12
-ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
-```
-
-### 3. Start PostgreSQL
+A separate, throwaway test stack (Postgres + SeaweedFS on tmpfs, ports 5433/8334,
+project `avocado-backend-test`) never touches your dev data:
 
 ```bash
-docker compose up -d postgres
+npm run test:docker
+# = docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from tests
+#   then tears it down with -v
 ```
-
-### 4. Run database migration
-
-```bash
-npx prisma migrate dev --name init
-```
-
-### 5. Seed sample data
-
-```bash
-npx ts-node src/scripts/seed.ts
-```
-
-### 6. Start the server
-
-```bash
-npm run dev         # ts-node-dev with hot reload
-# or
-npm start           # ts-node (no reload)
-```
-
-Server runs at **http://localhost:5000**
-
-Interactive API docs (Swagger UI): **http://localhost:5000/api-docs**
 
 ---
 
@@ -335,40 +332,72 @@ Agents generate QR codes for farmers. Farmers (or agents scanning on-site) use t
 
 ---
 
+### Market Prices — `/api/market-prices`
+
+Avocado price information per district/market, in the style of e-Soko (Rwanda's agricultural market price service), so farmers can see what buyers pay before selling. Prices in RWF/kg; `price_type` ∈ `farm_gate | wholesale | retail | export`; `grade` ∈ `export | grade_a | grade_b | processing | reject`.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/` | Any auth | List observations (filters: `variety, grade, price_type, province, district, from, to`, paginated) |
+| GET | `/latest` | Any auth | Most recent price per district × variety × grade × type (`days`, default 60) |
+| GET | `/summary` | Any auth | National average per price type, last `days` (30) vs previous period, `% change` |
+| GET | `/trends` | Any auth | Average/min/max per `interval=day|week` over `days` (90) — for charts |
+| GET | `/:id` | Any auth | Single observation |
+| POST | `/` | Admin, Agent | Record an observation |
+| POST | `/bulk` | Admin | Import up to 200 observations (all-or-nothing) |
+| PUT | `/:id` | Admin; Agent (own records) | Update |
+| DELETE | `/:id` | Admin | Delete |
+
+### Harvest Lots & Traceability — `/api/harvest-lots`, `/api/traceability`
+
+Every harvest is recorded as a **lot** with a unique code (`AVO-YYYYMMDD-XXXXXX`), following the lot-level traceability that NAEB / GlobalGAP export buyers require. Workflow: `recorded → verified → sold → delivered` (or `rejected`). Verification records weighed kg, grade and **dry matter %** (maturity); export grade is refused below `DRY_MATTER_MIN_PCT`. Farmers are notified at each step.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/api/harvest-lots` | Admin, Agent, Farmer (own) | List (filters: `status, grade, farm_id, farmer_id, variety, from, to, search`) |
+| GET | `/api/harvest-lots/summary` | Admin, Agent, Farmer (own) | Totals by status/grade, kg, revenue, avg price |
+| GET | `/api/harvest-lots/farm-options` | Admin, Agent, Farmer (own) | Farms selectable when recording a lot |
+| GET | `/api/harvest-lots/:id` | Admin, Agent, Farmer (own) | Lot detail |
+| GET | `/api/harvest-lots/:id/qr` | Admin, Agent, Farmer (own) | QR (PNG data URL) → `${FRONTEND_URL}/trace/<code>` |
+| POST | `/api/harvest-lots` | Admin, Agent, Farmer (own farm) | Record a lot |
+| PUT | `/api/harvest-lots/:id` | Farmer (while recorded); Agent/Admin (recorded/verified) | Edit |
+| POST | `/api/harvest-lots/:id/verify` | Admin, Agent | Verify (kg, grade, dry matter) |
+| POST | `/api/harvest-lots/:id/reject` | Admin, Agent | Reject (`reason` required) |
+| POST | `/api/harvest-lots/:id/sell` | Admin, Agent, Farmer (own) | Record sale (`buyer_name`, `price_per_kg`) |
+| POST | `/api/harvest-lots/:id/deliver` | Admin, Agent, Farmer (own) | Mark delivered |
+| DELETE | `/api/harvest-lots/:id` | Farmer (own, recorded only), Admin | Delete |
+| GET | `/api/traceability/:lotCode` | **Public** | Origin & quality for a scanned lot — no farmer name/phone, buyer or price |
+
+### Files — `/api/files`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/public/*` | — | Streams an uploaded public image from object storage |
+
+---
+
 ## Docker
 
-```yaml
-# docker-compose.yml
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: dashuser
-      POSTGRES_PASSWORD: dashpassword
-      POSTGRES_DB: dashboard_avocado
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dashuser -d dashboard_avocado"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-```
+| File | Project | Services | Purpose |
+|---|---|---|---|
+| `docker-compose.yml` | `avocado-backend` | `postgres`, `seaweedfs`, `api` | Dev / staging / test environment |
+| `docker-compose.test.yml` | `avocado-backend-test` | `postgres-test`, `seaweedfs-test`, `tests` | Isolated automated tests (tmpfs, nothing persisted) |
 
 ```bash
-# Start database
-docker compose up -d postgres
-
-# Stop
-docker compose down
-
-# Destroy all data and start fresh
-docker compose down -v
-docker compose up -d postgres
-npx prisma migrate dev
+docker compose up -d --build        # start / rebuild
+docker compose logs -f api          # follow API logs
+docker compose down                 # stop (keeps volumes)
+docker compose down -v              # stop and DELETE database + stored files
 ```
+
+### Object storage (SeaweedFS)
+
+- Image: `chrislusf/seaweedfs:3.97`, all-in-one `weed server -s3` (master + volume + filer + S3 gateway), started by `docker/seaweedfs/start.sh`, which writes the S3 credentials from `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
+- The bucket is **fully private** — there is no anonymous S3 identity. SeaweedFS doesn't support S3 bucket policies, so instead:
+  - `public/…` objects (product/profile images) are streamed by the API at `GET /api/files/public/<key>` with long-lived cache headers and `Cross-Origin-Resource-Policy: cross-origin`, so the SPA on another origin can display them.
+  - `private/…` objects (contracts, signatures) are only streamed by the authenticated documents endpoints after an ownership check.
+- Any S3-compatible store works (MinIO, AWS S3, R2): set `S3_ENDPOINT` and credentials. The old `MINIO_*` variables are still accepted as fallbacks.
+- ⚠️ SeaweedFS accepts writes into a bucket that doesn't exist and then can't read them back. `putObject()` therefore always ensures the bucket exists first (`ensureBucketReady()` in `src/config/storage.ts`). Keep that guard if you refactor uploads.
 
 ---
 
@@ -407,16 +436,21 @@ npx ts-node src/scripts/cleanup.ts
 
 ## Environment Variables
 
-| Variable          | Required | Default       | Description                             |
-|-------------------|----------|---------------|-----------------------------------------|
-| `DATABASE_URL`    | Yes      | —             | PostgreSQL connection string            |
-| `PORT`            | No       | `5000`        | HTTP server port                        |
-| `NODE_ENV`        | No       | `development` | `development` \| `production` \| `test` |
-| `JWT_SECRET`      | Yes      | —             | Secret for signing JWT tokens           |
-| `JWT_EXPIRES_IN`  | No       | `7d`          | Token expiry (`1d`, `7d`, `30d`, etc.)  |
-| `BCRYPT_ROUNDS`   | No       | `12`          | Password hashing cost factor            |
-| `ALLOWED_ORIGINS` | No       | `*`           | Comma-separated CORS allowed origins    |
-| `LOG_LEVEL`       | No       | `info`        | Winston log level                       |
+See `.env.example` for the full annotated list. The most important:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string (set automatically under compose) |
+| `JWT_SECRET` | Yes | — | Secret for signing JWTs — use a long random value |
+| `PORT` | No | `5000` | HTTP port inside the container / process |
+| `CORS_ORIGIN` | No | `http://localhost:3000` | Allowed browser origin (the frontend URL) |
+| `S3_ENDPOINT` | No | `http://localhost:8333` | S3 API of SeaweedFS (compose uses `http://seaweedfs:8333`) |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | No | `seaweedadmin` / … | Storage credentials (also used by the SeaweedFS container) |
+| `S3_BUCKET` | No | `avocado-dashboard` | Bucket name (created automatically) |
+| `PUBLIC_API_URL` | No | `http://localhost:5000` | API base URL as browsers see it; public image URLs are built from it |
+| `FRONTEND_URL` | No | `http://localhost:3000` | Used in emails and harvest-lot QR codes (`/trace/<code>`) |
+| `DRY_MATTER_MIN_PCT` | No | `23` | Minimum dry matter % for an export-grade (Hass) lot to pass verification |
+| `API_HOST_PORT` / `POSTGRES_HOST_PORT` / `S3_HOST_PORT` | No | `5000` / `5432` / `8333` | Host ports published by compose |
 
 ---
 

@@ -339,6 +339,8 @@ model User {
   market_prices_recorded     MarketPrice[]         @relation("MarketPriceRecorder")
   harvest_lots               HarvestLot[]          @relation("HarvestLotFarmer")
   harvest_lots_verified      HarvestLot[]          @relation("HarvestLotVerifier")
+  survey_imports             SurveyImportBatch[]   @relation("SurveyImportCreator")
+  surveys                    FarmSurvey[]          @relation("SurveyFarmer")
 
   @@index([role, status])
   @@index([created_at])
@@ -580,8 +582,22 @@ model Farm {
   farm_visits      FarmVisit[]
   forecasts        HarvestForecast[]
   harvest_lots     HarvestLot[]
+  surveys          FarmSurvey[]
+
+  // Land parcel (Rwanda land registry). UPI = Unique Parcel Identifier,
+  // e.g. 5/01/02/03/1234 (province/district/sector/cell/parcel).
+  upi              String?
+  parcel_area_sqm  Float?
+  land_use         String?
+  land_tenure      String?
+  /// GeoJSON Polygon of the parcel boundary (drawn on the map or from the registry)
+  parcel_boundary  Json?
+  /// 'manual' | 'map' | 'registry'
+  land_source      String?
+  land_verified_at DateTime?
 
   @@index([farmer_id, status])
+  @@index([upi])
   @@index([crop_type, status])
   @@index([organic_certified])
   @@index([expected_harvest])
@@ -1394,4 +1410,120 @@ model HarvestLot {
   @@index([farmer_id, status])
   @@index([farm_id])
   @@index([status, harvest_date])
+}
+
+// ── Farmer baseline surveys (Excel import) ───────────────────────────────────
+// One row per farmer interview from the field survey spreadsheet. Frequently
+// analysed answers are typed columns; the full original row is kept in `raw`
+// so nothing from the spreadsheet is ever lost.
+
+enum SurveyImportStatus {
+  previewed
+  committed
+  failed
+}
+
+model SurveyImportBatch {
+  id            String             @id @default(uuid())
+  file_name     String
+  status        SurveyImportStatus @default(previewed)
+  total_rows    Int                @default(0)
+  valid_rows    Int                @default(0)
+  error_rows    Int                @default(0)
+  /// Parsed + validated rows: [{ row_number, data, errors[], warnings[], match }]
+  rows          Json
+  /// Commit result: { created_farmers, linked_farmers, created_farms, surveys, failed: [...] }
+  result        Json?
+  created_by    String
+  creator       User               @relation("SurveyImportCreator", fields: [created_by], references: [id])
+  committed_at  DateTime?
+  created_at    DateTime           @default(now())
+  surveys       FarmSurvey[]
+
+  @@index([created_at])
+}
+
+model FarmSurvey {
+  id                       String    @id @default(uuid())
+  batch_id                 String?
+  batch                    SurveyImportBatch? @relation(fields: [batch_id], references: [id], onDelete: SetNull)
+  row_number               Int?
+  farmer_id                String?
+  farmer                   User?     @relation("SurveyFarmer", fields: [farmer_id], references: [id], onDelete: SetNull)
+  farm_id                  String?
+  farm                     Farm?     @relation(fields: [farm_id], references: [id], onDelete: SetNull)
+
+  // Interview
+  survey_province          String?
+  survey_district          String?
+  enumerator_name          String?
+  enumerator_contact       String?
+  interview_date           DateTime?
+  consent                  Boolean?
+
+  // Location
+  province                 String?
+  district                 String?
+  sector                   String?
+  cell                     String?
+  village                  String?
+  latitude                 Float?
+  longitude                Float?
+
+  // Respondent / owner
+  respondent_name          String?
+  respondent_contact       String?
+  respondent_is_owner      Boolean?
+  respondent_role          String?
+  respondent_position      String?
+  owner_name               String?
+  farmer_contact           String?
+  sex                      String?
+  has_disability           Boolean?
+  date_of_birth            DateTime?
+  farmer_age               Int?
+  national_id              String?
+  land_owner               String?
+
+  // Farm
+  farm_zoning              String?
+  tree_arrangement         String?
+  farm_area                Float?
+  seedling_sources         String[]
+  varieties                String[]
+  physical_tree_count      Int?
+  hass_trees               Int?
+  fuerte_trees             Int?
+  planting_date            DateTime?
+
+  // Production & market
+  ever_harvested           Boolean?
+  avocados_per_tree        Float?
+  fruits_per_tree_per_year Float?
+  total_tons               Float?
+  price_per_avocado        Float?
+  uses_fertilizer          Boolean?
+  fertilizer_types         String[]
+  uses_pesticides          Boolean?
+  pesticide_types          String[]
+  input_access             String[]
+  selling_channels         String[]
+  selling_site             String?
+  main_market_outlet       String?
+  production_info_access   String[]
+  market_info_access       String[]
+  uses_credit              Boolean?
+  credit_access            String[]
+  aggregation_effectiveness String?
+  challenges               String?
+
+  /// Every original column, keyed by its spreadsheet header
+  raw                      Json
+  created_at               DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
+
+  @@index([district])
+  @@index([national_id])
+  @@index([farmer_id])
+  @@index([interview_date])
 }

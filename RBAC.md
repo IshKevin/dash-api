@@ -52,6 +52,10 @@ Defined in `src/middleware/auth.ts`:
 | Documents (`/api/documents`) | R/W all | R/W (owner, or assigned via linked service request); notarize any (see note) | R/W own | — |
 | Trees & Diseases (`/api/trees`, `/api/diseases`) | R/W all | R/W all | R own farm's only | — |
 | Forecasting (`/api/forecasting`) | R/W all | R/W all | — | — |
+| Market prices (`/api/market-prices`) | R/W all, bulk import, delete | R all, create, update own | R | R |
+| Harvest lots (`/api/harvest-lots`) | R/W all | R/W all, verify/reject | create on own farm, R/W own, sell/deliver own | — |
+| Traceability (`/api/traceability/:code`) | public | public | public | public |
+| Public files (`/api/files/public/*`) | public | public | public | public |
 | Visits (`/api/visits`) | R/W all | R/W own (assigned) | — | — |
 | Reports (`/api/reports`) | R/W all | R/W own (`agent_id`) | — | — |
 | Shops (`/api/shops`) | R/W all | — | — | R/W own shop |
