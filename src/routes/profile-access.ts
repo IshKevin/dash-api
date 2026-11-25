@@ -21,7 +21,17 @@ const upload = multer({ storage: multer.memoryStorage() });
  * @desc    Generate QR code for a user (token-based scan QR)
  * @access  Private (Agent/Admin)
  */
-router.get('/qr/:userId', authenticate, authorize('agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+
+/** Agents may only manage QR codes / access keys of farmers (never admins or other staff). */
+const agentTargetsFarmersOnly = asyncHandler(async (req: AuthenticatedRequest, res: Response, next: any) => {
+  if (req.user?.role !== 'agent') return next();
+  const target = await prisma.user.findUnique({ where: { id: req.params.userId }, select: { role: true } });
+  if (!target) { sendNotFound(res, 'User not found'); return; }
+  if (target.role !== 'farmer') { sendError(res, 'Agents can only manage farmer QR codes', 403); return; }
+  next();
+});
+
+router.get('/qr/:userId', authenticate, authorize('agent', 'admin'), agentTargetsFarmersOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { userId } = req.params;
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -388,7 +398,7 @@ router.put('/update-profile', asyncHandler(async (req: AuthenticatedRequest, res
  * @desc    Generate QR code containing a fresh access key for a user
  * @access  Private (Agent/Admin)
  */
-router.get('/generate-qr/:userId', authenticate, authorize('agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/generate-qr/:userId', authenticate, authorize('agent', 'admin'), agentTargetsFarmersOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { userId } = req.params;
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -427,7 +437,7 @@ router.get('/generate-qr/:userId', authenticate, authorize('agent', 'admin'), as
 }));
 
 // POST /api/profile-access/regenerate/:userId  (authenticate, authorize admin/agent)
-router.post('/regenerate/:userId', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/regenerate/:userId', authenticate, authorize('admin', 'agent'), agentTargetsFarmersOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { userId } = req.params;
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) { sendNotFound(res, 'User not found'); return; }
@@ -459,7 +469,7 @@ router.delete('/expire/:userId', authenticate, adminOnly, asyncHandler(async (re
 }));
 
 // GET /api/profile-access/activity/:userId  (authenticate, authorize admin/agent)
-router.get('/activity/:userId', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/activity/:userId', authenticate, authorize('admin', 'agent'), agentTargetsFarmersOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { userId } = req.params;
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;

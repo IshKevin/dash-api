@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { ensureShopSupplier } from './shopScope';
 
 type TxClient = Prisma.TransactionClient;
 
@@ -171,7 +172,7 @@ export async function createShopForManager(
   owner: { ownerName: string; ownerEmail: string; ownerPhone: string },
   fields: ShopManagerFields
 ) {
-  return tx.shop.create({
+  const shop = await tx.shop.create({
     data: {
       shopName: fields.shopName,
       description: fields.description,
@@ -184,4 +185,8 @@ export async function createShopForManager(
       manager_id: userId,
     },
   });
+  // Every shop is backed by a Supplier row with the same id, so its products
+  // (Product.supplier_id = shop.id) satisfy the Product -> Supplier FK.
+  await ensureShopSupplier(tx, shop);
+  return shop;
 }

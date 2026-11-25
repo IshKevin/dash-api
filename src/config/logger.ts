@@ -46,6 +46,31 @@ if (process.env.LOG_TO_FILE === 'true' || (!isProd && process.env.LOG_TO_FILE !=
   );
 }
 
+// Persist error/warn/info entries to the Log table so admins can read them in
+// the dashboard (Logs / Monitoring pages). Per-request `http` logs stay on
+// stdout only. Prisma is required lazily to avoid an import cycle, and write
+// failures are swallowed — logging must never take the API down.
+import Transport from 'winston-transport';
+class DatabaseTransport extends Transport {
+  log(info: any, callback: () => void) {
+    setImmediate(() => this.emit('logged', info));
+    if (process.env.LOG_TO_DB === 'false' || process.env.NODE_ENV === 'test') return callback();
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { prisma } = require('../lib/prisma');
+      const { level, message, timestamp, ...meta } = info;
+      const clean = String(level).replace(/\u001b\[[0-9;]*m/g, '');
+      prisma.log
+        .create({ data: { level: clean, message: String(message).slice(0, 5000), meta: Object.keys(meta).length ? JSON.parse(JSON.stringify(meta)) : undefined } })
+        .catch(() => undefined);
+    } catch {
+      /* ignore */
+    }
+    callback();
+  }
+}
+transports.push(new DatabaseTransport({ level: 'info' }));
+
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || (isProd ? 'info' : 'debug'),
   levels,

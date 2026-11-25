@@ -14,17 +14,26 @@ router.get('/', authenticate, authorize('admin', 'agent'), validatePagination, a
   const limit = parseInt(req.query.limit as string) || 20;
   const where: any = {};
 
+  // Archived farms are hidden unless explicitly requested.
+  if (req.query.include_archived !== 'true') where.archived_at = null;
   if (req.query.status) where.status = req.query.status as any;
   if (req.query.farmer_id) where.farmer_id = req.query.farmer_id;
 
-  const locationFilters: any = {};
-  if (req.query.province) locationFilters.province = req.query.province;
-  if (req.query.district) locationFilters.district = req.query.district;
-  if (req.query.sector) locationFilters.sector = req.query.sector;
-
-  if (Object.keys(locationFilters).length > 0) {
-    where.location = { path: Object.keys(locationFilters), equals: locationFilters };
+  // Each location filter is its own JSON-path condition (a multi-key path
+  // would look for nested keys and never match).
+  const and: any[] = [];
+  for (const key of ['province', 'district', 'sector'] as const) {
+    if (req.query[key]) and.push({ location: { path: [key], equals: String(req.query[key]) } });
   }
+  const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  if (search) {
+    and.push({ OR: [
+      { farmName: { contains: search, mode: 'insensitive' } },
+      { farmerName: { contains: search, mode: 'insensitive' } },
+      { upi: { contains: search } },
+    ] });
+  }
+  if (and.length) where.AND = and;
 
   const [farms, total] = await Promise.all([
     prisma.farm.findMany({
@@ -42,17 +51,18 @@ router.get('/', authenticate, authorize('admin', 'agent'), validatePagination, a
 
 // GET /api/farms/overview
 router.get('/overview', authenticate, authorize('admin', 'agent'), asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
+  const active = { archived_at: null };
   const [total, byStatus] = await Promise.all([
-    prisma.farm.count(),
-    prisma.farm.groupBy({ by: ['status'], _count: { _all: true } }),
+    prisma.farm.count({ where: active }),
+    prisma.farm.groupBy({ by: ['status'], where: active, _count: { _all: true } }),
   ]);
 
   const statusCounts: Record<string, number> = {};
   byStatus.forEach(s => { statusCounts[s.status] = s._count._all; });
 
   const [treesAgg, areaAgg] = await Promise.all([
-    prisma.farm.aggregate({ _sum: { tree_count: true } }),
-    prisma.farm.aggregate({ _sum: { farm_size: true } }),
+    prisma.farm.aggregate({ where: active, _sum: { tree_count: true } }),
+    prisma.farm.aggregate({ where: active, _sum: { farm_size: true } }),
   ]);
 
   sendSuccess(res, {
@@ -184,8 +194,11 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
     sendError(res, 'Access denied', 403); return;
   }
 
-  const { farmer_id, farm_name, farm_size, planting_date, expected_harvest, latitude, longitude, ...rest } = req.body;
-  const updateData: any = { ...rest };
+  const { farm_name, farm_size, planting_date, expected_harvest, latitude, longitude } = req.body;
+  // Only known, editable fields — ownership/land/verification fields are not settable here.
+  const EDITABLE = ['farmName', 'location', 'crop_type', 'tree_count', 'varieties', 'status', 'organic_certified', 'irrigation_system', 'soil_type', 'notes'];
+  const updateData: any = {};
+  for (const k of EDITABLE) if (req.body[k] !== undefined) updateData[k] = req.body[k];
   if (farm_name) updateData.farmName = farm_name;
   if (farm_size !== undefined) updateData.farm_size = farm_size;
   if (planting_date) updateData.planting_date = new Date(planting_date);
@@ -204,8 +217,17 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
 
 // DELETE /api/farms/:id
 router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const farm = await prisma.farm.delete({ where: { id: req.params.id } }).catch(() => null);
-  if (!farm) { sendNotFound(res, 'Farm not found'); return; }
+  const existing = await prisma.farm.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, _count: { select: { farm_visits: true, disease_cases: true, tree_records: true, harvest_lots: true, forecasts: true, surveys: true } } },
+  });
+  if (!existing) { sendNotFound(res, 'Farm not found'); return; }
+  const linked = Object.entries(existing._count).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`);
+  if (linked.length) {
+    sendError(res, `This farm still has ${linked.join(', ')}. Archive it instead of deleting.`, 409);
+    return;
+  }
+  await prisma.farm.delete({ where: { id: existing.id } });
 
   sendSuccess(res, null, 'Farm deleted successfully');
 }));
@@ -268,6 +290,10 @@ router.put('/:id/assign-agent', authenticate, adminOnly, asyncHandler(async (req
   ]);
   if (!farm) { sendNotFound(res, 'Farm not found'); return; }
   if (!agent || agent.role !== 'agent') { sendError(res, 'Agent not found or user is not an agent', 400); return; }
+
+  // Re-assigning the same agent must not pile up duplicate visits.
+  const open = await prisma.farmVisit.findFirst({ where: { farm_id: req.params.id, agent_id, status: { in: ['scheduled', 'in_progress'] } } });
+  if (open) { sendSuccess(res, open, 'Agent already assigned — visit already scheduled'); return; }
 
   // Schedule a visit
   const visit = await prisma.farmVisit.create({

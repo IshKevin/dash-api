@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma';
@@ -15,6 +16,11 @@ import { env } from '../config/environment';
 import { createFarmerProfileForUser, createAgentProfileForUser, createFarmForUser } from '../utils/profileCreation';
 
 const router = Router();
+
+/** One-time password for staff-created accounts: unique per user, meets the password policy. */
+function generateTempPassword(): string {
+  return `Avo@${crypto.randomBytes(5).toString('hex')}${crypto.randomInt(10, 99)}A`;
+}
 
 const userSelect = {
   id: true, email: true, full_name: true, phone: true,
@@ -82,7 +88,7 @@ router.post('/', authenticate, adminOnly, asyncHandler(async (req: Authenticated
     return;
   }
 
-  const defaultPassword = 'UserPass123!';
+  const defaultPassword = generateTempPassword();
   const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
 
   const user = await prisma.user.create({
@@ -127,7 +133,7 @@ router.post('/farmers', authenticate, authorize('admin', 'agent'), validateFarme
     return;
   }
 
-  const defaultPassword = 'FarmerPass123!';
+  const defaultPassword = generateTempPassword();
   const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
 
   const farmer = await prisma.$transaction(async (tx) => {
@@ -181,7 +187,7 @@ router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: Authent
     return;
   }
 
-  const defaultPassword = 'AgentPass123!';
+  const defaultPassword = generateTempPassword();
   const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
 
   const agent = await prisma.$transaction(async (tx) => {
@@ -241,32 +247,15 @@ router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: 
   if (updateData.phone) data.phone = updateData.phone.trim();
 
   if (req.user?.role === 'farmer') {
-    data.profile = {
-      ...(existing?.profile as any || {}),
-      age: updateData.age,
-      gender: updateData.gender,
-      marital_status: updateData.marital_status,
-      education_level: updateData.education_level,
-      id_number: updateData.id_number,
-      province: updateData.province,
-      district: updateData.district,
-      sector: updateData.sector,
-      cell: updateData.cell,
-      village: updateData.village,
-      farm_age: updateData.farm_age,
-      planted: updateData.planted,
-      avocado_type: updateData.avocado_type,
-      mixed_percentage: updateData.mixed_percentage,
-      farm_size: updateData.farm_size,
-      tree_count: updateData.tree_count,
-      upi_number: updateData.upi_number,
-      assistance: updateData.assistance,
-      farm_province: updateData.farm_province,
-      farm_district: updateData.farm_district,
-      farm_sector: updateData.farm_sector,
-      farm_cell: updateData.farm_cell,
-      farm_village: updateData.farm_village,
-    };
+    // Merge only the keys actually sent — updating just a name/phone must not wipe the rest.
+    const FARMER_PROFILE_KEYS = [
+      'age', 'gender', 'marital_status', 'education_level', 'id_number', 'province', 'district', 'sector', 'cell', 'village',
+      'farm_age', 'planted', 'avocado_type', 'mixed_percentage', 'farm_size', 'tree_count', 'upi_number', 'assistance',
+      'farm_province', 'farm_district', 'farm_sector', 'farm_cell', 'farm_village',
+    ];
+    const changes: Record<string, any> = {};
+    for (const k of FARMER_PROFILE_KEYS) if (updateData[k] !== undefined) changes[k] = updateData[k];
+    if (Object.keys(changes).length) data.profile = { ...((existing?.profile as any) || {}), ...changes };
   } else {
     if (updateData.profile) {
       data.profile = { ...(existing?.profile as any || {}), ...updateData.profile };
@@ -390,12 +379,52 @@ router.delete('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(asy
     return;
   }
 
-  const user = await prisma.user.delete({ where: { id: userId } }).catch(() => null);
-
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      _count: {
+        select: {
+          farms: true, service_requests_as_farmer: true, service_requests_as_agent: true,
+          transactions_as_payer: true, transactions_as_payee: true, harvest_lots: true,
+          documents_owned: true, farm_visits_as_agent: true, reports_as_agent: true, surveys: true,
+          shops_created: true,
+        },
+      },
+      shop_managed: { select: { id: true } },
+    },
+  });
   if (!user) {
     sendNotFound(res, 'User not found');
     return;
   }
+
+  // Accounts with business history must be kept for the audit trail.
+  const history = Object.entries(user._count).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k.replace(/_/g, ' ')}`);
+  if (history.length || user.shop_managed) {
+    sendError(
+      res,
+      `This account has history (${[...history, ...(user.shop_managed ? ['a managed shop'] : [])].join(', ')}). Deactivate it instead of deleting.`,
+      409
+    );
+    return;
+  }
+
+  // No history: remove the account and its personal side-records.
+  await prisma.$transaction(async (tx) => {
+    const cart = await tx.cart.findUnique({ where: { user_id: userId }, select: { id: true } });
+    if (cart) {
+      await tx.cartItem.deleteMany({ where: { cart_id: cart.id } });
+      await tx.cart.delete({ where: { id: cart.id } });
+    }
+    await tx.farmerProfile.deleteMany({ where: { user_id: userId } });
+    await tx.agentProfile.deleteMany({ where: { user_id: userId } });
+    await tx.notification.deleteMany({ where: { recipient_id: userId } });
+    await tx.accessKey.deleteMany({ where: { user_id: userId } });
+    await tx.passwordResetToken.deleteMany({ where: { user_id: userId } });
+    await tx.qRActivity.deleteMany({ where: { user_id: userId } }).catch(() => undefined);
+    await tx.user.delete({ where: { id: userId } });
+  });
 
   sendSuccess(res, null, 'User deleted successfully');
 }));

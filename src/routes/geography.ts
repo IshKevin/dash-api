@@ -147,6 +147,46 @@ router.put('/districts/:id', authenticate, adminOnly, asyncHandler(async (req: A
   sendSuccess(res, district, 'District updated successfully');
 }));
 
+
+// ── Edit/delete for districts, sectors, cells, villages (admin) ─────────────
+// Deleting is refused while the unit still has children, like provinces.
+type Level = { model: 'district' | 'sector' | 'cell' | 'village'; label: string; child?: 'sectors' | 'cells' | 'villages'; editCode: boolean };
+const LEVELS: Record<string, Level> = {
+  districts: { model: 'district', label: 'District', child: 'sectors', editCode: true },
+  sectors: { model: 'sector', label: 'Sector', child: 'cells', editCode: false },
+  cells: { model: 'cell', label: 'Cell', child: 'villages', editCode: false },
+  villages: { model: 'village', label: 'Village', editCode: false },
+};
+
+for (const [path, level] of Object.entries(LEVELS)) {
+  const delegate = () => (prisma as any)[level.model];
+
+  if (path !== 'districts') {
+    router.put(`/${path}/:id`, authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+      const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+      if (!name) { sendError(res, 'name is required', 400); return; }
+      const existing = await delegate().findUnique({ where: { id: req.params.id } });
+      if (!existing) { sendNotFound(res, `${level.label} not found`); return; }
+      const updated = await delegate().update({ where: { id: req.params.id }, data: { name } });
+      sendSuccess(res, updated, `${level.label} updated successfully`);
+    }));
+  }
+
+  router.delete(`/${path}/:id`, authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const existing = await delegate().findUnique({
+      where: { id: req.params.id },
+      ...(level.child ? { include: { _count: { select: { [level.child]: true } } } } : {}),
+    });
+    if (!existing) { sendNotFound(res, `${level.label} not found`); return; }
+    if (level.child && existing._count[level.child] > 0) {
+      sendError(res, `Cannot delete ${level.label.toLowerCase()} with existing ${level.child}`, 400);
+      return;
+    }
+    await delegate().delete({ where: { id: req.params.id } });
+    sendSuccess(res, null, `${level.label} deleted successfully`);
+  }));
+}
+
 // GET /api/geography/districts/:districtId/sectors (public)
 router.get('/districts/:districtId/sectors', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { districtId } = req.params;

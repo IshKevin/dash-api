@@ -110,7 +110,7 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
     return;
   }
 
-  const { territory, statistics, province, district, sector, specialization, experience, certification } = req.body;
+  const { territory, statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
 
   const profile = await prisma.agentProfile.upsert({
     where: { user_id: agentId },
@@ -122,6 +122,8 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
       province,
       district,
       sector,
+      cell,
+      village,
       specialization,
       experience,
       certification,
@@ -143,7 +145,7 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
 
 // PUT /api/agent-information/me
 router.put('/me', authenticate, authorize('agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { territory, statistics, province, district, sector, specialization, experience, certification } = req.body;
+  const { territory, statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
   const agentId = req.user!.id;
 
   const profile = await prisma.agentProfile.upsert({
@@ -166,6 +168,8 @@ router.put('/me', authenticate, authorize('agent'), asyncHandler(async (req: Aut
       province: province !== undefined ? province : undefined,
       district: district !== undefined ? district : undefined,
       sector: sector !== undefined ? sector : undefined,
+      cell: cell !== undefined ? cell : undefined,
+      village: village !== undefined ? village : undefined,
       specialization: specialization !== undefined ? specialization : undefined,
       experience: experience !== undefined ? experience : undefined,
       certification: certification !== undefined ? certification : undefined,
@@ -184,7 +188,7 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
     return;
   }
 
-  const { territory, statistics, province, district, sector, specialization, experience, certification } = req.body;
+  const { territory, statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
 
   const profile = await prisma.agentProfile.upsert({
     where: { user_id: agentId },
@@ -196,6 +200,8 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
       province,
       district,
       sector,
+      cell,
+      village,
       specialization,
       experience,
       certification,
@@ -206,6 +212,8 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
       province: province !== undefined ? province : undefined,
       district: district !== undefined ? district : undefined,
       sector: sector !== undefined ? sector : undefined,
+      cell: cell !== undefined ? cell : undefined,
+      village: village !== undefined ? village : undefined,
       specialization: specialization !== undefined ? specialization : undefined,
       experience: experience !== undefined ? experience : undefined,
       certification: certification !== undefined ? certification : undefined,

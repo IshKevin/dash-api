@@ -324,6 +324,7 @@ model User {
   outbreaks_reported         DiseaseOutbreak[]    @relation("OutbreakReporter")
   forecasts_created          HarvestForecast[]    @relation("ForecastCreator")
   purchase_orders_created    PurchaseOrder[]      @relation("POCreator")
+  orders_placed              Order[]              @relation("OrderPlacedBy")
   purchase_orders_approved   PurchaseOrder[]      @relation("POApprover")
   goods_receipts             GoodsReceipt[]       @relation("GoodsReceiver")
   training_authored          TrainingContent[]    @relation("ContentAuthor")
@@ -403,6 +404,9 @@ model Supplier {
   delivery_areas    String[]
   payment_terms     String?
   notes             String?
+  /// True for the Supplier row that backs a Shop (same id as Shop.id). Shop-scoped
+  /// products use Product.supplier_id = Shop.id; the supplier directory hides these.
+  is_shop_supplier  Boolean          @default(false)
   created_at        DateTime         @default(now())
   updated_at        DateTime         @updatedAt
 
@@ -413,6 +417,7 @@ model Supplier {
   @@index([category, status])
   @@index([rating])
   @@index([created_at])
+  @@index([is_shop_supplier])
 }
 
 model Customer {
@@ -467,10 +472,13 @@ model Order {
   delivered_date         DateTime?
   notes                  String?
   tracking_number        String?
+  /// User who placed the order when different from the buyer (e.g. an agent ordering on behalf of a farmer)
+  placed_by              String?
   created_at             DateTime      @default(now())
   updated_at             DateTime      @updatedAt
 
   customer               Customer      @relation(fields: [customer_id], references: [id])
+  placer                 User?         @relation("OrderPlacedBy", fields: [placed_by], references: [id], onDelete: SetNull)
   items                  OrderItem[]
   transactions           Transaction[]
 
@@ -547,6 +555,7 @@ model Shop {
   creator      User       @relation("ShopCreator", fields: [created_by], references: [id])
   manager      User?      @relation("ShopManager", fields: [manager_id], references: [id])
   customers    Customer[]
+  purchase_orders PurchaseOrder[]
 
   @@index([created_by])
 }
@@ -1080,6 +1089,9 @@ model PurchaseOrder {
   po_number     String              @unique
   supplier_id   String
   supplier      Supplier            @relation(fields: [supplier_id], references: [id])
+  /// Shop the goods are bought for (null = platform/admin purchase)
+  shop_id       String?
+  shop          Shop?               @relation(fields: [shop_id], references: [id], onDelete: SetNull)
   status        PurchaseOrderStatus @default(draft)
   order_date    DateTime            @default(now())
   expected_date DateTime?
@@ -1096,6 +1108,7 @@ model PurchaseOrder {
   updated_at    DateTime            @updatedAt
 
   @@index([supplier_id])
+  @@index([shop_id])
   @@index([status])
 }
 

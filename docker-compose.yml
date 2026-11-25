@@ -97,8 +97,11 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       # Demo accounts with known passwords: on for local testing, set false for production.
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+      # Shows SMS activation codes on screen when no SMS provider is configured. Testing only!
+      ALLOW_TEST_OTP: ${ALLOW_TEST_OTP:-false}
       TRUST_PROXY: ${TRUST_PROXY:-0}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-200}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-1000}
     ports:
       - '${API_HOST_PORT:-5000}:5000'
     # Image CMD (entrypoint.sh): migrate deploy -> seed demo accounts -> start server

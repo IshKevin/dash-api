@@ -6,8 +6,51 @@ import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { ProductCategory } from '@prisma/client';
+import { requireManagedShop } from '../utils/shopScope';
 
 const router = Router();
+
+/**
+ * Shop managers: resolves their shop (403 if none), defaults body.supplier_id to it and
+ * rejects any other supplier_id. Runs before validateProductCreation.
+ */
+async function scopeProductCreate(req: AuthenticatedRequest, res: Response, next: () => void) {
+  try {
+    const shopId = await requireManagedShop(req, res);
+    if (shopId === undefined) return;
+    if (shopId) {
+      if (req.body.supplier_id && req.body.supplier_id !== shopId) {
+        sendError(res, 'supplier_id must be your own shop', 403);
+        return;
+      }
+      req.body.supplier_id = shopId;
+    }
+    next();
+  } catch (e) {
+    (next as any)(e);
+  }
+}
+
+/** Loads the product and, for shop managers, checks it belongs to their shop. Sends 403/404 and returns null on failure. */
+async function loadOwnedProduct(req: AuthenticatedRequest, res: Response, productId: string) {
+  const product = await prisma.product.findUnique({ where: { id: productId } });
+  if (!product) {
+    sendNotFound(res, 'Product not found');
+    return null;
+  }
+  const shopId = await requireManagedShop(req, res);
+  if (shopId === undefined) return null;
+  if (shopId && product.supplier_id !== shopId) {
+    sendError(res, 'Access denied: this product belongs to another shop', 403);
+    return null;
+  }
+  return product;
+}
+
+async function stockShopId(supplierId: string) {
+  const s = await prisma.supplier.findUnique({ where: { id: supplierId }, select: { is_shop_supplier: true } });
+  return s?.is_shop_supplier ? supplierId : null;
+}
 
 // Convert API "pest-management" string to Prisma enum value
 function toCategory(cat: string): ProductCategory {
@@ -94,10 +137,16 @@ router.get('/:id', validateIdParam, asyncHandler(async (req: Request, res: Respo
 }));
 
 // POST /api/products
-router.post('/', authenticate, authorize('admin', 'shop_manager'), validateProductCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/', authenticate, authorize('admin', 'shop_manager'), scopeProductCreate as any, validateProductCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { name, category, description, price, quantity, unit, supplier_id, brand, images, specifications } = req.body;
 
-  const existing = await prisma.product.findFirst({ where: { name } });
+  if (!(await prisma.supplier.findUnique({ where: { id: supplier_id }, select: { id: true } }))) {
+    sendError(res, 'supplier_id does not refer to an existing supplier or shop', 400);
+    return;
+  }
+
+  // Names are unique per supplier/shop (two shops may both sell "NPK 17-17-17").
+  const existing = await prisma.product.findFirst({ where: { name, supplier_id } });
   if (existing) {
     sendError(res, 'Product name already exists', 400);
     return;
@@ -132,7 +181,7 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), validateProdu
     await prisma.stockHistory.create({
       data: {
         product_id: product.id,
-        shop_id: product.supplier_id,
+        shop_id: await stockShopId(product.supplier_id),
         previous_quantity: 0,
         new_quantity: product.quantity,
         change_amount: product.quantity,
@@ -146,39 +195,75 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), validateProdu
   sendCreated(res, formatProduct(product), 'Product created successfully');
 }));
 
+// Fields editable via PUT /api/products/:id (anything else in the body is ignored).
+const PRODUCT_EDITABLE_FIELDS = [
+  'description', 'price', 'status', 'brand', 'images', 'specifications', 'variety',
+  'min_stock', 'cost', 'source_type', 'sku',
+] as const;
+
 // PUT /api/products/:id
 router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const productId = req.params.id;
-  const { name, category, ...rest } = req.body;
+  const existingProduct = await loadOwnedProduct(req, res, productId);
+  if (!existingProduct) return;
+
+  const { name, category, unit, quantity, supplier_id, harvest_date, expiry_date } = req.body;
 
   if (name) {
-    const existing = await prisma.product.findFirst({ where: { name, id: { not: productId } } });
+    const existing = await prisma.product.findFirst({ where: { name, supplier_id: existingProduct.supplier_id, id: { not: productId } } });
     if (existing) {
       sendError(res, 'Product name already exists', 400);
       return;
     }
   }
 
-  const updateData: any = { ...rest };
+  const updateData: any = {};
+  for (const f of PRODUCT_EDITABLE_FIELDS) {
+    if (req.body[f] !== undefined) updateData[f] = req.body[f];
+  }
   if (name) updateData.name = name;
   if (category) updateData.category = toCategory(category);
-  if (rest.unit) updateData.unit = rest.unit as any;
+  if (unit) updateData.unit = unit as any;
+  if (harvest_date) updateData.harvest_date = new Date(harvest_date);
+  if (expiry_date) updateData.expiry_date = new Date(expiry_date);
+  // Only admins may move a product to another supplier/shop.
+  if (supplier_id !== undefined && req.user?.role === 'admin') {
+    if (!(await prisma.supplier.findUnique({ where: { id: supplier_id }, select: { id: true } }))) {
+      sendError(res, 'supplier_id does not refer to an existing supplier or shop', 400);
+      return;
+    }
+    updateData.supplier_id = supplier_id;
+  }
 
   // Auto-update status based on quantity
-  if (rest.quantity !== undefined) {
-    if (rest.quantity <= 0) updateData.status = 'out_of_stock';
-    else if (!rest.status) updateData.status = 'available';
+  if (quantity !== undefined) {
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      sendError(res, 'Quantity must be a non-negative integer', 400);
+      return;
+    }
+    updateData.quantity = quantity;
+    if (quantity <= 0) updateData.status = 'out_of_stock';
+    else if (!updateData.status) updateData.status = 'available';
   }
 
-  const product = await prisma.product.update({
-    where: { id: productId },
-    data: updateData,
-  }).catch(() => null);
-
-  if (!product) {
-    sendNotFound(res, 'Product not found');
-    return;
-  }
+  const product = await prisma.$transaction(async (tx) => {
+    const updated = await tx.product.update({ where: { id: productId }, data: updateData });
+    if (quantity !== undefined && quantity !== existingProduct.quantity) {
+      await tx.stockHistory.create({
+        data: {
+          product_id: productId,
+          shop_id: await stockShopId(updated.supplier_id),
+          previous_quantity: existingProduct.quantity,
+          new_quantity: quantity,
+          change_amount: quantity - existingProduct.quantity,
+          reason: 'adjustment',
+          notes: 'Product edit',
+          created_by: req.user?.id,
+        },
+      });
+    }
+    return updated;
+  });
 
   sendSuccess(res, formatProduct(product), 'Product updated successfully');
 }));
@@ -208,9 +293,12 @@ router.put('/:id/stock', authenticate, authorize('admin', 'shop_manager'), valid
     return;
   }
 
-  const product = await prisma.product.findUnique({ where: { id: productId } });
-  if (!product) {
-    sendNotFound(res, 'Product not found');
+  const product = await loadOwnedProduct(req, res, productId);
+  if (!product) return;
+
+  const validReasons = ['restock', 'sale', 'adjustment', 'damage', 'return', 'other'];
+  if (!validReasons.includes(reason)) {
+    sendError(res, `reason must be one of: ${validReasons.join(', ')}`, 400);
     return;
   }
 
@@ -219,14 +307,14 @@ router.put('/:id/stock', authenticate, authorize('admin', 'shop_manager'), valid
 
   const updated = await prisma.product.update({
     where: { id: productId },
-    data: { quantity, status: quantity > 0 ? 'available' : 'out_of_stock' },
+    data: { quantity, ...(product.status !== 'discontinued' && { status: quantity > 0 ? 'available' : 'out_of_stock' }) },
   });
 
   if (changeAmount !== 0) {
     await prisma.stockHistory.create({
       data: {
         product_id: productId,
-        shop_id: product.supplier_id,
+        shop_id: await stockShopId(product.supplier_id),
         previous_quantity: previousQuantity,
         new_quantity: quantity,
         change_amount: changeAmount,
@@ -241,8 +329,9 @@ router.put('/:id/stock', authenticate, authorize('admin', 'shop_manager'), valid
 }));
 
 // GET /api/products/:id/stock-history
-router.get('/:id/stock-history', authenticate, authorize('admin', 'shop_manager'), validateIdParam, validatePagination, asyncHandler(async (req: Request, res: Response) => {
+router.get('/:id/stock-history', authenticate, authorize('admin', 'shop_manager'), validateIdParam, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const productId = req.params.id;
+  if (!(await loadOwnedProduct(req, res, productId))) return;
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
 

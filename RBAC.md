@@ -48,7 +48,7 @@ Defined in `src/middleware/auth.ts`:
 | Users (`/api/users`) | R/W all | R own (`/me`), create/list farmers | R/W own (`/me`) | R/W own (`/me`) |
 | Auth (`/api/auth`) | — | register/login/profile like any role | register/login/profile | register/login/profile |
 | Farms (`/api/farms`) | R/W all | R/W all, assign agents | R/W own | — |
-| Service Requests (`/api/service-requests`) | R/W all, approve/reject | R/W assigned (some types creatable on behalf of a farmer — see note) | create + R/W own | — |
+| Service Requests (`/api/service-requests`) | R/W all, approve (pending only)/reject | R/W assigned, claim unassigned (`PUT /:id/claim`) (some types creatable on behalf of a farmer — see note) | create + R/W own | — |
 | Documents (`/api/documents`) | R/W all | R/W (owner, or assigned via linked service request); notarize any (see note) | R/W own | — |
 | Trees & Diseases (`/api/trees`, `/api/diseases`) | R/W all | R/W all | R own farm's only | — |
 | Forecasting (`/api/forecasting`) | R/W all | R/W all | — | — |
@@ -67,7 +67,7 @@ Defined in `src/middleware/auth.ts`:
 | Customers (`/api/customers`) | R/W all | — | — | R/W own shop's customers |
 | Orders (`/api/orders`) | R/W all | create own | create own | R/W all (staff) |
 | Cart / Checkout (`/api/cart`) | own cart | own cart | own cart | own cart |
-| Suppliers (`/api/suppliers`) | R/W all | — | — | R/W (not shop-scoped — shared supplier directory) |
+| Suppliers (`/api/suppliers`) | R/W all, delete, set status | — | — | R + create/update (new ones start `pending_approval`; shop-link suppliers hidden) |
 | Transactions (`/api/transactions`) | R/W all | R own (payer/payee) | R own (payer/payee) | R own (payer/payee) |
 | Notifications (`/api/notifications`) | R/W all, can create for anyone | R/W own | R/W own | R/W own |
 | Profile Access / QR (`/api/profile-access`) | full | full (see "Agents serve any farmer") | scan/verify own token (public-by-token) | — |
@@ -82,7 +82,9 @@ Defined in `src/middleware/auth.ts`:
 - **Shop → Shop Manager**: `Shop.manager_id` is unique per shop (one shop per manager). `customers.ts`, `inventory.ts`, and `products.ts` writes resolve the manager's shop via `getManagedShopId()` and scope by `Customer.shop_id` / `Product.supplier_id`.
 - **Service Request → Agent**: `ServiceRequest.agent_id` gates agent access on assignment-dependent actions (`start`, `complete-*`, `cancel`). Unassigned requests (`agent_id: null`) are visible to any agent so they can be picked up.
 - **Visit / Report → Agent**: same pattern via `FarmVisit.agent_id` / `Report.agent_id`.
-- **Order / Cart checkout → Customer email match**: `Customer` has no `user_id` FK (customers aren't necessarily registered users). `cart.ts /checkout` and `orders.ts POST /` verify the supplied `customer_id`'s `email` matches the requester's own account email for non-staff roles, since there's no direct FK to check against.
+- **Self-registration**: `POST /api/auth/register` creates farmers as active; `agent` and `shop_manager` sign-ups are created **inactive** (no token) until an admin activates them, because those roles see other people's data. Admins are notified.
+- **Shops own products through a linked supplier row**: every Shop has a Supplier with the same id (`is_shop_supplier`); products/inventory/procurement are scoped to the manager's shop.
+- **Order / Cart checkout**: `customer_id` is optional — the buyer's own customer record is found or created from their account; agents may pass `farmer_id` to order on a farmer's behalf (`Order.placed_by` = agent). Legacy note: `Customer` has no `user_id` FK (customers aren't necessarily registered users). `cart.ts /checkout` and `orders.ts POST /` verify the supplied `customer_id`'s `email` matches the requester's own account email for non-staff roles, since there's no direct FK to check against.
 
 ## Deliberate exceptions (not bugs)
 

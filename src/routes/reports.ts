@@ -5,6 +5,21 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { sendSuccess, sendError, sendPaginatedResponse, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { validateIdParam, validatePagination } from '../middleware/validation';
+import multer from 'multer';
+import crypto from 'crypto';
+import { putObject, getPrivateObjectStream, PRIVATE_PREFIX } from '../config/storage';
+
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 5 },
+  fileFilter: (_req, file, cb) => {
+    if (['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, WEBP and PDF attachments are allowed'));
+  },
+});
+
+// Fields a client may set on a report — anything else in the body is ignored.
+const REPORT_EDITABLE = ['title', 'description', 'report_type', 'priority', 'status', 'farmer_id', 'location', 'findings', 'recommendations', 'notes'] as const;
 
 const router = Router();
 
@@ -62,6 +77,8 @@ router.get('/export', authenticate, authorize('admin', 'agent'), asyncHandler(as
   if (req.query.report_type) where.report_type = req.query.report_type as any;
   if (req.query.status) where.status = req.query.status as any;
   if (req.query.agent_id) where.agent_id = req.query.agent_id as string;
+  // Agents may only export their own reports.
+  if (req.user?.role === 'agent') where.agent_id = req.user.id;
   if (req.query.from || req.query.to) {
     where.created_at = {};
     if (req.query.from) where.created_at.gte = new Date(req.query.from as string);
@@ -140,10 +157,19 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
   if (!existing) { sendNotFound(res, 'Report not found'); return; }
   if (req.user?.role === 'agent' && existing.agent_id !== req.user.id) { sendError(res, 'Access denied', 403); return; }
 
-  const { scheduled_date, completed_date, ...rest } = req.body;
-  const data: any = { ...rest };
-  if (scheduled_date) data.scheduled_date = new Date(scheduled_date);
-  if (completed_date) data.completed_date = new Date(completed_date);
+  const body = req.body || {};
+  const data: any = {};
+  for (const k of REPORT_EDITABLE) if (body[k] !== undefined) data[k] = body[k];
+  if (req.user?.role === 'admin' && body.agent_id) data.agent_id = body.agent_id;
+  for (const k of ['scheduled_date', 'completed_date'] as const) {
+    if (body[k] === undefined) continue;
+    if (body[k] === null) { if (k === 'completed_date') data[k] = null; continue; }
+    const d = new Date(body[k]);
+    if (Number.isNaN(d.getTime())) { sendError(res, `${k} must be a valid date`, 400); return; }
+    data[k] = d;
+  }
+  if (data.status === 'completed' && data.completed_date === undefined) data.completed_date = new Date();
+  if (Object.keys(data).length === 0) { sendError(res, 'Nothing to update', 400); return; }
 
   const report = await prisma.report.update({ where: { id: req.params.id }, data, select: reportSelect });
   sendSuccess(res, report, 'Report updated successfully');
@@ -155,21 +181,46 @@ router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHa
   sendSuccess(res, null, 'Report deleted successfully');
 }));
 
-router.post('/:id/attachments', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/:id/attachments', authenticate, authorize('admin', 'agent'), validateIdParam, attachmentUpload.array('files', 5), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const existing = await prisma.report.findUnique({ where: { id: req.params.id }, select: { agent_id: true, attachments: true } });
   if (!existing) { sendNotFound(res, 'Report not found'); return; }
   if (req.user?.role === 'agent' && existing.agent_id !== req.user.id) { sendError(res, 'Access denied', 403); return; }
 
-  const files = (req as any).files as Express.Multer.File[];
-  if (!files || files.length === 0) { sendError(res, 'No files uploaded', 400); return; }
+  const files = (req as any).files as Express.Multer.File[] | undefined;
+  if (!files || files.length === 0) { sendError(res, 'No files uploaded (field name: "files")', 400); return; }
+  if (existing.attachments.length + files.length > 20) { sendError(res, 'A report can have at most 20 attachments', 400); return; }
 
-  const attachmentUrls = files.map(file => `/uploads/${file.filename}`);
+  // Stored privately; downloaded through GET /:id/attachments/:index after an access check.
+  const keys: string[] = [];
+  for (const file of files) {
+    const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_').slice(-80);
+    const key = `${PRIVATE_PREFIX}/reports/${req.params.id}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${safe}`;
+    await putObject(key, file.buffer, file.mimetype);
+    keys.push(key);
+  }
   const report = await prisma.report.update({
     where: { id: req.params.id },
-    data: { attachments: { push: attachmentUrls } },
+    data: { attachments: { push: keys } },
     select: reportSelect,
   });
-  sendSuccess(res, { attachments: attachmentUrls, report }, 'Attachments uploaded successfully');
+  sendSuccess(res, { attachments: keys, report }, 'Attachments uploaded successfully');
+}));
+
+router.get('/:id/attachments/:index', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const report = await prisma.report.findUnique({ where: { id: req.params.id }, select: { agent_id: true, attachments: true } });
+  if (!report) { sendNotFound(res, 'Report not found'); return; }
+  if (req.user?.role === 'agent' && report.agent_id !== req.user.id) { sendError(res, 'Access denied', 403); return; }
+  const key = report.attachments[parseInt(req.params.index, 10)];
+  if (!key || !key.startsWith(`${PRIVATE_PREFIX}/`)) { sendNotFound(res, 'Attachment not found'); return; }
+  try {
+    const { stream, contentType } = await getPrivateObjectStream(key);
+    res.setHeader('Content-Type', contentType || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${key.split('/').pop()}"`);
+    stream.pipe(res);
+  } catch (error: any) {
+    if (error?.name === 'NoSuchKey' || error?.$metadata?.httpStatusCode === 404) { sendNotFound(res, 'Attachment file is missing'); return; }
+    throw error;
+  }
 }));
 
 export default router;

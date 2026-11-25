@@ -258,8 +258,8 @@ export const validateProfileCreation = [
   
   body('farm_age')
     .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Farm age must be a positive number'),
+    .isInt({ min: 0 })
+    .withMessage('Farm age must be a whole number of years'),
   
   body('planted').optional().isString().trim(),
   body('avocado_type').optional().isString().trim(),
@@ -343,8 +343,8 @@ export const validateProfileUpdate = [
   
   body('farm_age')
     .optional()
-    .isFloat({ min: 0 })
-    .withMessage('Farm age must be a positive number'),
+    .isInt({ min: 0 })
+    .withMessage('Farm age must be a whole number of years'),
   
   body('planted').optional().isString().trim(),
   body('avocado_type').optional().isString().trim(),
@@ -392,7 +392,7 @@ export const validateProductCreation = [
     .trim(),
   
   body('category')
-    .isIn(['irrigation', 'harvesting', 'containers', 'pest-management'])
+    .isIn(['seeds', 'fertilizers', 'tools', 'irrigation', 'harvesting', 'containers', 'pest-management', 'protection', 'produce'])
     .withMessage('Category must be a valid product category'),
   
   body('price')

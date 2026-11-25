@@ -170,9 +170,29 @@ router.post('/', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandl
 
 // PUT /api/farmer-information/me
 router.put('/me', authenticate, authorize('farmer'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const updateData = { ...req.body };
-  delete updateData.farmer_id;
-  delete updateData.user_id;
+  // Only profile fields — never ids or verification_status (admins verify via /:id/verify).
+  const EDITABLE = [
+    'age', 'id_number', 'gender', 'marital_status', 'education_level', 'province', 'district', 'sector', 'cell', 'village',
+    'farm_age', 'planted', 'avocado_type', 'mixed_percentage', 'farm_size', 'tree_count', 'upi_number',
+    'farm_province', 'farm_district', 'farm_sector', 'farm_cell', 'farm_village', 'assistance', 'image',
+  ];
+  const updateData: Record<string, any> = {};
+  for (const k of EDITABLE) if (req.body?.[k] !== undefined) updateData[k] = req.body[k];
+  for (const k of ['age', 'farm_age', 'tree_count'] as const) {
+    if (updateData[k] !== undefined && updateData[k] !== null) {
+      const n = Number(updateData[k]);
+      if (!Number.isInteger(n) || n < 0) { sendError(res, `${k} must be a whole number`, 400); return; }
+      updateData[k] = n;
+    }
+  }
+  for (const k of ['farm_size', 'mixed_percentage'] as const) {
+    if (updateData[k] !== undefined && updateData[k] !== null) {
+      const n = Number(updateData[k]);
+      if (!Number.isFinite(n) || n < 0) { sendError(res, `${k} must be a positive number`, 400); return; }
+      updateData[k] = n;
+    }
+  }
+  if (Object.keys(updateData).length === 0) { sendError(res, 'Nothing to update', 400); return; }
 
   const profile = await prisma.farmerProfile.upsert({
     where: { user_id: req.user!.id },
@@ -192,9 +212,29 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
     return;
   }
 
-  const updateData = { ...req.body };
-  delete updateData.farmer_id;
-  delete updateData.user_id;
+  // Only profile fields — never ids or verification_status (admins verify via /:id/verify).
+  const EDITABLE = [
+    'age', 'id_number', 'gender', 'marital_status', 'education_level', 'province', 'district', 'sector', 'cell', 'village',
+    'farm_age', 'planted', 'avocado_type', 'mixed_percentage', 'farm_size', 'tree_count', 'upi_number',
+    'farm_province', 'farm_district', 'farm_sector', 'farm_cell', 'farm_village', 'assistance', 'image',
+  ];
+  const updateData: Record<string, any> = {};
+  for (const k of EDITABLE) if (req.body?.[k] !== undefined) updateData[k] = req.body[k];
+  for (const k of ['age', 'farm_age', 'tree_count'] as const) {
+    if (updateData[k] !== undefined && updateData[k] !== null) {
+      const n = Number(updateData[k]);
+      if (!Number.isInteger(n) || n < 0) { sendError(res, `${k} must be a whole number`, 400); return; }
+      updateData[k] = n;
+    }
+  }
+  for (const k of ['farm_size', 'mixed_percentage'] as const) {
+    if (updateData[k] !== undefined && updateData[k] !== null) {
+      const n = Number(updateData[k]);
+      if (!Number.isFinite(n) || n < 0) { sendError(res, `${k} must be a positive number`, 400); return; }
+      updateData[k] = n;
+    }
+  }
+  if (Object.keys(updateData).length === 0) { sendError(res, 'Nothing to update', 400); return; }
 
   const profile = await prisma.farmerProfile.upsert({
     where: { user_id: farmerId },

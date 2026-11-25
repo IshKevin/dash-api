@@ -1,6 +1,8 @@
 import { prisma } from '../lib/prisma';
 import logger from '../config/logger';
 import bcrypt from 'bcryptjs';
+import { createShopForManager } from '../utils/profileCreation';
+import { ensureShopSupplier } from '../utils/shopScope';
 
 async function seed() {
   try {
@@ -98,27 +100,28 @@ async function seed() {
       logger.info('Sample farmer created: farmer@dashboardavocado.com / farmer123456');
     }
 
+    // Sample shop manager (independent of product seeding)
+    const shopManagerExists = await prisma.user.findFirst({ where: { role: 'shop_manager' } });
+    if (!shopManagerExists) {
+      const hashedPassword = await bcrypt.hash('shop123456', 12);
+      await prisma.user.create({
+        data: {
+          email: 'shop@dashboardavocado.com',
+          password: hashedPassword,
+          full_name: 'Sample Shop Manager',
+          phone: '+250788654321',
+          role: 'shop_manager',
+          status: 'active',
+        },
+      });
+      logger.info('Sample shop manager created: shop@dashboardavocado.com / shop123456');
+    }
+
     // Create sample products if none exist
     const productCount = await prisma.product.count();
     if (productCount === 0) {
-      const shopManagerExists = await prisma.user.findFirst({ where: { role: 'shop_manager' } });
-      if (!shopManagerExists) {
-        const hashedPassword = await bcrypt.hash('shop123456', 12);
-        await prisma.user.create({
-          data: {
-            email: 'shop@dashboardavocado.com',
-            password: hashedPassword,
-            full_name: 'Sample Shop Manager',
-            phone: '+250788654321',
-            role: 'shop_manager',
-            status: 'active',
-          },
-        });
-        logger.info('Sample shop manager created: shop@dashboardavocado.com / shop123456');
-      }
-
       // Create a sample supplier first
-      let supplier = await prisma.supplier.findFirst();
+      let supplier = await prisma.supplier.findFirst({ where: { is_shop_supplier: false } });
       if (!supplier) {
         supplier = await prisma.supplier.create({
           data: {
@@ -200,7 +203,7 @@ async function seed() {
     // backfill even on databases already seeded before these categories existed)
     const containerProductExists = await prisma.product.findFirst({ where: { sku: 'CONT-PLASTIC-001' } });
     if (!containerProductExists) {
-      const supplier = await prisma.supplier.findFirst();
+      const supplier = await prisma.supplier.findFirst({ where: { is_shop_supplier: false } });
       if (supplier) {
         await prisma.product.createMany({
           data: [
@@ -234,7 +237,7 @@ async function seed() {
 
     const protectionProductExists = await prisma.product.findFirst({ where: { sku: 'PROT-BOOTS-001' } });
     if (!protectionProductExists) {
-      const supplier = await prisma.supplier.findFirst();
+      const supplier = await prisma.supplier.findFirst({ where: { is_shop_supplier: false } });
       if (supplier) {
         await prisma.product.createMany({
           data: [
@@ -274,6 +277,53 @@ async function seed() {
           ],
         });
         logger.info('Protection equipment products created');
+      }
+    }
+
+    // ── Demo shop for the sample shop manager (+ its supplier link and demo products) ──
+    const demoManager = await prisma.user.findUnique({ where: { email: 'shop@dashboardavocado.com' } });
+    if (demoManager) {
+      let demoShop = await prisma.shop.findUnique({ where: { manager_id: demoManager.id } });
+      if (!demoShop) {
+        demoShop = await prisma.$transaction((tx) => createShopForManager(
+          tx,
+          demoManager.id,
+          { ownerName: demoManager.full_name, ownerEmail: demoManager.email, ownerPhone: demoManager.phone || '+250788654321' },
+          {
+            shopName: 'Musha Agro-Inputs Shop',
+            description: 'Demo input-supply shop serving avocado farmers in Rwamagana',
+            province: 'Eastern Province',
+            district: 'Rwamagana',
+          }
+        ));
+        logger.info(`Demo shop #${demoShop.shop_number} created for shop@dashboardavocado.com`);
+      } else {
+        await ensureShopSupplier(prisma, demoShop); // idempotent: guarantees the supplier link exists
+      }
+
+      const demoShopProducts = [
+        {
+          sku: 'SHOP-DEMO-NPK-001', name: 'NPK 17-17-17 Fertilizer (50kg bag)',
+          description: 'General-purpose NPK fertilizer for young avocado trees',
+          price: 42000, category: 'fertilizers' as const, unit: 'bag' as const, quantity: 40, min_stock: 10,
+        },
+        {
+          sku: 'SHOP-DEMO-SPRAY-001', name: 'Knapsack Sprayer 16L',
+          description: 'Manual knapsack sprayer for orchard pest management',
+          price: 28000, category: 'tools' as const, unit: 'piece' as const, quantity: 6, min_stock: 8,
+        },
+      ];
+      for (const p of demoShopProducts) {
+        if (!(await prisma.product.findUnique({ where: { sku: p.sku } }))) {
+          const product = await prisma.product.create({ data: { ...p, supplier_id: demoShop.id, status: 'available' } });
+          await prisma.stockHistory.create({
+            data: {
+              product_id: product.id, shop_id: demoShop.id, previous_quantity: 0, new_quantity: product.quantity,
+              change_amount: product.quantity, reason: 'restock', notes: 'Initial stock (demo seed)', created_by: demoManager.id,
+            },
+          });
+          logger.info(`Demo shop product created: ${p.name}`);
+        }
       }
     }
 

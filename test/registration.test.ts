@@ -81,6 +81,13 @@ describe('Comprehensive registration (in-process, via supertest)', function () {
 
     expect(res.status).to.equal(201);
     createdUserIds.push(res.body.data.user.id);
+    // Staff self-registration waits for an admin: no tokens, account inactive, login refused.
+    expect(res.body.data.pending_approval).to.equal(true);
+    expect(res.body.data.token).to.equal(undefined);
+    expect(res.body.data.user.status).to.equal('inactive');
+    const login = await request(app).post('/api/auth/login').send({ email, password: 'TestPass123!' });
+    expect(login.status).to.equal(401);
+    expect(login.body.message).to.match(/not active yet/);
 
     const profile = await prisma.agentProfile.findUnique({ where: { user_id: res.body.data.user.id } });
     expect(profile).to.not.be.null;
@@ -153,10 +160,12 @@ describe('Comprehensive registration (in-process, via supertest)', function () {
         password: 'TestPass123!',
         full_name: 'Refresh Tester',
         phone: '+250788000006',
-        role: 'agent',
+        role: 'farmer',
+        gender: 'Female',
         province: 'Kigali City',
         district: 'Kicukiro',
-        specialization: 'General',
+        farm_size: 1,
+        avocado_type: 'Hass',
       });
     createdUserIds.push(registerRes.body.data.user.id);
 

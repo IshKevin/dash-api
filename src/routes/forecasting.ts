@@ -68,6 +68,22 @@ router.post(
     if (!forecast_year || predicted_kg === undefined || predicted_kg === null) {
       return sendError(res, 'forecast_year and predicted_kg are required', 400 as any);
     }
+    const year = parseInt(forecast_year, 10);
+    if (!Number.isInteger(year) || year < 2000 || year > new Date().getFullYear() + 10) {
+      return sendError(res, 'forecast_year is not a valid year', 400 as any);
+    }
+    if (!Number.isFinite(Number(predicted_kg)) || Number(predicted_kg) < 0) {
+      return sendError(res, 'predicted_kg must be a positive number', 400 as any);
+    }
+    // A forecast tied to a farm inherits the farm's province/district (needed for regional totals).
+    let farmProvince: string | null = null;
+    let farmDistrict: string | null = null;
+    if (farm_id) {
+      const farm = await prisma.farm.findUnique({ where: { id: String(farm_id) }, select: { location: true } });
+      if (!farm) return sendError(res, 'Farm not found', 404 as any);
+      farmProvince = (farm.location as any)?.province ?? null;
+      farmDistrict = (farm.location as any)?.district ?? null;
+    }
 
     const forecast_number = 'FCST-' + Date.now();
 
@@ -75,8 +91,8 @@ router.post(
       data: {
         forecast_number,
         farm_id: farm_id ?? null,
-        province: province ?? null,
-        district: district ?? null,
+        province: province ?? farmProvince,
+        district: district ?? farmDistrict,
         forecast_year: parseInt(forecast_year, 10),
         forecast_season: forecast_season ?? null,
         predicted_kg: parseFloat(predicted_kg),

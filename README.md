@@ -448,6 +448,34 @@ docker compose down -v              # stop and DELETE database + stored files
 
 ---
 
+## Production checklist
+
+| Setting | Production value | Why |
+|---|---|---|
+| `NODE_ENV` | `production` | JSON logs, no dev-only responses (e.g. activation codes) |
+| `JWT_SECRET` | 32+ random chars (`openssl rand -hex 32`) | The API refuses to start with a weak/default secret |
+| `SEED_DEMO_DATA` | `false` | Demo accounts have publicly known passwords |
+| `S3_SECRET_KEY` / `POSTGRES_PASSWORD` | random values | Defaults are public |
+| `CORS_ORIGIN` | your frontend URL(s), comma-separated | Only these origins may call the API |
+| `PUBLIC_API_URL` / `FRONTEND_URL` | public HTTPS URLs | Image links, emails, QR codes |
+| `TRUST_PROXY` | `1` behind Coolify/Traefik/nginx | Real client IPs for rate limiting |
+| `AUTH_RATE_LIMIT_MAX` | `20` (default) | Login/register/reset/activation attempts per IP per 15 min |
+| `AFRICASTALKING_*` | real credentials | Activation codes are sent by SMS; without them farmers can't activate in production |
+| `RESEND_API_KEY` | real key | Password-reset emails |
+
+Endpoints for the platform: `GET /health` (liveness) and `GET /health/ready` (database + storage reachable, 503 otherwise).
+Logs go to stdout as JSON in production; set `LOG_TO_FILE=true` for rotating files in `logs/`.
+Postgres and SeaweedFS are published on `127.0.0.1` only in `docker-compose.yml`.
+
+### Account activation (farmers created by agents / survey import)
+
+1. `POST /api/auth/verify-phone/send-code { phone: "+2507…" }` — sends a 6-digit SMS code (10 min, 5 attempts, max 3 codes/hour). Same answer whether or not the number exists.
+2. `POST /api/auth/verify-phone { phone, code, email, password }` — sets the login once.
+
+Outside production, when no SMS provider is configured, the response includes `dev_code` so testers can activate accounts.
+
+---
+
 ## Prisma
 
 ```bash

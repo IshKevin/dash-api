@@ -51,15 +51,30 @@ router.get('/', authenticate, validatePagination, asyncHandler(async (req: Authe
   const limit = parseInt(req.query.limit as string) || 20;
 
   const where: any = {};
-  if (req.user?.role === 'admin' && req.query.owner_id) {
-    where.owner_id = req.query.owner_id as string;
+  if (req.user?.role === 'admin') {
+    // Admins see every owner's documents (review queue); owner_id narrows it.
+    if (req.query.owner_id) where.owner_id = req.query.owner_id as string;
+  } else if (req.user?.role === 'agent') {
+    // Agents see their own documents plus those linked to requests assigned to them.
+    where.OR = [{ owner_id: req.user.id }, { service_request: { agent_id: req.user.id } }];
   } else {
     where.owner_id = req.user!.id;
   }
   if (req.query.type) where.type = req.query.type as string;
+  if (req.query.status) {
+    const statuses = ['generated', 'pending_notarization', 'notarized', 'rejected'];
+    if (!statuses.includes(req.query.status as string)) { sendError(res, `status must be one of: ${statuses.join(', ')}`, 400); return; }
+    where.status = req.query.status as string;
+  }
 
   const [documents, total] = await Promise.all([
-    prisma.document.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.document.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: { created_at: 'desc' },
+      include: { owner: { select: { id: true, full_name: true, email: true, phone: true } } },
+    }),
     prisma.document.count({ where }),
   ]);
 
@@ -97,7 +112,14 @@ router.get('/:id/download', authenticate, validateIdParam, asyncHandler(async (r
     return;
   }
 
-  const { stream, contentType } = await getPrivateObjectStream(document.file_key);
+  let file;
+  try {
+    file = await getPrivateObjectStream(document.file_key);
+  } catch (error: any) {
+    if (error?.name === 'NoSuchKey' || error?.$metadata?.httpStatusCode === 404) { sendNotFound(res, 'The file for this document is missing from storage'); return; }
+    throw error;
+  }
+  const { stream, contentType } = file;
   res.setHeader('Content-Type', contentType || document.mimetype);
   res.setHeader('Content-Disposition', `attachment; filename="${document.file_key.split('/').pop()}"`);
   stream.pipe(res);
@@ -150,6 +172,8 @@ router.post('/:id/notarize', authenticate, authorize('agent', 'admin'), validate
   const document = await prisma.document.findUnique({ where: { id: req.params.id } });
   if (!document) { sendNotFound(res, 'Document not found'); return; }
 
+  // Agents may only notarize documents they can access (their assigned service request).
+  if (!(await canAccessDocument(req, document))) { sendError(res, 'Access denied', 403); return; }
   if (!req.file) { sendError(res, 'A notarized document file is required', 400); return; }
 
   const key = buildPrivateKey(req.file.originalname || 'notarized.pdf');

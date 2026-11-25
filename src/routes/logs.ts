@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { authenticate, authorize } from '../middleware/auth';
 import { asyncHandler } from '../middleware/errorHandler';
-import { sendSuccess } from '../utils/responses';
+import { sendSuccess, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
@@ -70,6 +70,16 @@ router.get('/', authenticate, authorize('admin'), asyncHandler(async (req: Authe
   const page = parseInt(req.query.page as string) || 1;
   const where: any = {};
   if (req.query.level) where.level = req.query.level;
+  const from = req.query.start_date ? new Date(req.query.start_date as string) : null;
+  const to = req.query.end_date ? new Date(req.query.end_date as string) : null;
+  if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
+    sendError(res, 'start_date/end_date must be valid dates', 400);
+    return;
+  }
+  if (from || to) where.timestamp = { ...(from && { gte: from }), ...(to && { lte: to }) };
+  if (typeof req.query.search === 'string' && req.query.search.trim()) {
+    where.message = { contains: req.query.search.trim(), mode: 'insensitive' };
+  }
 
   const [logs, total] = await Promise.all([
     prisma.log.findMany({ where, orderBy: { timestamp: 'desc' }, skip: (page - 1) * limit, take: limit }),

@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { resolveBuyer, placeOrderTx } from '../utils/commerce';
 
 const router = Router();
 
@@ -53,8 +54,8 @@ router.post('/items', authenticate, asyncHandler(async (req: AuthenticatedReques
   const user_id = req.user!.id;
   const { product_id, quantity } = req.body;
 
-  if (!product_id || !quantity || quantity < 1) {
-    return sendError(res, 'product_id and a positive quantity are required', 400 as any);
+  if (!product_id || !Number.isInteger(quantity) || quantity < 1) {
+    return sendError(res, 'product_id and a positive integer quantity are required', 400 as any);
   }
 
   const product = await prisma.product.findUnique({ where: { id: product_id } });
@@ -64,9 +65,6 @@ router.post('/items', authenticate, asyncHandler(async (req: AuthenticatedReques
   if (product.status !== 'available') {
     return sendError(res, 'Product is not available', 400 as any);
   }
-  if (product.quantity < quantity) {
-    return sendError(res, `Insufficient stock. Only ${product.quantity} units available`, 400 as any);
-  }
 
   const cart = await prisma.cart.upsert({
     where: { user_id },
@@ -74,6 +72,20 @@ router.post('/items', authenticate, asyncHandler(async (req: AuthenticatedReques
     update: {},
     select: { id: true },
   });
+
+  // Stock must cover what is already in the cart plus what is being added.
+  const existingItem = await prisma.cartItem.findUnique({
+    where: { cart_id_product_id: { cart_id: cart.id, product_id } },
+    select: { quantity: true },
+  });
+  const alreadyInCart = existingItem?.quantity ?? 0;
+  if (alreadyInCart + quantity > product.quantity) {
+    return sendError(
+      res,
+      `Insufficient stock. Only ${product.quantity} units available` + (alreadyInCart ? ` (${alreadyInCart} already in your cart)` : ''),
+      400 as any
+    );
+  }
 
   await prisma.cartItem.upsert({
     where: { cart_id_product_id: { cart_id: cart.id, product_id } },
@@ -111,6 +123,19 @@ router.put('/items/:productId', authenticate, asyncHandler(async (req: Authentic
   });
   if (!item) {
     return sendNotFound(res, 'Item not found in cart');
+  }
+
+  if (quantity > 0) {
+    if (!Number.isInteger(quantity)) {
+      return sendError(res, 'quantity must be an integer', 400 as any);
+    }
+    const product = await prisma.product.findUnique({ where: { id: productId }, select: { quantity: true, status: true } });
+    if (!product || product.status !== 'available') {
+      return sendError(res, 'Product is not available', 400 as any);
+    }
+    if (quantity > product.quantity) {
+      return sendError(res, `Insufficient stock. Only ${product.quantity} units available`, 400 as any);
+    }
   }
 
   if (quantity <= 0) {
@@ -166,21 +191,18 @@ router.delete('/', authenticate, asyncHandler(async (req: AuthenticatedRequest, 
 }));
 
 // POST /api/cart/checkout
+// Body: { shipping_address (required), payment_method?, notes?, customer_id?, farmer_id? }
+//  - customer_id omitted → the order is placed for the caller's own Customer record (found or created).
+//  - farmer_id (agents/admins) → placed for that farmer's Customer; the caller is recorded as Order.placed_by.
 router.post('/checkout', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const user_id = req.user!.id;
-  const { payment_method, shipping_address, notes, customer_id } = req.body;
+  const { payment_method, shipping_address, billing_address, notes } = req.body;
 
   if (!shipping_address) {
     return sendError(res, 'shipping_address is required', 400 as any);
   }
-  if (!customer_id) {
-    return sendError(res, 'customer_id is required', 400 as any);
-  }
 
-  const customer = await prisma.customer.findUnique({ where: { id: customer_id }, select: { email: true } });
-  if (!customer || customer.email.toLowerCase() !== req.user!.email.toLowerCase()) {
-    return sendError(res, 'customer_id must refer to a customer record matching your own account email', 403 as any);
-  }
+  const buyer = await resolveBuyer(req, req.body);
 
   const cart = await prisma.cart.findUnique({
     where: { user_id },
@@ -191,62 +213,20 @@ router.post('/checkout', authenticate, asyncHandler(async (req: AuthenticatedReq
     return sendError(res, 'Cart is empty', 400 as any);
   }
 
-  // Verify all products are available with sufficient stock
-  for (const item of cart.items) {
-    if (item.product.status !== 'available') {
-      return sendError(res, `Product "${item.product.name}" is no longer available`, 400 as any);
-    }
-    if (item.product.quantity < item.quantity) {
-      return sendError(
-        res,
-        `Insufficient stock for "${item.product.name}". Only ${item.product.quantity} units available`,
-        400 as any
-      );
-    }
-  }
-
-  const subtotal = cart.items.reduce((sum, item) => sum + item.quantity * item.product.price, 0);
-  const total = subtotal;
-  const order_number = 'ORD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-
+  // Stock is re-validated and decremented atomically inside the transaction.
   const order = await prisma.$transaction(async (tx) => {
-    const newOrder = await tx.order.create({
-      data: {
-        order_number,
-        customer_id,
-        subtotal,
-        total_amount: total,
-        status: 'pending',
-        payment_method: payment_method || 'cash',
-        shipping_address,
-        notes: notes || null,
-      },
+    const created = await placeOrderTx(tx, {
+      buyer,
+      lines: cart.items.map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
+      shipping_address,
+      billing_address,
+      payment_method,
+      notes: notes || null,
+      taxRate: 0,
+      actorId: user_id,
     });
-
-    await tx.orderItem.createMany({
-      data: cart.items.map((item) => ({
-        order_id: newOrder.id,
-        product_id: item.product_id,
-        product_name: item.product.name,
-        unit_price: item.product.price,
-        quantity: item.quantity,
-        total_price: item.quantity * item.product.price,
-      })),
-    });
-
-    for (const item of cart.items) {
-      await tx.product.update({
-        where: { id: item.product_id },
-        data: { quantity: { decrement: item.quantity } },
-      });
-    }
-
     await tx.cartItem.deleteMany({ where: { cart_id: cart.id } });
-
-    return tx.order.findUnique({
-      where: { id: newOrder.id },
-      include: { items: true },
-    });
+    return created;
   });
 
   return sendCreated(res, { order }, 'Order placed successfully');

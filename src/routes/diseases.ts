@@ -7,6 +7,20 @@ import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
 
+// Reject bad enum values with a 400 instead of letting Prisma throw a 500.
+const SEVERITIES = ['low', 'medium', 'high', 'critical'];
+const CASE_STATUSES = ['active', 'treated', 'resolved', 'monitoring'];
+router.use(['/cases', '/cases/:id'], (req, res, next) => {
+  if (req.method !== 'POST' && req.method !== 'PUT') return next();
+  const { severity, status, affected_trees } = req.body || {};
+  if (severity !== undefined && !SEVERITIES.includes(severity)) return sendError(res as Response, `severity must be one of: ${SEVERITIES.join(', ')}`, 400);
+  if (status !== undefined && !CASE_STATUSES.includes(status)) return sendError(res as Response, `status must be one of: ${CASE_STATUSES.join(', ')}`, 400);
+  if (affected_trees !== undefined && (!Number.isInteger(Number(affected_trees)) || Number(affected_trees) < 0)) {
+    return sendError(res as Response, 'affected_trees must be a whole number', 400);
+  }
+  return next();
+});
+
 // GET /api/diseases/registry
 router.get(
   '/registry',
@@ -428,6 +442,36 @@ router.get(
     };
 
     return sendSuccess(res, stats, 'Disease statistics retrieved successfully');
+  })
+);
+
+// DELETE /api/diseases/cases/:id — remove a case recorded by mistake (admin)
+router.delete(
+  '/cases/:id',
+  authenticate,
+  authorize('admin'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const existing = await prisma.diseaseCase.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!existing) return sendNotFound(res, 'Disease case not found');
+    await prisma.diseaseCase.delete({ where: { id: existing.id } });
+    return sendSuccess(res, null, 'Disease case deleted');
+  })
+);
+
+// DELETE /api/diseases/outbreaks/:id — remove an outbreak declared by mistake (admin).
+// Linked cases are kept and simply unlinked.
+router.delete(
+  '/outbreaks/:id',
+  authenticate,
+  authorize('admin'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const existing = await prisma.diseaseOutbreak.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!existing) return sendNotFound(res, 'Disease outbreak not found');
+    await prisma.$transaction([
+      prisma.diseaseCase.updateMany({ where: { outbreak_id: existing.id }, data: { outbreak_id: null } }),
+      prisma.diseaseOutbreak.delete({ where: { id: existing.id } }),
+    ]);
+    return sendSuccess(res, null, 'Disease outbreak deleted');
   })
 );
 

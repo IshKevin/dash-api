@@ -5,7 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { getManagedShopId } from '../utils/shopScope';
+import { getManagedShopId, requireManagedShop } from '../utils/shopScope';
 
 const router = Router();
 
@@ -15,8 +15,10 @@ router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagina
   const limit = parseInt(req.query.limit as string) || 20;
   const where: any = {};
 
-  if (req.user?.role === 'shop_manager') {
-    where.shop_id = await getManagedShopId(req);
+  const managedShopId = await requireManagedShop(req, res);
+  if (managedShopId === undefined) return;
+  if (managedShopId) {
+    where.shop_id = managedShopId;
   } else if (req.query.shop_id) {
     where.shop_id = req.query.shop_id;
   }
@@ -70,13 +72,19 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
     return;
   }
 
-  const existing = await prisma.customer.findFirst({ where: { email: email.toLowerCase() } });
+  const managedShopId = await requireManagedShop(req, res);
+  if (managedShopId === undefined) return;
+  const resolvedShopId = managedShopId ?? (shop_id || null);
+
+  // Email is unique per shop (the same person may be a customer of several shops,
+  // and also has a platform-level record with shop_id = null created at checkout).
+  const existing = await prisma.customer.findFirst({
+    where: { email: { equals: email, mode: 'insensitive' }, shop_id: resolvedShopId },
+  });
   if (existing) {
-    sendError(res, 'Customer with this email already exists', 409);
+    sendError(res, 'A customer with this email already exists for this shop', 409);
     return;
   }
-
-  const resolvedShopId = req.user?.role === 'shop_manager' ? await getManagedShopId(req) : shop_id;
 
   const customer = await prisma.customer.create({
     data: {
@@ -92,6 +100,9 @@ router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(
 // PUT /api/customers/:id
 router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const existing = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { shop_id: true } });
+  const allowedFields = [
+    'phone', 'address', 'status', 'type', 'company', 'address_details', 'preferences', 'tags', 'notes',
+  ];
   if (!existing) {
     sendNotFound(res, 'Customer not found');
     return;
@@ -101,8 +112,10 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
     return;
   }
 
-  const { email, name, first_name, last_name, shop_id, ...rest } = req.body;
-  const updateData: any = { ...rest, first_name, last_name };
+  const { email, name, first_name, last_name, shop_id } = req.body;
+  // Whitelisted fields only; order statistics (total_orders/total_spent/last_order_date) are server-maintained.
+  const updateData: any = { first_name, last_name };
+  for (const f of allowedFields) if (req.body[f] !== undefined) updateData[f] = req.body[f];
   // shop_managers cannot move a customer to a shop they don't manage
   if (shop_id !== undefined && req.user?.role !== 'shop_manager') {
     updateData.shop_id = shop_id;
@@ -115,11 +128,12 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
   }
 
   if (email) {
+    const targetShopId = updateData.shop_id !== undefined ? updateData.shop_id : existing.shop_id;
     const conflict = await prisma.customer.findFirst({
-      where: { email: email.toLowerCase(), id: { not: req.params.id } },
+      where: { email: { equals: email, mode: 'insensitive' }, shop_id: targetShopId, id: { not: req.params.id } },
     });
     if (conflict) {
-      sendError(res, 'Customer with this email already exists', 409);
+      sendError(res, 'A customer with this email already exists for this shop', 409);
       return;
     }
     updateData.email = email.toLowerCase();
@@ -140,12 +154,16 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
 
 // DELETE /api/customers/:id
 router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const customer = await prisma.customer.delete({ where: { id: req.params.id } }).catch(() => null);
-
+  const customer = await prisma.customer.findUnique({ where: { id: req.params.id }, select: { _count: { select: { orders: true } } } });
   if (!customer) {
     sendNotFound(res, 'Customer not found');
     return;
   }
+  if (customer._count.orders > 0) {
+    sendError(res, `Customer has ${customer._count.orders} order(s); deactivate the customer instead (status: inactive)`, 409);
+    return;
+  }
+  await prisma.customer.delete({ where: { id: req.params.id } });
 
   sendSuccess(res, null, 'Customer deleted successfully');
 }));

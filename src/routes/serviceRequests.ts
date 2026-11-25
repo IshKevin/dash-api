@@ -113,6 +113,11 @@ const validateIPMRoutine = [
 ];
 
 // Build role-based where clause for service requests
+const LIST_INCLUDE = {
+  farmer: { select: { id: true, full_name: true, phone: true, email: true } },
+  agent: { select: { id: true, full_name: true, phone: true } },
+} as const;
+
 function buildRequestWhere(req: AuthenticatedRequest, serviceType?: string): any {
   const where: any = {};
   if (serviceType) where.service_type = serviceType as any;
@@ -127,6 +132,16 @@ function buildRequestWhere(req: AuthenticatedRequest, serviceType?: string): any
   if (req.query.status) where.status = req.query.status as any;
   if (req.query.priority) where.priority = req.query.priority as any;
   if (req.query.escalated === 'true') where.is_escalated = true;
+  const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+  if (search) {
+    where.AND = [{
+      OR: [
+        { request_number: { contains: search, mode: 'insensitive' } },
+        { title: { contains: search, mode: 'insensitive' } },
+        { farmer: { full_name: { contains: search, mode: 'insensitive' } } },
+      ],
+    }];
+  }
 
   return where;
 }
@@ -424,7 +439,7 @@ router.get('/pest-management', authenticate, validatePagination, asyncHandler(as
   const where = buildRequestWhere(req, 'pest_control');
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -438,7 +453,7 @@ router.get('/property-evaluation', authenticate, validatePagination, asyncHandle
   const where = buildRequestWhere(req, 'other');
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -454,7 +469,7 @@ router.get('/harvest/agent/me', authenticate, authorize('agent'), validatePagina
   if (req.query.status) where.status = req.query.status as any;
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -470,7 +485,7 @@ router.get('/harvesting-plan/agent/me', authenticate, authorize('agent'), valida
   if (req.query.status) where.status = req.query.status as any;
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -486,7 +501,7 @@ router.get('/ipm-routine/agent/me', authenticate, authorize('agent'), validatePa
   if (req.query.status) where.status = req.query.status as any;
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -500,7 +515,7 @@ router.get('/harvest', authenticate, validatePagination, asyncHandler(async (req
   const where = buildRequestWhere(req, 'harvest');
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -514,7 +529,7 @@ router.get('/harvesting-plan', authenticate, validatePagination, asyncHandler(as
   const where = buildRequestWhere(req, 'harvesting_plan');
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -528,7 +543,7 @@ router.get('/ipm-routine', authenticate, validatePagination, asyncHandler(async 
   const where = buildRequestWhere(req, 'ipm_routine');
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -542,6 +557,7 @@ router.put('/:id/approve-harvest', authenticate, authorize('admin'), validateIdP
   const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id } });
   if (!existing) { sendNotFound(res, 'Service request not found'); return; }
   if (existing.service_type !== 'harvest') { sendError(res, 'This endpoint is only for harvest requests', 400); return; }
+  if (existing.status !== 'pending') { sendError(res, `Only pending requests can be approved (current: ${existing.status})`, 400); return; }
 
   if (agent_id) {
     const agent = await prisma.user.findFirst({ where: { id: agent_id, role: 'agent', status: 'active' } });
@@ -555,7 +571,8 @@ router.put('/:id/approve-harvest', authenticate, authorize('admin'), validateIdP
   const updated = await prisma.serviceRequest.update({
     where: { id: req.params.id },
     data: {
-      status: 'approved',
+      status: agent_id ? 'assigned' : 'approved',
+      ...(agent_id && { due_date: existing.due_date || computeDueDate(existing.service_type) }),
       approved_at: new Date(),
       approved_by: req.user!.id,
       agent_id: agent_id || existing.agent_id,
@@ -565,6 +582,9 @@ router.put('/:id/approve-harvest', authenticate, authorize('admin'), validateIdP
       harvest_details: harvestDetails,
     },
   });
+
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Approved', 'Your service request has been approved: ' + updated.title);
+  if (agent_id) await notifyAgentAssignment(agent_id, updated.id, updated.title);
 
   sendSuccess(res, updated, 'Harvest request approved successfully');
 }));
@@ -609,6 +629,7 @@ router.put('/:id/approve-harvesting-plan', authenticate, authorize('admin'), val
   const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id } });
   if (!existing) { sendNotFound(res, 'Service request not found'); return; }
   if (existing.service_type !== 'harvesting_plan') { sendError(res, 'This endpoint is only for harvesting plan requests', 400); return; }
+  if (existing.status !== 'pending') { sendError(res, `Only pending requests can be approved (current: ${existing.status})`, 400); return; }
 
   if (agent_id) {
     const agent = await prisma.user.findFirst({ where: { id: agent_id, role: 'agent', status: 'active' } });
@@ -618,7 +639,8 @@ router.put('/:id/approve-harvesting-plan', authenticate, authorize('admin'), val
   const updated = await prisma.serviceRequest.update({
     where: { id: req.params.id },
     data: {
-      status: 'approved',
+      status: agent_id ? 'assigned' : 'approved',
+      ...(agent_id && { due_date: existing.due_date || computeDueDate(existing.service_type) }),
       approved_at: new Date(),
       approved_by: req.user!.id,
       agent_id: agent_id || existing.agent_id,
@@ -627,6 +649,9 @@ router.put('/:id/approve-harvesting-plan', authenticate, authorize('admin'), val
       notes: notes || existing.notes,
     },
   });
+
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Approved', 'Your service request has been approved: ' + updated.title);
+  if (agent_id) await notifyAgentAssignment(agent_id, updated.id, updated.title);
 
   sendSuccess(res, updated, 'Harvesting plan request approved successfully');
 }));
@@ -669,6 +694,7 @@ router.put('/:id/approve-ipm-routine', authenticate, authorize('admin'), validat
   const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id } });
   if (!existing) { sendNotFound(res, 'Service request not found'); return; }
   if (existing.service_type !== 'ipm_routine') { sendError(res, 'This endpoint is only for IPM routine requests', 400); return; }
+  if (existing.status !== 'pending') { sendError(res, `Only pending requests can be approved (current: ${existing.status})`, 400); return; }
 
   if (agent_id) {
     const agent = await prisma.user.findFirst({ where: { id: agent_id, role: 'agent', status: 'active' } });
@@ -678,7 +704,8 @@ router.put('/:id/approve-ipm-routine', authenticate, authorize('admin'), validat
   const updated = await prisma.serviceRequest.update({
     where: { id: req.params.id },
     data: {
-      status: 'approved',
+      status: agent_id ? 'assigned' : 'approved',
+      ...(agent_id && { due_date: existing.due_date || computeDueDate(existing.service_type) }),
       approved_at: new Date(),
       approved_by: req.user!.id,
       agent_id: agent_id || existing.agent_id,
@@ -689,6 +716,9 @@ router.put('/:id/approve-ipm-routine', authenticate, authorize('admin'), validat
   });
 
   await generateIPMFormDocument(updated);
+
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Approved', 'Your service request has been approved: ' + updated.title);
+  if (agent_id) await notifyAgentAssignment(agent_id, updated.id, updated.title);
 
   sendSuccess(res, updated, 'IPM routine request approved successfully');
 }));
@@ -731,6 +761,7 @@ router.put('/:id/approve-pest-management', authenticate, authorize('admin'), val
   const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id } });
   if (!existing) { sendNotFound(res, 'Service request not found'); return; }
   if (existing.service_type !== 'pest_control') { sendError(res, 'This endpoint is only for pest management requests', 400); return; }
+  if (existing.status !== 'pending') { sendError(res, `Only pending requests can be approved (current: ${existing.status})`, 400); return; }
 
   if (agent_id) {
     const agent = await prisma.user.findFirst({ where: { id: agent_id, role: 'agent', status: 'active' } });
@@ -740,7 +771,8 @@ router.put('/:id/approve-pest-management', authenticate, authorize('admin'), val
   const updated = await prisma.serviceRequest.update({
     where: { id: req.params.id },
     data: {
-      status: 'approved',
+      status: agent_id ? 'assigned' : 'approved',
+      ...(agent_id && { due_date: existing.due_date || computeDueDate(existing.service_type) }),
       approved_at: new Date(),
       approved_by: req.user!.id,
       agent_id: agent_id || existing.agent_id,
@@ -749,6 +781,9 @@ router.put('/:id/approve-pest-management', authenticate, authorize('admin'), val
       notes: notes || existing.notes,
     },
   });
+
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Approved', 'Your service request has been approved: ' + updated.title);
+  if (agent_id) await notifyAgentAssignment(agent_id, updated.id, updated.title);
 
   sendSuccess(res, updated, 'Pest management request approved successfully');
 }));
@@ -791,6 +826,7 @@ router.put('/:id/approve-property-evaluation', authenticate, authorize('admin'),
   const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id } });
   if (!existing) { sendNotFound(res, 'Service request not found'); return; }
   if (existing.service_type !== 'other') { sendError(res, 'This endpoint is only for property evaluation requests', 400); return; }
+  if (existing.status !== 'pending') { sendError(res, `Only pending requests can be approved (current: ${existing.status})`, 400); return; }
 
   if (agent_id) {
     const agent = await prisma.user.findFirst({ where: { id: agent_id, role: 'agent', status: 'active' } });
@@ -800,7 +836,8 @@ router.put('/:id/approve-property-evaluation', authenticate, authorize('admin'),
   const updated = await prisma.serviceRequest.update({
     where: { id: req.params.id },
     data: {
-      status: 'approved',
+      status: agent_id ? 'assigned' : 'approved',
+      ...(agent_id && { due_date: existing.due_date || computeDueDate(existing.service_type) }),
       approved_at: new Date(),
       approved_by: req.user!.id,
       agent_id: agent_id || existing.agent_id,
@@ -809,6 +846,9 @@ router.put('/:id/approve-property-evaluation', authenticate, authorize('admin'),
       notes: notes || existing.notes,
     },
   });
+
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Approved', 'Your service request has been approved: ' + updated.title);
+  if (agent_id) await notifyAgentAssignment(agent_id, updated.id, updated.title);
 
   sendSuccess(res, updated, 'Property evaluation request approved successfully');
 }));
@@ -951,7 +991,7 @@ router.get('/farmer/:farmerId', authenticate, authorize('admin', 'agent', 'farme
   if (req.query.service_type) where.service_type = req.query.service_type as any;
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -972,7 +1012,7 @@ router.get('/agent/:agentId', authenticate, authorize('admin', 'agent'), validat
   if (req.query.service_type) where.service_type = req.query.service_type as any;
 
   const [requests, total] = await Promise.all([
-    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),
+    prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
     prisma.serviceRequest.count({ where }),
   ]);
 
@@ -1065,7 +1105,30 @@ router.put('/:id/reject', authenticate, authorize('admin'), validateIdParam, asy
     },
   });
 
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Rejected', `Your service request "${updated.title}" was rejected: ${rejection_reason}`);
   sendSuccess(res, updated, 'Service request rejected');
+}));
+
+// PUT /api/service-requests/:id/claim — an agent takes an unassigned, approved/pending request.
+router.put('/:id/claim', authenticate, authorize('agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  // Atomic: only succeeds if nobody else claimed it in the meantime.
+  const claimed = await prisma.serviceRequest.updateMany({
+    where: { id: req.params.id, agent_id: null, status: { in: ['pending', 'approved'] } },
+    data: { agent_id: req.user!.id, status: 'assigned' },
+  });
+  if (claimed.count === 0) {
+    const existing = await prisma.serviceRequest.findUnique({ where: { id: req.params.id }, select: { agent_id: true, status: true } });
+    if (!existing) { sendNotFound(res, 'Service request not found'); return; }
+    sendError(res, existing.agent_id ? 'This request already has an agent' : `Cannot claim a request with status "${existing.status}"`, 409);
+    return;
+  }
+  const updated = await prisma.serviceRequest.findUniqueOrThrow({ where: { id: req.params.id }, include: LIST_INCLUDE });
+  if (!updated.due_date) {
+    await prisma.serviceRequest.update({ where: { id: updated.id }, data: { due_date: computeDueDate(updated.service_type) } });
+  }
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Agent Assigned', `${updated.agent?.full_name ?? 'An agent'} will handle your service request: ${updated.title}`);
+  await notifyAllAdmins('info', 'Request claimed', `${updated.agent?.full_name ?? 'An agent'} claimed ${updated.request_number}`, updated.id).catch(() => undefined);
+  sendSuccess(res, updated, 'Request claimed — it is now assigned to you');
 }));
 
 // PUT /api/service-requests/:id/assign
@@ -1132,6 +1195,7 @@ router.put('/:id/start', authenticate, authorize('admin', 'agent'), validateIdPa
     },
   });
 
+  await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Work Started', 'Work has started on your service request: ' + updated.title);
   sendSuccess(res, updated, 'Service request started');
 }));
 
@@ -1172,6 +1236,9 @@ router.put('/:id/cancel', authenticate, authorize('admin', 'agent', 'farmer'), v
     },
   });
 
+  if (req.user?.id !== updated.farmer_id) {
+    await notifyFarmerServiceUpdate(updated.farmer_id, updated.id, 'Service Request Cancelled', 'Your service request was cancelled: ' + updated.title);
+  }
   sendSuccess(res, updated, 'Service request cancelled');
 }));
 

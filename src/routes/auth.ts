@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { prisma } from '../lib/prisma';
 import { emailService } from '../services/emailService';
 import { smsService } from '../services/smsService';
+import { notifyAllAdmins } from '../utils/notificationService';
 import { documentService } from '../services/documentService';
 import { generateToken, generateRefreshToken, verifyRefreshToken } from '../utils/jwt';
 import { generateQRToken } from '../utils/accessKey';
@@ -72,6 +73,8 @@ async function generateAndEmailRegistrationDocuments(user: { id: string; email: 
 
 const router = Router();
 
+const STAFF_ROLES = ['agent', 'shop_manager'];
+
 // POST /api/auth/register
 router.post('/register', validateComprehensiveRegistration, asyncHandler(async (req: Request, res: Response) => {
   const { email, password, full_name, phone, role, ...profileFields } = req.body;
@@ -93,6 +96,9 @@ router.post('/register', validateComprehensiveRegistration, asyncHandler(async (
         phone,
         role: role as any,
         credentials_claimed: true,
+        // Agents and shop managers see other people's data, so self-registered
+        // staff accounts wait for an admin to activate them.
+        status: STAFF_ROLES.includes(role) ? 'inactive' : 'active',
       },
       select: { id: true, email: true, full_name: true, role: true, status: true },
     });
@@ -118,6 +124,21 @@ router.post('/register', validateComprehensiveRegistration, asyncHandler(async (
 
     return created;
   });
+
+  if (user.status !== 'active') {
+    await notifyAllAdmins(
+      'warning',
+      'New account awaiting approval',
+      `${user.full_name} registered as ${String(user.role).replace('_', ' ')} (${user.email}). Activate the account if this person is genuine.`
+    ).catch(() => undefined);
+    await generateAndEmailRegistrationDocuments({ id: user.id, email: user.email, full_name: user.full_name, role: user.role, phone });
+    sendCreated(
+      res,
+      { pending_approval: true, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role as any, status: user.status } },
+      'Registration received. An administrator will activate your account before you can sign in.'
+    );
+    return;
+  }
 
   const token = generateToken({ id: user.id, email: user.email, role: user.role as any });
   const refreshToken = generateRefreshToken({ id: user.id, email: user.email, role: user.role as any });
@@ -175,8 +196,9 @@ router.post('/verify-phone/send-code', asyncHandler(async (req: Request, res: Re
   const sms = await smsService.send(phone, `Your Avocado Society of Rwanda activation code is ${code}. It expires in 10 minutes. Do not share it.`);
 
   // Without an SMS provider (local/staging) expose the code so testers can activate.
-  const exposeCode = !sms.sent && env.NODE_ENV !== 'production';
-  if (!sms.sent && env.NODE_ENV === 'production') {
+  // ALLOW_TEST_OTP=true lets a production-mode test/staging stack show the code; never set it on the real deployment.
+  const exposeCode = !sms.sent && (env.NODE_ENV !== 'production' || process.env.ALLOW_TEST_OTP === 'true');
+  if (!sms.sent && env.NODE_ENV === 'production' && !exposeCode) {
     logger.error(`Activation SMS to ${phone} failed: ${sms.error}`);
   }
   sendSuccess(res, { sent: true, ...(exposeCode ? { dev_code: code } : {}) }, GENERIC_SENT);
@@ -288,7 +310,7 @@ router.post('/login', validateUserLogin, asyncHandler(async (req: Request, res: 
   }
 
   if (user.status !== 'active') {
-    sendError(res, 'Account is inactive', 401);
+    sendError(res, 'Your account is not active yet. Staff accounts are activated by an administrator — please contact the Avocado Society of Rwanda.', 401);
     return;
   }
 

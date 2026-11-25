@@ -59,8 +59,27 @@ router.get('/:key', authenticate, adminOnly, asyncHandler(async (req: Authentica
 }));
 
 // POST /api/settings
+
+const SETTING_TYPES = ['string', 'number', 'boolean', 'json'];
+/** Returns an error message, or null when `value` is valid for `type`. */
+function settingValueError(value: unknown, type: string): string | null {
+  if (typeof value !== 'string') return 'value must be a string (encode numbers/booleans/JSON as text)';
+  if (type === 'number' && (value.trim() === '' || !Number.isFinite(Number(value)))) return 'value must be a number';
+  if (type === 'boolean' && !['true', 'false'].includes(value)) return 'value must be "true" or "false"';
+  if (type === 'json') { try { JSON.parse(value); } catch { return 'value must be valid JSON'; } }
+  return null;
+}
+
 router.post('/', authenticate, adminOnly, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { key, value, description, category, data_type, is_editable } = req.body;
+  if (typeof key !== 'string' || !/^[a-z][a-z0-9_.]{1,63}$/.test(key)) {
+    sendError(res, 'key must be 2–64 characters: lowercase letters, digits, "_" or "." (starting with a letter)', 400);
+    return;
+  }
+  const type = data_type ?? 'string';
+  if (!SETTING_TYPES.includes(type)) { sendError(res, `data_type must be one of: ${SETTING_TYPES.join(', ')}`, 400); return; }
+  const valueErr = settingValueError(value, type);
+  if (valueErr) { sendError(res, valueErr, 400); return; }
 
   const existing = await prisma.systemSetting.findUnique({ where: { key } });
   if (existing) {
@@ -100,6 +119,8 @@ router.put('/:key', authenticate, adminOnly, asyncHandler(async (req: Authentica
     sendError(res, 'This setting is read-only', 400);
     return;
   }
+  const valueErr = settingValueError(value, setting.data_type);
+  if (valueErr) { sendError(res, valueErr, 400); return; }
 
   const updated = await prisma.systemSetting.update({
     where: { key: req.params.key },

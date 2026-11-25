@@ -8,6 +8,20 @@ import { AuthenticatedRequest } from '../types/auth';
 
 const router = Router();
 
+// Fields a client may set on create/update. id, rating, total_orders and is_shop_supplier are server-managed.
+const SUPPLIER_WRITABLE_FIELDS = [
+  'name', 'contact_person', 'phone', 'website', 'address', 'business_license', 'tax_id',
+  'bank_details', 'payment_terms', 'products_supplied', 'services_offered', 'delivery_areas', 'notes',
+] as const;
+
+function pickSupplierFields(body: any) {
+  const data: any = {};
+  for (const f of SUPPLIER_WRITABLE_FIELDS) {
+    if (body?.[f] !== undefined) data[f] = body[f];
+  }
+  return data;
+}
+
 // GET /api/suppliers
 router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagination, asyncHandler(async (req: Request, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
@@ -16,6 +30,8 @@ router.get('/', authenticate, authorize('admin', 'shop_manager'), validatePagina
 
   if (req.query.category) where.category = req.query.category as any;
   if (req.query.status) where.status = req.query.status as any;
+  // Rows that back a shop (Supplier.id === Shop.id) are hidden from the directory unless asked for.
+  if (req.query.include_shops !== 'true') where.is_shop_supplier = false;
 
   if (req.query.search) {
     const s = req.query.search as string;
@@ -50,7 +66,7 @@ router.get('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdP
 }));
 
 // POST /api/suppliers
-router.post('/', authenticate, authorize('admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.post('/', authenticate, authorize('admin', 'shop_manager'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const {
     name, category, contact_person, email, phone, website, address,
     business_license, tax_id, bank_details, status, rating, payment_terms,
@@ -62,7 +78,7 @@ router.post('/', authenticate, authorize('admin'), asyncHandler(async (req: Auth
     return;
   }
 
-  const existing = await prisma.supplier.findFirst({ where: { email: email.toLowerCase() } });
+  const existing = await prisma.supplier.findFirst({ where: { email: email.toLowerCase(), is_shop_supplier: false } });
   if (existing) {
     sendError(res, 'Supplier with this email already exists', 409);
     return;
@@ -72,8 +88,9 @@ router.post('/', authenticate, authorize('admin'), asyncHandler(async (req: Auth
     data: {
       name, category: category as any, contact_person, email: email.toLowerCase(), phone, website,
       address, business_license, tax_id, bank_details,
-      status: (status || 'pending_approval') as any,
-      rating: rating || 0, payment_terms,
+      // Only admins can set a status other than pending_approval on creation.
+      status: (req.user?.role === 'admin' ? (status || 'pending_approval') : 'pending_approval') as any,
+      rating: req.user?.role === 'admin' ? (rating || 0) : 0, payment_terms,
       products_supplied: products_supplied || [],
       services_offered: services_offered || [],
       delivery_areas: delivery_areas || [],
@@ -95,8 +112,8 @@ router.put('/bulk', authenticate, authorize('admin'), asyncHandler(async (req: A
 
   const results = await Promise.all(suppliers.map((supplier: any) => {
     if (!supplier.id) return null;
-    const { id, email, category, status, ...rest } = supplier;
-    const updateData: any = { ...rest };
+    const { id, email, category, status } = supplier;
+    const updateData: any = pickSupplierFields(supplier);
     if (email) updateData.email = email.toLowerCase();
     if (category) updateData.category = category as any;
     if (status) updateData.status = status as any;
@@ -109,13 +126,28 @@ router.put('/bulk', authenticate, authorize('admin'), asyncHandler(async (req: A
 }));
 
 // PUT /api/suppliers/:id
-router.put('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { email, category, status, ...rest } = req.body;
-  const updateData: any = { ...rest };
+router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const { email, category, status } = req.body;
+  const updateData: any = pickSupplierFields(req.body);
+
+  const current = await prisma.supplier.findUnique({ where: { id: req.params.id }, select: { is_shop_supplier: true, status: true } });
+  if (!current) {
+    sendNotFound(res, 'Supplier not found');
+    return;
+  }
+  if (current.is_shop_supplier) {
+    sendError(res, 'This supplier record belongs to a shop; edit the shop profile instead', 409);
+    return;
+  }
+  // Approval/suspension is an admin decision.
+  if (status && status !== current.status && req.user?.role !== 'admin') {
+    sendError(res, 'Only admins can change a supplier\'s status', 403);
+    return;
+  }
 
   if (email) {
     const conflict = await prisma.supplier.findFirst({
-      where: { email: email.toLowerCase(), id: { not: req.params.id } },
+      where: { email: email.toLowerCase(), id: { not: req.params.id }, is_shop_supplier: false },
     });
     if (conflict) {
       sendError(res, 'Supplier with this email already exists', 409);
@@ -141,12 +173,26 @@ router.put('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandl
 
 // DELETE /api/suppliers/:id
 router.delete('/:id', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const supplier = await prisma.supplier.delete({ where: { id: req.params.id } }).catch(() => null);
+  const supplier = await prisma.supplier.findUnique({
+    where: { id: req.params.id },
+    select: { is_shop_supplier: true, _count: { select: { products: true, purchase_orders: true, evaluations: true } } },
+  });
 
   if (!supplier) {
     sendNotFound(res, 'Supplier not found');
     return;
   }
+  if (supplier.is_shop_supplier) {
+    sendError(res, 'This supplier record belongs to a shop and is removed with the shop', 409);
+    return;
+  }
+  const refs = Object.entries(supplier._count).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k.replace('_', ' ')}`);
+  if (refs.length) {
+    sendError(res, `Supplier is still referenced by ${refs.join(', ')}; deactivate it instead (status: inactive)`, 409);
+    return;
+  }
+
+  await prisma.supplier.delete({ where: { id: req.params.id } });
 
   sendSuccess(res, null, 'Supplier deleted successfully');
 }));

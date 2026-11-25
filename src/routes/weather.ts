@@ -1,44 +1,59 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
 import { asyncHandler } from '../middleware/errorHandler';
+import { authenticate } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import {
+  getWeather,
+  geocodeRwanda,
+  farmRecommendations,
+  legacyCurrent,
+  WeatherUnavailableError,
+} from '../services/weatherProvider';
 
+// Live weather (Open-Meteo). Responses keep the old string fields
+// (temperature "23°C" …) and add numeric ones plus `source`.
 const router = Router();
+const SOURCE = 'open-meteo';
 
-const mockWeatherData: Record<string, any> = {
-  Kigali: { temperature: '24°C', humidity: '65%', rainfall: '2mm', wind_speed: '15 km/h', conditions: 'Partly Cloudy' },
-  Huye: { temperature: '22°C', humidity: '70%', rainfall: '5mm', wind_speed: '12 km/h', conditions: 'Light Rain' },
-  Musanze: { temperature: '20°C', humidity: '75%', rainfall: '8mm', wind_speed: '18 km/h', conditions: 'Overcast' },
+const unavailable = (res: Response, error: unknown) => {
+  if (error instanceof WeatherUnavailableError) {
+    sendError(res, error.message, 503);
+    return true;
+  }
+  return false;
 };
-
-const defaultWeather = { temperature: '23°C', humidity: '68%', rainfall: '3mm', wind_speed: '14 km/h', conditions: 'Partly Cloudy' };
 
 router.get('/current', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { location } = req.query;
   if (!location) { sendError(res, 'Location parameter is required', 400); return; }
-  const weatherData = mockWeatherData[location as string] || defaultWeather;
-  sendSuccess(res, { location, ...weatherData, timestamp: new Date().toISOString() }, 'Current weather retrieved successfully');
+  try {
+    const place = await geocodeRwanda(String(location));
+    const { current } = await getWeather(place.lat, place.lng, 1);
+    sendSuccess(res, { location, resolved_location: place.resolved, source: SOURCE, ...legacyCurrent(current), current, timestamp: new Date().toISOString() }, 'Current weather retrieved successfully');
+  } catch (error) {
+    if (!unavailable(res, error)) throw error;
+  }
 }));
 
 router.get('/forecast', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { location, days = 7 } = req.query;
+  const { location } = req.query;
+  const days = Math.min(Math.max(parseInt(String(req.query.days ?? '7'), 10) || 7, 1), 16);
   if (!location) { sendError(res, 'Location parameter is required', 400); return; }
-
-  const forecast = [];
-  for (let i = 0; i < Number(days); i++) {
-    const date = new Date();
-    date.setDate(date.getDate() + i);
-    forecast.push({
-      date: date.toISOString().split('T')[0],
-      temperature: `${24 + Math.floor(Math.random() * 6) - 3}°C`,
-      humidity: `${60 + Math.floor(Math.random() * 20)}%`,
-      rainfall: `${Math.floor(Math.random() * 10)}mm`,
-      conditions: ['Sunny', 'Partly Cloudy', 'Cloudy', 'Light Rain'][Math.floor(Math.random() * 4)],
-    });
+  try {
+    const place = await geocodeRwanda(String(location));
+    const { daily } = await getWeather(place.lat, place.lng, days);
+    const forecast = daily.map((d) => ({
+      ...d,
+      temperature: `${Math.round(d.temp_min_c)}–${Math.round(d.temp_max_c)}°C`,
+      humidity: d.humidity_pct !== null ? `${Math.round(d.humidity_pct)}%` : '—',
+      rainfall: `${Math.round(d.rainfall_mm * 10) / 10}mm`,
+    }));
+    sendSuccess(res, { location, resolved_location: place.resolved, source: SOURCE, forecast, generated_at: new Date().toISOString() }, 'Weather forecast retrieved successfully');
+  } catch (error) {
+    if (!unavailable(res, error)) throw error;
   }
-  sendSuccess(res, { location, forecast, generated_at: new Date().toISOString() }, 'Weather forecast retrieved successfully');
 }));
 
 router.get('/farm-conditions', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
@@ -47,45 +62,54 @@ router.get('/farm-conditions', authenticate, asyncHandler(async (req: Authentica
 
   const farm = await prisma.farm.findUnique({ where: { id: farm_id as string } });
   if (!farm) { sendError(res, 'Farm not found', 404); return; }
-
-  const role = req.user?.role;
-  if (role === 'farmer' && farm.farmer_id !== req.user?.id) {
+  if (req.user?.role === 'farmer' && farm.farmer_id !== req.user?.id) {
     sendError(res, 'Access denied: this farm does not belong to you', 403);
     return;
   }
 
   const loc = (farm.location as any) || {};
-  const weatherData = mockWeatherData[loc.district] || mockWeatherData.Kigali!;
-  const temp = parseInt(weatherData.temperature);
-  const humidity = parseInt(weatherData.humidity);
-  const rainfall = parseInt(weatherData.rainfall);
+  try {
+    // Exact farm GPS when known, otherwise the farm's district.
+    const point = farm.latitude !== null && farm.longitude !== null
+      ? { lat: farm.latitude, lng: farm.longitude, resolved: 'farm GPS location' }
+      : await geocodeRwanda(loc.district || loc.province || 'Kigali');
+    const { current, daily } = await getWeather(point.lat, point.lng, 7);
 
-  const recommendations: string[] = [];
-  if (temp > 25) recommendations.push('Consider providing shade for young trees');
-  if (humidity > 70) recommendations.push('Monitor for fungal diseases');
-  if (rainfall < 2) recommendations.push('Consider irrigation in 2 days');
-  else if (rainfall > 10) recommendations.push('Ensure proper drainage');
-  if (temp >= 20 && temp <= 25 && rainfall < 5) recommendations.push('Good conditions for harvesting');
-
-  sendSuccess(res, {
-    farm_id: farm.id,
-    farm_name: farm.farmName,
-    location: `${loc.sector || ''}, ${loc.district || ''}`.replace(/^, /, ''),
-    current_conditions: { ...weatherData, soil_moisture: `${45 + Math.floor(Math.random() * 20)}%`, rainfall_today: weatherData.rainfall },
-    recommendations,
-  }, 'Farm weather conditions retrieved successfully');
+    sendSuccess(res, {
+      farm_id: farm.id,
+      farm_name: farm.farmName,
+      location: [loc.sector, loc.district].filter(Boolean).join(', ') || point.resolved,
+      weather_point: point.resolved,
+      source: SOURCE,
+      current_conditions: {
+        ...legacyCurrent(current),
+        soil_moisture: current.soil_moisture_pct !== null ? `${current.soil_moisture_pct}%` : '—',
+        rainfall_today: `${Math.round((daily[0]?.rainfall_mm ?? current.rainfall_mm) * 10) / 10}mm`,
+        observed_at: current.observed_at,
+      },
+      current,
+      forecast: daily,
+      recommendations: farmRecommendations(current, daily),
+    }, 'Farm weather conditions retrieved successfully');
+  } catch (error) {
+    if (!unavailable(res, error)) throw error;
+  }
 }));
 
 router.post('/multi-location', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { locations } = req.body;
   if (!locations || !Array.isArray(locations)) { sendError(res, 'Locations array is required', 400); return; }
-
-  const weatherResults = locations.map((location: string) => ({
-    location,
-    ...(mockWeatherData[location] || defaultWeather),
-    timestamp: new Date().toISOString(),
-  }));
-  sendSuccess(res, weatherResults, 'Multi-location weather retrieved successfully');
+  if (locations.length > 30) { sendError(res, 'At most 30 locations', 400); return; }
+  try {
+    const results = await Promise.all(locations.map(async (location: string) => {
+      const place = await geocodeRwanda(String(location));
+      const { current } = await getWeather(place.lat, place.lng, 1);
+      return { location, resolved_location: place.resolved, source: SOURCE, ...legacyCurrent(current), current, timestamp: new Date().toISOString() };
+    }));
+    sendSuccess(res, results, 'Multi-location weather retrieved successfully');
+  } catch (error) {
+    if (!unavailable(res, error)) throw error;
+  }
 }));
 
 export default router;

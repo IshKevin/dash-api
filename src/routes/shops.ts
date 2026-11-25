@@ -5,6 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { ensureShopSupplier } from '../utils/shopScope';
 
 const router = Router();
 
@@ -77,18 +78,23 @@ function parseShopNumber(param: string | undefined): number | null {
 router.post('/addshop', authenticate, authorize('admin'), validateShopCreation, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { shopName, description, province, district, ownerName, ownerEmail, ownerPhone } = req.body;
 
-  const shop = await prisma.shop.create({
-    data: {
-      shopName,
-      description,
-      province,
-      district,
-      ownerName,
-      ownerEmail,
-      ownerPhone,
-      created_by: req.user!.id,
-    },
-    include: { creator: { select: { full_name: true, email: true } } },
+  // The shop and its backing Supplier row (same id) are created atomically.
+  const shop = await prisma.$transaction(async (tx) => {
+    const created = await tx.shop.create({
+      data: {
+        shopName,
+        description,
+        province,
+        district,
+        ownerName,
+        ownerEmail,
+        ownerPhone,
+        created_by: req.user!.id,
+      },
+      include: { creator: { select: { full_name: true, email: true } } },
+    });
+    await ensureShopSupplier(tx, created);
+    return created;
   });
 
   sendCreated(res, shop, 'Shop created successfully');
@@ -166,18 +172,40 @@ router.put('/:id', authenticate, authorize('admin', 'shop_manager'), validateSho
 
   const { shopName, description, province, district, ownerName, ownerEmail, ownerPhone } = req.body;
 
-  const updated = await prisma.shop.update({
-    where: { shop_number: shopNumber },
-    data: {
-      ...(shopName    !== undefined && { shopName }),
-      ...(description !== undefined && { description }),
-      ...(province    !== undefined && { province }),
-      ...(district    !== undefined && { district }),
-      ...(ownerName   !== undefined && { ownerName }),
-      ...(ownerEmail  !== undefined && { ownerEmail }),
-      ...(ownerPhone  !== undefined && { ownerPhone }),
-    },
-    include: { creator: { select: { full_name: true, email: true } } },
+  // Admins can (re)assign the shop manager; null unassigns.
+  let managerChange: { manager_id: string | null } | undefined;
+  if (req.body.manager_id !== undefined) {
+    if (req.user?.role !== 'admin') { sendError(res, 'Only admins can change the shop manager', 403); return; }
+    if (req.body.manager_id === null || req.body.manager_id === '') {
+      managerChange = { manager_id: null };
+    } else {
+      const manager = await prisma.user.findFirst({ where: { id: String(req.body.manager_id), role: 'shop_manager' }, include: { shop_managed: { select: { shop_number: true } } } });
+      if (!manager) { sendError(res, 'manager_id must be an existing shop manager', 400); return; }
+      if (manager.shop_managed && manager.shop_managed.shop_number !== shopNumber) {
+        sendError(res, 'This manager already runs another shop', 409); return;
+      }
+      managerChange = { manager_id: manager.id };
+    }
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const shop = await tx.shop.update({
+      where: { shop_number: shopNumber },
+      data: {
+        ...(shopName    !== undefined && { shopName }),
+        ...(description !== undefined && { description }),
+        ...(province    !== undefined && { province }),
+        ...(district    !== undefined && { district }),
+        ...(ownerName   !== undefined && { ownerName }),
+        ...(ownerEmail  !== undefined && { ownerEmail }),
+        ...(ownerPhone  !== undefined && { ownerPhone }),
+        ...(managerChange ?? {}),
+      },
+      include: { creator: { select: { full_name: true, email: true } } },
+    });
+    // Keep the shop's backing Supplier row in sync (name/contact details).
+    await ensureShopSupplier(tx, shop);
+    return shop;
   });
 
   sendSuccess(res, updated, 'Shop updated successfully');
@@ -206,7 +234,22 @@ router.delete('/:id', authenticate, authorize('admin', 'shop_manager'), asyncHan
     return;
   }
 
-  await prisma.shop.delete({ where: { shop_number: shopNumber } });
+  const productCount = await prisma.product.count({ where: { supplier_id: existing.id } });
+  if (productCount > 0) {
+    sendError(res, `Shop has ${productCount} product(s) in its catalogue; discontinue or reassign them before deleting the shop`, 409);
+    return;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.purchaseOrder.updateMany({ where: { shop_id: existing.id }, data: { shop_id: null } });
+    await tx.customer.updateMany({ where: { shop_id: existing.id }, data: { shop_id: null } });
+    // Remove the backing supplier row unless something (e.g. purchase orders) still references it.
+    const refs = await tx.purchaseOrder.count({ where: { supplier_id: existing.id } })
+      + await tx.supplierEvaluation.count({ where: { supplier_id: existing.id } });
+    if (refs === 0) await tx.supplier.deleteMany({ where: { id: existing.id, is_shop_supplier: true } });
+    else await tx.supplier.updateMany({ where: { id: existing.id }, data: { status: 'inactive' } });
+    await tx.shop.delete({ where: { shop_number: shopNumber } });
+  });
 
   sendSuccess(res, existing, 'Shop deleted successfully');
 }));
@@ -358,7 +401,7 @@ router.get('/:id/inventory', authenticate, authorize('admin', 'shop_manager'), a
   const page  = parseInt(req.query.page  as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
 
-  // Products are linked to Supplier records. The shop's CUID id is used as the supplier_id.
+  // Every shop has a backing Supplier row with the same id, so its products have supplier_id = shop.id.
   const where = { supplier_id: shop.id };
 
   const [products, total] = await Promise.all([
@@ -397,23 +440,40 @@ router.get('/:id/orders', authenticate, authorize('admin', 'shop_manager'), asyn
     return;
   }
 
-  // Collect all product IDs for this shop
-  const shopProducts = await prisma.product.findMany({
-    where: { supplier_id: shop.id },
-    select: { id: true },
-  });
-
-  if (shopProducts.length === 0) {
-    sendPaginatedResponse(res, [], 0, 1, 20, 'No products found for this shop, so no orders.');
-    return;
-  }
-
-  const productIds = shopProducts.map(p => p.id);
-
   const page  = parseInt(req.query.page  as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
 
-  const where = { items: { some: { product_id: { in: productIds } } } };
+  // Optional filters: status, from, to (order_date range, ISO dates), search (order number / customer name / email)
+  const where: any = { items: { some: { product: { supplier_id: shop.id } } } };
+  if (req.query.status) {
+    const statuses = String(req.query.status).split(',').map((x) => x.trim()).filter(Boolean);
+    const valid = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'returned'];
+    if (statuses.some((x) => !valid.includes(x))) {
+      sendError(res, 'Invalid status filter', 400);
+      return;
+    }
+    where.status = { in: statuses };
+  }
+  for (const [key, op] of [['from', 'gte'], ['to', 'lte']] as const) {
+    if (req.query[key]) {
+      const d = new Date(String(req.query[key]));
+      if (isNaN(d.getTime())) {
+        sendError(res, `Invalid ${key} date`, 400);
+        return;
+      }
+      // a bare date for "to" includes that whole day
+      if (key === 'to' && /^\d{4}-\d{2}-\d{2}$/.test(String(req.query[key]))) d.setUTCHours(23, 59, 59, 999);
+      where.order_date = { ...(where.order_date || {}), [op]: d };
+    }
+  }
+  if (req.query.search) {
+    const q = String(req.query.search);
+    where.OR = [
+      { order_number: { contains: q, mode: 'insensitive' } },
+      { customer: { name: { contains: q, mode: 'insensitive' } } },
+      { customer: { email: { contains: q, mode: 'insensitive' } } },
+    ];
+  }
 
   const [orders, total] = await Promise.all([
     prisma.order.findMany({
@@ -455,7 +515,7 @@ router.get('/:id/analytics', authenticate, authorize('admin', 'shop_manager'), a
   // Fetch all products for the shop
   const shopProducts = await prisma.product.findMany({
     where: { supplier_id: shop.id },
-    select: { id: true, quantity: true },
+    select: { id: true, quantity: true, min_stock: true },
   });
 
   const productIds = shopProducts.map(p => p.id);
@@ -484,7 +544,7 @@ router.get('/:id/analytics', authenticate, authorize('admin', 'shop_manager'), a
     totalOrders:       orders.length,
     totalSales,
     totalRevenue,
-    lowStockProducts:  shopProducts.filter(p => p.quantity > 0 && p.quantity <= 10).length,
+    lowStockProducts:  shopProducts.filter(p => p.quantity > 0 && p.quantity <= (p.min_stock ?? 10)).length,
     outOfStockProducts: shopProducts.filter(p => p.quantity === 0).length,
   };
 
