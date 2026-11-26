@@ -281,7 +281,7 @@ router.post(
       return sendSuccess(res, result, `Imported ${result.created_farmers} new and ${result.linked_farmers} existing farmers`);
     }
     commitBatch(batch.id).catch(async (error) => {
-      await prisma.surveyImportBatch.update({ where: { id: batch.id }, data: { status: 'failed' } }).catch(() => undefined);
+      await prisma.surveyImportBatch.updateMany({ where: { id: batch.id }, data: { status: 'failed' } }).catch(() => undefined);
       logger.error(`Background import ${batch.id} failed: ${error?.message}`);
     });
     return res.status(202).json({

@@ -426,6 +426,8 @@ After that, the dashboard shows a "Complete your profile" checklist with everyth
 | GET | `/farmers` | Admin, Agent | Farmers with activation state (filters `status=pending|activated, invited, has_phone, batch_id, district, search`, paginated) |
 | POST | `/invites` | Admin, Agent | SMS an activation invite. Body `{ farmer_ids?, batch_id?, district?, resend=false, dry_run=false }`. Without `farmer_ids`, every matching farmer not yet activated (and not yet invited) who has a phone. `dry_run` returns the count. Returns 503 when SMS is not configured |
 | GET | `/invites/status` | Admin, Agent | Progress of the running invitation job |
+| GET | `/farmers/:id` | Admin, Agent | A farmer's account and profile fields that staff can complete |
+| PATCH | `/farmers/:id` | Admin, Agent | Staff add a missing phone (one number per account), national ID, gender, age, home and farm location. After the farmer activates, staff can only fill empty fields |
 | GET | `/me` | Farmer | Profile completeness: percent, missing items and where they belong |
 
 Agents only see and invite farmers inside their assigned territory. The SMS link is `${FRONTEND_URL}/activate`, so set `FRONTEND_URL` to the public web address.
@@ -453,6 +455,51 @@ Saving land data (`PUT /farms/:id`) returns these checks as `warnings`, plus ove
 If RAB or the NLA later grants API access, plug it into the registry connector below.
 
 **Rwanda land registry (LAIS):** there is no public API. The connector in `src/services/landRegistry.ts` stays disabled until you obtain access from the National Land Authority (NLA/RLMUA) and set `LAND_REGISTRY_API_URL` and `LAND_REGISTRY_API_KEY`. The response format it expects is documented in that file; adjust `mapRegistryResponse()` to the real contract. Until then, UPIs are checked by format and by their province and district codes, and parcels are captured by drawing on the map.
+
+### Geography: official divisions, boundaries and per-area statistics — `/api/geography`
+
+Rwanda's official divisions and boundaries ship with the API as data files in `src/data/rwanda/`; nothing is fetched at runtime. Regenerate them with `scripts/build-rwanda-geo.js`.
+- **Names:** the `rwanda` package (5 provinces, 30 districts, 416 sectors, 2,148 cells, 14,837 villages).
+- **Shapes:** [geoBoundaries](https://www.geoboundaries.org) gbOpen RWA ADM1–ADM4, from the Rwanda Geo Portal / Open Data Rwanda. The licence is **CC BY 4.0**, so keep the attribution wherever the shapes are shown.
+
+All 30 districts and 416 sectors are matched to official names. 6 of 2,148 cells keep their boundary-file name.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/sync` | Admin | Fill the province → village tables with the official divisions. Idempotent |
+| GET | `/boundaries/:level` | Any auth | GeoJSON for `province`, `district`, `sector` or `cell`. Sector and cell can be limited with `?district=`, and cells require it |
+| GET | `/locate?lat=&lng=` | Any auth | Province, district, sector and cell of a GPS point |
+| GET | `/stats?level=district\|sector&district=` | Admin, Agent | Per area: farmers, activated farmers, farms, trees, hectares, farms on the map or with a boundary, and farms whose GPS point lies outside their recorded area. Agents see their territory only |
+
+The boundaries are also used to:
+- Check every farm's map location against its recorded district and sector (land issue `outside_recorded_area`), and the UPI's district (`upi_elsewhere`).
+- Fill a missing district, sector or cell from GPS during Excel import, and flag rows whose GPS point is in another district.
+
+### Facilities from OpenStreetMap — `/api/facilities/osm/*`
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| POST | `/osm/search` | Admin | `{ types[], district? }` → named places from OpenStreetMap (Overpass API), each placed in its official district and sector, and flagged when already in the directory. Nothing is saved |
+| POST | `/osm/import` | Admin | `{ items[] }` → save the picked places (`source='osm'`, `external_id` prevents duplicates). The district always comes from the boundaries, never from the client |
+
+Searchable types and the OSM tags they come from:
+- `market`: `amenity=marketplace`
+- `sacco_bank`: banks, microfinance, financial offices
+- `input_supplier`: `shop=agrarian`, `farm`, `garden_centre`
+- `government_office`: `office=government`, `amenity=townhall`
+- `airport`: `aeroway=aerodrome`
+- `nursery`: `landuse=plant_nursery`
+- `cold_storage`
+
+In Rwanda, OpenStreetMap covers markets, banks, offices and airfields well. Collection centres, cold rooms and packhouses are rarely mapped, so enter those by hand. The data is ODbL: keep "© OpenStreetMap contributors". Set `OVERPASS_API_URL` to use another Overpass server.
+
+### Field agents (VBAs) only see their own area
+
+A VBA's territory (set by an admin) limits every farmer-related list and record they can reach. That covers farmers, activation, farms, land and land issues, surveys, harvest lots, disease cases, forecasts, visits, membership cards, QR access and geography statistics. In addition:
+- Excel import batches are visible only to the VBA who uploaded them.
+- Pending farmers are visible only to the VBA who registered them.
+
+A VBA with no territory sees no farmers.
 
 ### Farm map — `/api/map`
 

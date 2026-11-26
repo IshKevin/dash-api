@@ -51,7 +51,31 @@ export interface ImportResult {
   new_accounts: { row_number: number; farmer_id: string; name: string; phone: string | null }[];
 }
 
-const CHECKPOINT_EVERY = 25;
+/** Rows per checkpoint, and rows imported in parallel inside one. */
+const CHUNK = 200;
+const PARALLEL = 8;
+
+/** Rows linked by a shared national ID, phone, matched account or UPI (union-find), in file order. */
+function groupBySamePerson(rows: StoredRow[]): StoredRow[][] {
+  const parent = rows.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const firstByKey = new Map<string, number>();
+  rows.forEach((r, i) => {
+    const keys = [r.data.national_id && `nid:${r.data.national_id}`, !r.drop_phone && farmerPhoneOf(r.data) && `tel:${farmerPhoneOf(r.data)}`, r.match && `id:${r.match.farmer_id}`, r.data.upi && `upi:${r.data.upi}`];
+    for (const k of keys.filter(Boolean) as string[]) {
+      const j = firstByKey.get(k);
+      if (j === undefined) firstByKey.set(k, i);
+      else parent[find(i)] = find(j);
+    }
+  });
+  const groups = new Map<number, StoredRow[]>();
+  rows.forEach((r, i) => {
+    const g = find(i);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push(r);
+  });
+  return [...groups.values()];
+}
 const MAX_LISTED = 2000;
 /** Batches up to this size are imported inside the request; bigger ones in the background. */
 export const SYNC_COMMIT_MAX_ROWS = 300;
@@ -430,29 +454,48 @@ export async function commitBatch(batchId: string): Promise<ImportResult | null>
       existing.forEach((e) => done.add(`${(e.raw as any)?._sheet ?? ''}#${e.row_number}`));
     }
 
+    // updateMany returns only a count: update() would send back the whole batch,
+    // including the stored spreadsheet rows (tens of MB), on every checkpoint.
     const checkpoint = (progress: number, status?: 'committed' | 'failed') =>
-      prisma.surveyImportBatch.update({
+      prisma.surveyImportBatch.updateMany({
         where: { id: batchId },
         data: { progress, result: result as unknown as Prisma.InputJsonValue, ...(status ? { status } : {}) },
       });
 
-    for (let i = batch.progress; i < rows.length; i++) {
-      const row = rows[i];
-      if (row.errors.length) result.skipped_invalid++;
-      else if (row.skip) result.skipped_duplicates++;
-      else {
-        if (!done.has(`${row.sheet ?? ''}#${row.row_number}`)) {
-          try {
-            await prisma.$transaction((tx) => importRow(tx, row, ctx), { timeout: 20000 });
-          } catch (error: any) {
-            logger.error(`Import ${batchId} ${rowLabel(row)} failed: ${error?.message}`);
-            if (result.failed.length < MAX_LISTED) {
-              result.failed.push({ row_number: row.row_number, sheet: row.sheet, error: error?.message?.split('\n').pop() || 'Unknown error' });
-            }
-          }
+    const importOne = async (row: StoredRow) => {
+      if (done.has(`${row.sheet ?? ''}#${row.row_number}`)) return;
+      try {
+        await prisma.$transaction((tx) => importRow(tx, row, ctx), { timeout: 30000 });
+      } catch (error: any) {
+        logger.error(`Import ${batchId} ${rowLabel(row)} failed: ${error?.message}`);
+        if (result.failed.length < MAX_LISTED) {
+          result.failed.push({ row_number: row.row_number, sheet: row.sheet, error: error?.message?.split('\n').pop() || 'Unknown error' });
         }
       }
-      if ((i + 1) % CHECKPOINT_EVERY === 0) await checkpoint(i + 1);
+    };
+
+    // Chunks run one after another (checkpoint after each, so a restart redoes at
+    // most one chunk). Inside a chunk, rows that may be the same person — same
+    // national ID or same phone — form one group handled in order; separate
+    // groups run in parallel. Duplicate accounts are therefore impossible.
+    for (let start = batch.progress; start < rows.length; start += CHUNK) {
+      const chunk = rows.slice(start, start + CHUNK);
+      const work: StoredRow[] = [];
+      for (const row of chunk) {
+        if (row.errors.length) result.skipped_invalid++;
+        else if (row.skip) result.skipped_duplicates++;
+        else work.push(row);
+      }
+      const groups = groupBySamePerson(work);
+      let next = 0;
+      const worker = async () => {
+        while (next < groups.length) {
+          const group = groups[next++];
+          for (const row of group) await importOne(row);
+        }
+      };
+      await Promise.all(Array.from({ length: PARALLEL }, worker));
+      await checkpoint(Math.min(start + CHUNK, rows.length));
     }
 
     const imported = result.created_farmers + result.linked_farmers + result.surveys;

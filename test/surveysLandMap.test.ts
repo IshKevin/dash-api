@@ -211,7 +211,7 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
     });
 
     it('validates and decodes a UPI', async () => {
-      const ok = await request(app).get('/api/land/upi').query({ upi: '5/3/04/02/' + uniq }).set('Authorization', `Bearer ${existingFarmer.token}`);
+      const ok = await request(app).get('/api/land/upi').query({ upi: '5/3/04/02/1' + uniq }).set('Authorization', `Bearer ${existingFarmer.token}`);
       expect(ok.status).to.equal(200);
       expect(ok.body.data.parsed.district).to.equal('Gatsibo');
       expect(ok.body.data.registry.status).to.equal('disabled');
@@ -223,9 +223,9 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       const d = 0.000898;
       const ring = [[30.45, -1.6], [30.45 + d, -1.6], [30.45 + d, -1.6 + d], [30.45, -1.6 + d]];
       const res = await request(app).put(`/api/land/farms/${farmId}`).set('Authorization', `Bearer ${existingFarmer.token}`)
-        .send({ upi: '5/03/04/02/' + uniq, parcel_boundary: { type: 'Polygon', coordinates: [ring] }, land_use: 'Agriculture' });
+        .send({ upi: '5/03/04/02/1' + uniq, parcel_boundary: { type: 'Polygon', coordinates: [ring] }, land_use: 'Agriculture' });
       expect(res.status, JSON.stringify(res.body)).to.equal(200);
-      expect(res.body.data.upi).to.equal('5/03/04/02/' + uniq);
+      expect(res.body.data.upi).to.equal('5/03/04/02/1' + uniq);
       expect(res.body.data.parcel_area_sqm).to.be.within(9500, 10500);
       expect(res.body.data.parcel_boundary.coordinates[0]).to.have.length(5); // ring closed
       expect(res.body.data.land_source).to.equal('map');
@@ -248,7 +248,7 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       const forbidden = await request(app).put(`/api/land/farms/${other.id}`).set('Authorization', `Bearer ${existingFarmer.token}`).send({ land_use: 'x' });
       expect(forbidden.status).to.equal(403);
 
-      const dup = await request(app).put(`/api/land/farms/${other.id}`).set('Authorization', `Bearer ${agent.token}`).send({ upi: '5/03/04/02/' + uniq });
+      const dup = await request(app).put(`/api/land/farms/${other.id}`).set('Authorization', `Bearer ${agent.token}`).send({ upi: '5/03/04/02/1' + uniq });
       expect(dup.status).to.equal(409);
 
       const mismatch = await request(app).put(`/api/land/farms/${other.id}`).set('Authorization', `Bearer ${agent.token}`).send({ upi: '5/03/04/02/9' + uniq });

@@ -21,7 +21,7 @@ const uniq = Date.now().toString().slice(-6);
 const nid = (n: number) => `11985800${uniq}${String(n).padStart(2, '0')}`;
 const local = (n: number) => `072${uniq}${n}`; // 0 + 9 digits, as typed in the register
 const intl = (n: number) => `+25072${uniq}${n}`;
-const upiA = `5/05/10/01/${uniq}`;
+const upiA = `5/05/10/01/1${uniq}`; // never a leading 0 (UPIs drop it)
 
 const HEADER = ['No', 'id', 'firstname', 'lastname', 'telephone', 'age', 'idnumber', 'province', 'district', 'sector', 'cell', 'village',
   'farm_province', 'farm_district', 'farm_sector', 'farm_cell', 'farm_village', 'farm_age', 'planted', 'avocadotype', 'mixedpercentage',
