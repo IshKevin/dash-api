@@ -101,8 +101,8 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       const d = res.body.data;
       batchId = d.batch_id;
       expect(d.total_rows).to.equal(6);
-      expect(d.error_rows).to.equal(3); // no consent, no district, duplicate NID
-      expect(d.valid_rows).to.equal(3);
+      expect(d.error_rows).to.equal(2); // no consent, no district
+      expect(d.valid_rows).to.equal(4);
       expect(d.matched_existing).to.equal(1);
       expect(d.new_farmers).to.equal(2);
       expect(d.columns.unrecognized).to.deep.equal([]);
@@ -110,7 +110,9 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       expect(byName('Existing Mukamana').match.farmer_id).to.equal(existingFarmer.id);
       expect(byName('Existing Mukamana').warnings.join(' ')).to.match(/swapped/);
       expect(byName('No Consent').errors.join(' ')).to.match(/consent/);
-      expect(byName('Uwimana Claudine (again)').errors.join(' ')).to.match(/Duplicate national_id/);
+      // same national ID twice in a survey = one farmer (e.g. two plots): a warning, not an error
+      expect(byName('Uwimana Claudine (again)').errors).to.deep.equal([]);
+      expect(byName('Uwimana Claudine (again)').warnings.join(' ')).to.match(/Same national ID/);
       expect(byName('Uwimana Claudine').phone).to.equal(`+250${phoneLocal(1)}`);
     });
 
@@ -121,10 +123,10 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       const res = await request(app).post(`/api/surveys/import/batches/${batchId}/commit`).set('Authorization', `Bearer ${admin.token}`).send({});
       expect(res.status, JSON.stringify(res.body)).to.equal(200);
       const r = res.body.data;
-      expect(r.surveys).to.equal(3);
+      expect(r.surveys).to.equal(4);
       expect(r.created_farmers).to.equal(2);
-      expect(r.linked_farmers).to.equal(1);
-      expect(r.skipped_invalid).to.equal(3);
+      expect(r.linked_farmers).to.equal(2); // existing farmer + the repeated national ID
+      expect(r.skipped_invalid).to.equal(2);
       expect(r.failed).to.deep.equal([]);
 
       const again = await request(app).post(`/api/surveys/import/batches/${batchId}/commit`).set('Authorization', `Bearer ${admin.token}`);
@@ -180,11 +182,11 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
     it('lists, filters, analyses and exports surveys', async () => {
       const list = await request(app).get(`/api/surveys?batch_id=${batchId}&district=Gatsibo`).set('Authorization', `Bearer ${agent.token}`);
       expect(list.status).to.equal(200);
-      expect(list.body.data).to.have.length(2);
+      expect(list.body.data).to.have.length(3);
 
       const a = await request(app).get(`/api/surveys/analytics?batch_id=${batchId}`).set('Authorization', `Bearer ${agent.token}`);
       expect(a.status).to.equal(200);
-      expect(a.body.data.totals.surveys).to.equal(3);
+      expect(a.body.data.totals.surveys).to.equal(4);
       expect(a.body.data.totals.hass_trees).to.equal(110);
       expect(a.body.data.sex.female).to.equal(2);
       expect(a.body.data.rates.uses_fertilizer).to.deep.equal({ yes: 1, answered: 1, pct: 100 });
@@ -198,7 +200,7 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
         .buffer(true).parse((r, cb) => { const c: Buffer[] = []; r.on('data', (x: Buffer) => c.push(x)); r.on('end', () => cb(null, Buffer.concat(c))); });
       expect(exp.status).to.equal(200);
       const rows = XLSX.utils.sheet_to_json(XLSX.read(exp.body as Buffer, { type: 'buffer' }).Sheets.Surveys);
-      expect(rows).to.have.length(3);
+      expect(rows).to.have.length(4);
     });
   });
 
@@ -227,7 +229,9 @@ describe('Survey import, land/UPI and farm map (in-process)', function () {
       expect(res.body.data.parcel_area_sqm).to.be.within(9500, 10500);
       expect(res.body.data.parcel_boundary.coordinates[0]).to.have.length(5); // ring closed
       expect(res.body.data.land_source).to.equal('map');
-      expect(res.body.data.warnings).to.deep.equal([]);
+      // the farm's GPS point (from the survey) is ~1 km west of this boundary: flagged
+      expect(res.body.data.warnings.join(' ')).to.match(/outside the drawn boundary/);
+      expect(res.body.data.checks.map((c: any) => c.code)).to.include('point_outside_boundary');
     });
 
     it('rejects a boundary outside Rwanda, another farmer, and duplicate UPIs', async () => {

@@ -10,6 +10,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendCreated, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { env } from '../config/environment';
+import { normalizePhoneForStorage } from '../utils/phone';
 
 const router = Router();
 
@@ -63,7 +64,7 @@ router.post('/', authenticate, authorize('admin', 'agent'), validatePendingFarme
   }
 
   const pendingFarmer = await prisma.pendingFarmer.create({
-    data: { full_name, email: normalizedEmail, phone, created_by: req.user!.id },
+    data: { full_name, email: normalizedEmail, phone: normalizePhoneForStorage(phone) ?? phone, created_by: req.user!.id },
   });
 
   sendCreated(res, pendingFarmer, 'Farmer added successfully');

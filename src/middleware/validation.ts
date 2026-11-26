@@ -74,6 +74,7 @@ export const validateUserRegistration = [
 
 export const validateComprehensiveRegistration = [
   body('email')
+    .optional({ values: 'falsy' })
     .isEmail()
     .withMessage('Please provide a valid email address')
     .normalizeEmail(),
@@ -138,6 +139,7 @@ export const validateVerifyPhone = [
     .trim(),
 
   body('email')
+    .optional({ values: 'falsy' })
     .isEmail()
     .withMessage('Please provide a valid email address')
     .normalizeEmail(),
@@ -151,11 +153,21 @@ export const validateVerifyPhone = [
   validate
 ];
 
+// validator ships with express-validator; it has no bundled types.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const normalizeEmailAddress: (email: string) => string | false = require('validator').normalizeEmail;
+
 export const validateUserLogin = [
+  // Email address, or a phone number for farmers who sign in by phone.
   body('email')
-    .isEmail()
-    .withMessage('Please provide a valid email address')
-    .normalizeEmail(),
+    .if(body('phone').not().exists())
+    .trim()
+    .notEmpty()
+    .withMessage('Enter your email or phone number')
+    .custom((v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) || /^[+\d][\d\s\-()]{7,}$/.test(v))
+    .withMessage('Enter a valid email address or phone number')
+    // Emails are stored normalised (see registration); phone numbers pass through.
+    .customSanitizer((v: string) => (v.includes('@') ? normalizeEmailAddress(v) || v : v)),
   
   body('password')
     .notEmpty()

@@ -368,34 +368,67 @@ Every harvest is recorded as a **lot** with a unique code (`AVO-YYYYMMDD-XXXXXX`
 | DELETE | `/api/harvest-lots/:id` | Farmer (own, recorded only), Admin | Delete |
 | GET | `/api/traceability/:lotCode` | **Public** | Origin & quality for a scanned lot — no farmer name/phone, buyer or price |
 
-### Farmer Surveys (Excel import) — `/api/surveys`
+### Farmer import from Excel — `/api/surveys`
 
-Baseline field-survey data (one row per farmer interview). Upload the spreadsheet,
-review a validated preview, then commit. Every original column is kept in
-`FarmSurvey.raw`; the commonly analysed answers are typed columns.
+Brings farmers into the system from the ASR spreadsheets. Upload a workbook,
+review a validated preview, then commit. Two layouts are recognised automatically:
+
+- **Field survey** (`ASR FARMERS - 24 DISTRICTS…`): one row per farm interview, with
+  "owner of the farm", national_id, phones, location, GPS and production answers. Each
+  row is also stored as a `FarmSurvey` record (every original column kept in `raw`).
+- **ASR member register** (`ASR - Farmer Database…`): firstname, lastname, telephone,
+  idnumber, home location, `farm_province…farm_village`, farmsize, tree-count,
+  upi-number and assistance. This layout creates accounts, profiles and farms only.
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/template` | Admin, Agent | Empty .xlsx with the expected columns |
-| POST | `/import/preview` | Admin, Agent | Upload .xlsx/.xls/.csv (`file`, ≤5,000 rows) → validation report, farmer matching (national ID, then phone). Nothing is imported yet |
+| GET | `/template` | Admin, Agent | Empty survey .xlsx with the expected columns |
+| POST | `/import/preview` | Admin, Agent | Upload .xlsx/.xls/.csv (`file`, ≤25,000 rows, every sheet; or only `sheet`) → validation report, duplicate merging, farmer matching. Nothing is imported yet |
 | GET | `/import/batches` | Admin, Agent | Previous imports |
-| GET | `/import/batches/:id` | Admin, Agent | Preview rows (`filter=errors|warnings|all`) |
-| POST | `/import/batches/:id/commit` | Admin | Import valid rows: link/create farmer accounts, profiles, farms (with GPS), survey records. Body `{ create_accounts=true, update_profiles=true }`. Runs once per batch |
-| GET | `/` | Admin, Agent | List (filters: `province, district, sector, sex, batch_id, has_location, linked, search`) |
+| GET | `/import/batches/:id` | Admin, Agent | Batch detail and rows (`filter=errors|warnings|duplicates|all`) |
+| GET | `/import/batches/:id/status` | Admin, Agent | Commit progress only, cheap to poll |
+| POST | `/import/batches/:id/commit` | Admin | Import: link/create farmer accounts, profiles, farms (GPS + UPI) and survey records. Body `{ create_accounts=true, update_profiles=true }`. ≤300 rows finish in the request (200); larger batches run in the background (202, poll `/status`), checkpoint every 25 rows and resume after a restart. A batch that stopped part-way can be committed again to resume |
+| GET | `/` | Admin, Agent | List survey records (filters: `province, district, sector, sex, batch_id, has_location, linked, search`) |
 | GET | `/analytics` | Admin, Agent | Indicators: demographics, adoption rates, trees, production, top challenges/channels/credit sources |
 | GET | `/export` | Admin, Agent | Filtered surveys as .xlsx |
 | GET | `/:id` | Admin, Agent | Full record incl. raw columns |
 | DELETE | `/:id` | Admin | Delete a survey record |
 
-What the importer does with messy spreadsheets:
-- It recognises both "Province/District" pairs: the first is the enumerator's area, the second is the farm's.
-- It normalises phones to `+2507…`, reads y/n/yes/no/yego/oya, dd/mm/yyyy and Excel dates, and canonicalises province and district names, including Kinyarwanda province names.
-- It fixes swapped lat/long, drops coordinates outside Rwanda, and treats farm areas over 100 as m² (converted to hectares).
-- It warns when a 16-digit national ID was stored as a number, because Excel truncates those.
+How the importer handles messy spreadsheets:
+- **Sheets.** Every sheet is read. The header row may be anywhere in the first 15 rows. A sheet pasted without a header row is read with the previous sheet's columns. Sheets that are not data (e.g. Excel's "Compatibility Report") are skipped.
+- **Location.** District decides the province. Misspellings such as "Nothern Province" and Kinyarwanda names are understood. The farm location comes from the row, never from the sheet name (several district sheets contain farms from other districts).
+- **People.**
+  - Phones are normalised to `+2507…`.
+  - Only real 16-digit national IDs are used. Placeholders like `0` or truncated numbers are ignored, so they can never merge different people.
+  - Placeholder birth dates (1970-01-01) and impossible dates are dropped.
+- **Duplicates.**
+  - In the member register, a member listed on several sheets is merged into one row.
+  - In a survey, the same national ID on several rows is one farmer with several plots: one account, one farm per village.
+- **Shared phones.** The activation code goes to the phone, so a number may belong to only one farmer. When the same number is given for different people (an enumerator's or farm manager's number), the first person keeps it. The others are created without a phone and listed under "No usable phone" on the activation page.
+- **UPIs.** Every valid UPI is extracted from free text ("UPI 5/07/13/02/2010; UPI …"). The first goes on the farm and the others into its notes. Text that is not a UPI is reported. A UPI already registered to another farmer is not copied.
+- **Other columns.** y/n/yes/no/yego/oya, dd/mm/yyyy and Excel dates are read. Swapped lat/long is fixed, points outside Rwanda are dropped, and areas over 100 are treated as m². Varieties are normalised ("bivanze" means Hass + Fuerte), and assistance answers become codes (Imihingire → training, Ubujyanama → advisory, Inguzanyo → credit).
 
-Rows without consent, without a name or without a district, and duplicate national IDs, are skipped.
+Rows without consent, without a name or without a district are skipped. Re-importing the same file links the farmers already created instead of duplicating them.
 
-Imported farmers get an account with a placeholder email (`credentials_claimed=false`). They activate it in the app ("Activate your account", which calls `POST /api/auth/verify-phone`) using the phone number from the survey.
+### Farmer activation — `/api/activation`
+
+Imported farmers get an account with no usable password (`credentials_claimed=false`, placeholder email). Each farmer activates it themselves:
+1. Staff send an invitation SMS from **Farmer Activation** in the dashboard, or the farmer just opens `/activate`.
+2. The farmer enters their phone number and receives a 6-digit code by SMS.
+3. The farmer chooses a password, and optionally adds an email.
+4. They sign in with their **phone number** (or email) and password.
+
+After that, the dashboard shows a "Complete your profile" checklist with everything still missing.
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/summary` | Admin, Agent | Counts: activated, can activate (has phone), no usable phone, invited (filters `batch_id, district, search`) |
+| GET | `/farmers` | Admin, Agent | Farmers with activation state (filters `status=pending|activated, invited, has_phone, batch_id, district, search`, paginated) |
+| POST | `/invites` | Admin, Agent | SMS an activation invite. Body `{ farmer_ids?, batch_id?, district?, resend=false, dry_run=false }`. Without `farmer_ids`, every matching farmer not yet activated (and not yet invited) who has a phone. `dry_run` returns the count. Returns 503 when SMS is not configured |
+| GET | `/invites/status` | Admin, Agent | Progress of the running invitation job |
+| GET | `/me` | Farmer | Profile completeness: percent, missing items and where they belong |
+
+Agents only see and invite farmers inside their assigned territory. The SMS link is `${FRONTEND_URL}/activate`, so set `FRONTEND_URL` to the public web address.
 
 ### Land parcels & UPI — `/api/land`
 
@@ -406,6 +439,18 @@ Imported farmers get an account with a placeholder email (`credentials_claimed=f
 | GET | `/farms/:farmId` | Admin, Agent, Farmer (own) | Land details of a farm |
 | PUT | `/farms/:farmId` | Admin, Agent, Farmer (own) | Set `upi`, `latitude/longitude`, `parcel_boundary` (GeoJSON Polygon, must be in Rwanda; area computed), `land_use`, `land_tenure`. Clears verification |
 | POST | `/farms/:farmId/verify` | Admin, Agent | Stamp as verified after a field visit; fills gaps from the registry when connected |
+
+| GET | `/issues` | Admin, Agent | Farms whose land data needs work, with counts per issue: `upi_without_boundary`, `not_on_map`, `point_outside_boundary` (GPS point >100 m outside the boundary), `area_mismatch` (boundary area vs declared farm size off by 2×), `far_from_district` (>40 km from the UPI's or address's district) |
+
+Saving land data (`PUT /farms/:id`) returns these checks as `warnings`, plus overlaps with other farms' boundaries (more than 5% of the area).
+
+**Getting accurate parcel maps (RwaSIS).** RAB's RwaSIS portal (https://rwasis.rab.gov.rw/portal) shows the parcel for a UPI. It has no API that other systems are authorised to use, so this backend never calls it. Instead, the dashboard's land editor gives users these tools:
+- A "See this parcel on RwaSIS" link that copies the UPI to paste into the portal's search.
+- Tracing the parcel on the satellite map, with draggable corners.
+- **Walk the boundary**: record each corner with the phone's GPS. Readings worse than ±25 m are refused.
+- Importing a GeoJSON or KML boundary exported from a GPS app or Google Earth.
+
+If RAB or the NLA later grants API access, plug it into the registry connector below.
 
 **Rwanda land registry (LAIS):** there is no public API. The connector in `src/services/landRegistry.ts` stays disabled until you obtain access from the National Land Authority (NLA/RLMUA) and set `LAND_REGISTRY_API_URL` and `LAND_REGISTRY_API_KEY`. The response format it expects is documented in that file; adjust `mapRegistryResponse()` to the real contract. Until then, UPIs are checked by format and by their province and district codes, and parcels are captured by drawing on the map.
 
@@ -470,7 +515,7 @@ Postgres and SeaweedFS are published on `127.0.0.1` only in `docker-compose.yml`
 ### Account activation (farmers created by agents / survey import)
 
 1. `POST /api/auth/verify-phone/send-code { phone: "+2507…" }` — sends a 6-digit SMS code (10 min, 5 attempts, max 3 codes/hour). Same answer whether or not the number exists.
-2. `POST /api/auth/verify-phone { phone, code, email, password }` — sets the login once.
+2. `POST /api/auth/verify-phone { phone, code, password, email? }` — sets the login once. The phone may be typed in any common format. Email is optional: farmers sign in with `POST /api/auth/login { email: "<email or phone>", password }`.
 
 Outside production, when no SMS provider is configured, the response includes `dev_code` so testers can activate accounts.
 

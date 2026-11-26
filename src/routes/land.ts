@@ -6,7 +6,9 @@ import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { canAccessFarmer } from '../utils/agentScope';
-import { parseUpi, ringAreaSqm, ringCentroid, canonicalDistrict } from '../services/rwandaGeo';
+import { parseUpi, ringAreaSqm, ringCentroid, canonicalDistrict, distanceToRingM, ringsOverlap } from '../services/rwandaGeo';
+import { districtCentre, haversineKm } from '../services/proximity';
+import { farmerScope } from '../utils/agentScope';
 import { inRwanda } from '../services/surveyParser';
 import { isRegistryEnabled, lookupParcel } from '../services/landRegistry';
 
@@ -64,6 +66,78 @@ const landView = (farm: any) => ({
   land_source: farm.land_source,
   land_verified_at: farm.land_verified_at,
 });
+
+// ── Land data checks ─────────────────────────────────────────────────────────
+// Cheap consistency checks that catch most wrong maps: a GPS point far from the
+// drawn parcel, an area that disagrees with the declared farm size, or a
+// location in a different district from the UPI / recorded address.
+
+type FarmLand = {
+  id: string; farmName: string; farmer_id: string; location: unknown; farm_size: number;
+  latitude: number | null; longitude: number | null; upi: string | null; parcel_boundary: unknown;
+};
+
+const ringOf = (farm: { parcel_boundary: unknown }): number[][] | null => {
+  const r = (farm.parcel_boundary as any)?.coordinates?.[0];
+  return Array.isArray(r) && r.length >= 4 ? r : null;
+};
+
+/** Pure checks on one farm. Each issue has a stable code for filtering. */
+export function basicLandChecks(farm: FarmLand): { code: string; message: string }[] {
+  const out: { code: string; message: string }[] = [];
+  const ring = ringOf(farm);
+  if (ring && farm.latitude !== null && farm.longitude !== null) {
+    const d = distanceToRingM([farm.longitude, farm.latitude], ring);
+    if (d > 100) out.push({ code: 'point_outside_boundary', message: `The GPS point is ${Math.round(d)} m outside the drawn boundary — one of them is in the wrong place` });
+  }
+  if (ring && farm.farm_size > 0) {
+    const ha = ringAreaSqm(ring) / 10000;
+    const ratio = ha / farm.farm_size;
+    if (ratio > 2 || ratio < 0.5) {
+      out.push({ code: 'area_mismatch', message: `The boundary covers ${ha.toFixed(2)} ha but the farm size is recorded as ${farm.farm_size} ha` });
+    }
+  }
+  const centre = ring ? ringCentroid(ring) : farm.latitude !== null && farm.longitude !== null ? { lat: farm.latitude, lng: farm.longitude } : null;
+  if (centre) {
+    const upiDistrict = farm.upi ? parseUpi(farm.upi)?.district ?? null : null;
+    const recorded = canonicalDistrict((farm.location as any)?.district)?.name ?? null;
+    for (const [district, what] of [[upiDistrict, 'the UPI'], [recorded !== upiDistrict ? recorded : null, 'the farm address']] as const) {
+      const c = district ? districtCentre(district) : null;
+      if (c && haversineKm(c, centre) > 40) {
+        out.push({ code: 'far_from_district', message: `The map location is ${Math.round(haversineKm(c, centre))} km from ${district} district (from ${what}) — the location or the district is wrong` });
+      }
+    }
+  }
+  if (farm.upi && !ring) out.push({ code: 'upi_without_boundary', message: 'Has a UPI but no boundary yet — look the parcel up on RwaSIS and trace it' });
+  if (farm.latitude === null && !ring) out.push({ code: 'not_on_map', message: 'Not on the map yet' });
+  return out;
+}
+
+/** Boundaries of other farms nearby that overlap this one. */
+async function overlapChecks(farm: FarmLand) {
+  const ring = ringOf(farm);
+  if (!ring) return [];
+  const c = ringCentroid(ring);
+  const near = await prisma.farm.findMany({
+    where: {
+      id: { not: farm.id }, archived_at: null, parcel_boundary: { not: Prisma.DbNull },
+      latitude: { gte: c.lat - 0.03, lte: c.lat + 0.03 }, longitude: { gte: c.lng - 0.03, lte: c.lng + 0.03 },
+    },
+    select: { id: true, farmName: true, farmer_id: true, parcel_boundary: true },
+    take: 200,
+  });
+  return near
+    .filter((o) => { const r = ringOf(o); return r && ringsOverlap(ring, r); })
+    .slice(0, 3)
+    .map((o) => ({
+      code: 'overlap',
+      message: o.farmer_id === farm.farmer_id ? `The boundary overlaps your other farm "${o.farmName}"` : 'The boundary overlaps a farm registered by another farmer — check the corners (or the UPI)',
+    }));
+}
+
+export async function landChecks(farm: FarmLand) {
+  return [...basicLandChecks(farm), ...(await overlapChecks(farm))];
+}
 
 /**
  * @route GET /api/land/status
@@ -124,7 +198,7 @@ router.get(
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const farm = await loadFarm(req, res);
     if (!farm) return;
-    return sendSuccess(res, landView(farm), 'Farm land details');
+    return sendSuccess(res, { ...landView(farm), checks: await landChecks(farm) }, 'Farm land details');
   })
 );
 
@@ -224,7 +298,8 @@ router.put(
     if (landChanged) data.land_verified_at = null;
 
     const updated = await prisma.farm.update({ where: { id: farm.id }, data });
-    return sendSuccess(res, { ...landView(updated), warnings }, 'Land details saved');
+    const checks = await landChecks(updated);
+    return sendSuccess(res, { ...landView(updated), warnings: [...warnings, ...checks.filter((c) => c.code !== 'not_on_map').map((c) => c.message)], checks }, 'Land details saved');
   })
 );
 
@@ -262,6 +337,60 @@ router.post(
     }
     const updated = await prisma.farm.update({ where: { id: farm.id }, data });
     return sendSuccess(res, { ...landView(updated), registry_status: registry.status }, 'Land details verified');
+  })
+);
+
+/**
+ * @route GET /api/land/issues
+ * @desc  Farms whose land data looks wrong or incomplete, for staff to fix.
+ *        Filters: code (point_outside_boundary | area_mismatch | far_from_district |
+ *        upi_without_boundary | not_on_map), district; page, limit. Also returns
+ *        counts per code. (Overlaps are checked per farm on the land page.)
+ * @access Admin, Agent (own territory)
+ */
+router.get(
+  '/issues',
+  authenticate,
+  authorize('admin', 'agent'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const q = req.query as Record<string, string>;
+    const scope = await farmerScope(req);
+    const farms = await prisma.farm.findMany({
+      where: {
+        archived_at: null,
+        ...(scope ? { farmer: scope } : {}),
+        ...(q.district ? { location: { path: ['district'], equals: q.district } } : {}),
+      },
+      select: {
+        id: true, farmName: true, farmerName: true, farmer_id: true, location: true, farm_size: true,
+        latitude: true, longitude: true, upi: true, parcel_boundary: true, land_verified_at: true,
+      },
+      orderBy: { farmName: 'asc' },
+    });
+    const counts: Record<string, number> = {};
+    const rows: any[] = [];
+    for (const f of farms) {
+      const issues = basicLandChecks(f);
+      issues.forEach((i) => { counts[i.code] = (counts[i.code] ?? 0) + 1; });
+      const shown = q.code ? issues.filter((i) => i.code === q.code) : issues;
+      if (shown.length) {
+        rows.push({
+          farm_id: f.id, farm_name: f.farmName, farmer_name: f.farmerName, farmer_id: f.farmer_id,
+          district: (f.location as any)?.district ?? null, sector: (f.location as any)?.sector ?? null,
+          upi: f.upi, verified: Boolean(f.land_verified_at), issues: shown,
+        });
+      }
+    }
+    const page = Math.max(1, parseInt(q.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(q.limit, 10) || 25));
+    return sendSuccess(res, {
+      farms_checked: farms.length,
+      counts,
+      total: rows.length,
+      page,
+      limit,
+      items: rows.slice((page - 1) * limit, page * limit),
+    }, 'Land data issues');
   })
 );
 

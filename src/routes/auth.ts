@@ -22,6 +22,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate } from '../middleware/auth';
 import { AuthenticatedRequest } from '../types/auth';
 import { env } from '../config/environment';
+import { toRwandaPhone, looksLikePhone, normalizePhoneForStorage } from '../utils/phone';
 import logger from '../config/logger';
 import { createFarmerProfileForUser, createAgentProfileForUser, createShopForManager, createFarmForUser } from '../utils/profileCreation';
 
@@ -93,7 +94,7 @@ router.post('/register', validateComprehensiveRegistration, asyncHandler(async (
         email: email.toLowerCase(),
         password: hashedPassword,
         full_name,
-        phone,
+        phone: normalizePhoneForStorage(phone),
         role: role as any,
         credentials_claimed: true,
         // Agents and shop managers see other people's data, so self-registered
@@ -167,9 +168,9 @@ const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex'
 const GENERIC_SENT = 'If this number belongs to an account that is not yet activated, a 6-digit code has been sent by SMS.';
 
 router.post('/verify-phone/send-code', asyncHandler(async (req: Request, res: Response) => {
-  const phone = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
-  if (!/^\+2507\d{8}$/.test(phone)) {
-    sendError(res, 'Enter the phone number in the format +2507XXXXXXXX', 400);
+  const phone = toRwandaPhone(req.body?.phone);
+  if (!phone) {
+    sendError(res, 'Enter your Rwandan mobile number, e.g. 0788 123 456', 400);
     return;
   }
 
@@ -205,7 +206,14 @@ router.post('/verify-phone/send-code', asyncHandler(async (req: Request, res: Re
 }));
 
 router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Request, res: Response) => {
-  const { phone, email, password } = req.body;
+  const { password } = req.body;
+  const phone = toRwandaPhone(req.body.phone);
+  // Email is optional: many farmers have none and sign in with their phone number.
+  const email = typeof req.body.email === 'string' && req.body.email.trim() ? req.body.email.trim().toLowerCase() : null;
+  if (!phone) {
+    sendError(res, 'Enter your Rwandan mobile number, e.g. 0788 123 456', 400);
+    return;
+  }
   const code = typeof req.body.code === 'string' ? req.body.code.trim() : '';
   if (!/^\d{6}$/.test(code)) {
     sendError(res, 'Enter the 6-digit code sent to your phone', 400);
@@ -226,7 +234,9 @@ router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Reque
     return;
   }
 
-  const user = await prisma.user.findFirst({ where: { phone, role: 'farmer' } });
+  const user =
+    (await prisma.user.findFirst({ where: { phone, role: 'farmer', credentials_claimed: false }, orderBy: { created_at: 'asc' } })) ??
+    (await prisma.user.findFirst({ where: { phone, role: 'farmer' } }));
   if (!user) {
     sendError(res, 'Phone number not found. Please contact an admin to register.', 404);
     return;
@@ -240,69 +250,47 @@ router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Reque
     return;
   }
 
-  const normalizedEmail = email.toLowerCase();
-  const emailOwner = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (emailOwner && emailOwner.id !== user.id) {
-    sendError(res, 'This email is already in use by another account', 409);
-    return;
+  if (email) {
+    const emailOwner = await prisma.user.findUnique({ where: { email } });
+    if (emailOwner && emailOwner.id !== user.id) {
+      sendError(res, 'This email is already in use by another account', 409);
+      return;
+    }
   }
 
   const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
   await prisma.$transaction([
     prisma.user.update({
       where: { id: user.id },
-      data: { email: normalizedEmail, password: hashedPassword, credentials_claimed: true },
+      data: { ...(email ? { email } : {}), password: hashedPassword, credentials_claimed: true },
     }),
     prisma.phoneVerificationCode.update({ where: { id: otp.id }, data: { consumed_at: new Date() } }),
   ]);
 
-  sendSuccess(res, { verified: true }, 'Registration complete. Please log in with your new email and password.');
-}));
-
-// POST /api/auth/login as normal. TODO: send an SMS OTP as part of this check.
-router.post('/verify-phone', validateVerifyPhone, asyncHandler(async (req: Request, res: Response) => {
-  const { phone, email, password } = req.body;
-
-  const user = await prisma.user.findFirst({ where: { phone, role: 'farmer' } });
-
-  if (!user) {
-    sendError(res, 'Phone number not found. Please contact an admin to register.', 404);
-    return;
-  }
-
-  if (user.status !== 'active') {
-    sendError(res, 'This account is inactive. Please contact an admin.', 403);
-    return;
-  }
-
-  if (user.credentials_claimed) {
-    sendError(res, 'This account has already set up its login credentials. Please log in, or use forgot password.', 409);
-    return;
-  }
-
-  const normalizedEmail = email.toLowerCase();
-  const emailOwner = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (emailOwner && emailOwner.id !== user.id) {
-    sendError(res, 'This email is already in use by another account', 409);
-    return;
-  }
-
-  const hashedPassword = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { email: normalizedEmail, password: hashedPassword, credentials_claimed: true },
-  });
-
-  sendSuccess(res, { verified: true }, 'Registration complete. Please log in with your new email and password.');
+  sendSuccess(
+    res,
+    { verified: true, login_with: email ? 'email_or_phone' : 'phone' },
+    email ? 'Account activated. Sign in with your email or phone number and your new password.' : 'Account activated. Sign in with your phone number and your new password.'
+  );
 }));
 
 // POST /api/auth/login
 router.post('/login', validateUserLogin, asyncHandler(async (req: Request, res: Response) => {
-  const { email, password }: LoginRequest = req.body;
-
-  const user = await prisma.user.findUnique({
-    where: { email: email.toLowerCase() },
-  });
+  const { password }: LoginRequest = req.body;
+  // "email" may also hold a phone number: farmers often have no email.
+  const identifier = String(req.body.email ?? req.body.phone ?? '').trim();
+  let user;
+  if (looksLikePhone(identifier)) {
+    const phone = toRwandaPhone(identifier);
+    const matches = phone ? await prisma.user.findMany({ where: { phone, credentials_claimed: true }, take: 2 }) : [];
+    if (matches.length > 1) {
+      sendError(res, 'Several accounts use this phone number — sign in with your email instead.', 401);
+      return;
+    }
+    user = matches[0] ?? null;
+  } else {
+    user = await prisma.user.findUnique({ where: { email: identifier.toLowerCase() } });
+  }
 
   if (!user) {
     sendError(res, 'Invalid credentials', 401);
@@ -362,7 +350,7 @@ router.put('/profile', authenticate, asyncHandler(async (req: AuthenticatedReque
 
   const updateData: any = {};
   if (full_name !== undefined) updateData.full_name = full_name;
-  if (phone !== undefined) updateData.phone = phone;
+  if (phone !== undefined) updateData.phone = normalizePhoneForStorage(phone);
 
   if (profile !== undefined) {
     const existing = await prisma.user.findUnique({

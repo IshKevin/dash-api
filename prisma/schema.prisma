@@ -300,6 +300,8 @@ model User {
   /// Embedded profile object (age, gender, location, farm_details, etc.)
   profile       Json?
   qr_code_token String?    @unique
+  /// Last time an activation-invite SMS was sent (bulk-imported farmers)
+  activation_invited_at DateTime?
   created_at    DateTime   @default(now())
   updated_at    DateTime   @updatedAt
 
@@ -348,6 +350,7 @@ model User {
 
   @@index([role, status])
   @@index([created_at])
+  @@index([phone])
 }
 
 model Product {
@@ -1450,6 +1453,8 @@ model HarvestLot {
 
 enum SurveyImportStatus {
   previewed
+  /// Commit is running in the background (see `progress`)
+  committing
   committed
   failed
 }
@@ -1463,6 +1468,12 @@ model SurveyImportBatch {
   error_rows    Int                @default(0)
   /// Parsed + validated rows: [{ row_number, data, errors[], warnings[], match }]
   rows          Json
+  /// 'survey' = field survey (one FarmSurvey per row) | 'register' = member list (accounts + farms only)
+  kind          String             @default("survey")
+  /// Sheets read from the workbook: [{ name, rows, skipped_reason? }]
+  sheets        Json?
+  /// Rows processed so far by the commit (index into `rows`); lets an interrupted commit resume
+  progress      Int                @default(0)
   /// Commit result: { created_farmers, linked_farmers, created_farms, surveys, failed: [...] }
   result        Json?
   created_by    String

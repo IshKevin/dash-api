@@ -5,7 +5,7 @@
  * (src/routes/surveys.ts) reads the workbook, calls `mapHeaders` + `parseRow`
  * for every row, then matches farmers against the database.
  */
-import { RWANDA_DISTRICTS, canonicalDistrict, canonicalProvince } from './rwandaGeo';
+import { RWANDA_DISTRICTS, canonicalDistrict, canonicalProvince, parseUpi } from './rwandaGeo';
 
 export type SurveyField =
   | 'survey_province' | 'survey_district' | 'enumerator_name' | 'enumerator_contact' | 'interview_date' | 'consent'
@@ -17,9 +17,17 @@ export type SurveyField =
   | 'ever_harvested' | 'avocados_per_tree' | 'fruits_per_tree_per_year' | 'total_tons' | 'price_per_avocado'
   | 'uses_fertilizer' | 'fertilizer_types' | 'uses_pesticides' | 'pesticide_types' | 'input_access'
   | 'selling_channels' | 'selling_site' | 'main_market_outlet' | 'production_info_access' | 'market_info_access'
-  | 'uses_credit' | 'credit_access' | 'aggregation_effectiveness' | 'challenges';
+  | 'uses_credit' | 'credit_access' | 'aggregation_effectiveness' | 'challenges'
+  // Member-register (ASR farmer database) columns
+  | 'first_name' | 'last_name' | 'home_province' | 'home_district' | 'home_sector' | 'home_cell' | 'home_village'
+  | 'upi' | 'extra_upis' | 'assistance';
 
-type Kind = 'text' | 'bool' | 'number' | 'int' | 'date' | 'phone' | 'list' | 'nid' | 'sex' | 'lat' | 'lng';
+/** Fields that exist only on the parsed row, not on the FarmSurvey table. */
+export const NON_SURVEY_FIELDS: SurveyField[] = [
+  'first_name', 'last_name', 'home_province', 'home_district', 'home_sector', 'home_cell', 'home_village', 'upi', 'extra_upis', 'assistance',
+];
+
+type Kind = 'text' | 'bool' | 'number' | 'int' | 'date' | 'phone' | 'list' | 'nid' | 'sex' | 'lat' | 'lng' | 'upi' | 'age_or_dob' | 'assistance';
 
 /** Normalised header (lowercase, alphanumerics only) → target field. */
 const HEADER_MAP: Record<string, { field: SurveyField; kind: Kind }> = {
@@ -111,10 +119,32 @@ const HEADER_MAP: Record<string, { field: SurveyField; kind: Kind }> = {
   long: { field: 'longitude', kind: 'lng' },
   lng: { field: 'longitude', kind: 'lng' },
   longitude: { field: 'longitude', kind: 'lng' },
+  // ASR member register ("ASR - Farmer Database"): firstname, lastname, telephone, idnumber,
+  // home location (province…village), farm_province…farm_village, farmsize, tree-count, upi-number …
+  firstname: { field: 'first_name', kind: 'text' },
+  lastname: { field: 'last_name', kind: 'text' },
+  telephone: { field: 'farmer_contact', kind: 'phone' },
+  phone: { field: 'farmer_contact', kind: 'phone' },
+  phonenumber: { field: 'farmer_contact', kind: 'phone' },
+  idnumber: { field: 'national_id', kind: 'nid' },
+  age: { field: 'farmer_age', kind: 'age_or_dob' },
+  farmsize: { field: 'farm_area', kind: 'number' },
+  treecount: { field: 'physical_tree_count', kind: 'int' },
+  numberoftrees: { field: 'physical_tree_count', kind: 'int' },
+  avocadotype: { field: 'varieties', kind: 'list' },
+  upinumber: { field: 'upi', kind: 'upi' },
+  upi: { field: 'upi', kind: 'upi' },
+  assistance: { field: 'assistance', kind: 'assistance' },
 };
 
 /** Columns kept only in `raw` (known, intentionally not mapped). */
-const RAW_ONLY = new Set(['typeoffertiliseruseyes', 'typeoffertiliserusedyes', 'typeoffertiliserusedno']);
+const RAW_ONLY = new Set([
+  'typeoffertiliseruseyes', 'typeoffertiliserusedyes', 'typeoffertiliserusedno',
+  // register bookkeeping / unreliable columns, kept in `raw` only
+  'no', 'id', 'column1', 'planted', 'farmage', 'mixedpercentage',
+]);
+
+const LOCATION_KEYS = ['province', 'district', 'sector', 'cell', 'village'] as const;
 
 export const normalizeHeader = (h: unknown) => String(h ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -135,9 +165,20 @@ export function mapHeaders(headers: unknown[]): { columns: ColumnMapping[]; unkn
   const count = (k: string) => norm.filter((n) => n === k).length;
   const seen: Record<string, number> = {};
 
+  // Member register: plain province…village is where the farmer lives and
+  // farm_province…farm_village is the farm. The farm is what we map.
+  const hasFarmLocation = norm.some((n) => n === 'farmprovince' || n === 'farmdistrict');
+
   const columns: ColumnMapping[] = headers.map((h, index) => {
     const key = norm[index];
     seen[key] = (seen[key] ?? 0) + 1;
+    if (hasFarmLocation) {
+      const loc = LOCATION_KEYS.find((k) => key === k || key === `farm${k}`);
+      if (loc) {
+        const field = (key === loc ? `home_${loc}` : loc) as SurveyField;
+        return { index, header: String(h ?? ''), field, kind: 'text' };
+      }
+    }
     if (key === 'province' || key === 'district') {
       const twice = count(key) >= 2;
       const field = (twice && seen[key] === 1 ? `survey_${key}` : key) as SurveyField;
@@ -150,7 +191,7 @@ export function mapHeaders(headers: unknown[]): { columns: ColumnMapping[]; unkn
   const unknown = columns.filter((c) => !c.field && c.header.trim() && !RAW_ONLY.has(normalizeHeader(c.header))).map((c) => c.header);
   const mapped = new Set(columns.map((c) => c.field));
   const missingCore = (['district', 'owner_name', 'national_id', 'farmer_contact'] as SurveyField[])
-    .filter((f) => !mapped.has(f) && !(f === 'owner_name' && mapped.has('respondent_name')));
+    .filter((f) => !mapped.has(f) && !(f === 'owner_name' && (mapped.has('respondent_name') || mapped.has('first_name'))));
   return { columns, unknown, missingCore };
 }
 
@@ -178,7 +219,18 @@ export function parseNumber(v: unknown): number | null | undefined {
 /** Excel serial date → JS Date (1900 date system). */
 const fromExcelSerial = (serial: number) => new Date(Math.round((serial - 25569) * 86400 * 1000));
 
+/** Dates outside 1900–2100 are typos ("20224") — and break the database. */
+const plausible = (d: Date | null | undefined) => {
+  if (!d) return d;
+  const y = d.getUTCFullYear();
+  return Number.isNaN(d.getTime()) || y < 1900 || y > 2100 ? null : d;
+};
+
 export function parseDate(v: unknown): Date | null | undefined {
+  return plausible(parseDateRaw(v));
+}
+
+function parseDateRaw(v: unknown): Date | null | undefined {
   if (isBlank(v)) return undefined;
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
   if (typeof v === 'number') {
@@ -226,6 +278,63 @@ export function splitList(v: unknown): string[] {
   return s.split(/[,;\n|]+/).map((x) => x.trim()).filter(Boolean);
 }
 
+const KNOWN_VARIETIES: [RegExp, string][] = [
+  [/\bhass\b/i, 'Hass'],
+  [/\bfuerte\b/i, 'Fuerte'],
+  [/\bettinger\b/i, 'Ettinger'],
+  [/\breed\b/i, 'Reed'],
+  [/\bbacon\b/i, 'Bacon'],
+  [/\bpinkerton\b/i, 'Pinkerton'],
+  [/\b(local|kinyarwanda|gakondo)\b/i, 'Local'],
+];
+
+/** "Hass Fuerte", "hass", "bivanze" (Kinyarwanda: mixed) → canonical variety names. */
+export function normalizeVarieties(items: string[]): string[] {
+  const out = new Set<string>();
+  for (const item of items) {
+    if (/bivanze|mixed|both/i.test(item)) { out.add('Hass'); out.add('Fuerte'); continue; }
+    const found = KNOWN_VARIETIES.filter(([re]) => re.test(item)).map(([, name]) => name);
+    if (found.length) found.forEach((v) => out.add(v));
+    else out.add(item.trim());
+  }
+  return [...out].filter(Boolean);
+}
+
+/** Every well-formed UPI in a free-text cell ("UPI 5/07/13/02/2010; UPI 5/07/13/02/2535"). */
+export function extractUpis(v: unknown): string[] {
+  if (isBlank(v)) return [];
+  const text = String(v).replace(/\\/g, '/');
+  const found: string[] = [];
+  for (const m of text.matchAll(/\d{1,2}\s*\/\s*\d{1,4}\s*\/\s*\d{1,3}\s*\/\s*\d{1,3}\s*\/\s*\d{1,7}(?:-\d{1,4})?/g)) {
+    const parsed = parseUpi(m[0].replace(/\s+/g, ''));
+    if (parsed && !found.includes(parsed.normalized)) found.push(parsed.normalized);
+  }
+  return found;
+}
+
+/** Kinyarwanda answers in the member register → the app's assistance codes. */
+const ASSISTANCE_CODES: [RegExp, string][] = [
+  [/imihingire|training|amahugurwa/i, 'training'],
+  [/ubujyanama|advi[cs]e|advisory/i, 'advisory'],
+  [/inguzanyo|credit|loan/i, 'credit'],
+  [/ifumbire|fertili[sz]er/i, 'fertilizers'],
+  [/ingemwe|seedling/i, 'seedlings'],
+  [/kuhira|irrigation/i, 'irrigation'],
+  [/ibikoresho|equipment/i, 'equipment'],
+  [/udukoko|imiti|pest/i, 'pest_control'],
+];
+
+export function parseAssistance(v: unknown): string[] {
+  if (isBlank(v)) return [];
+  const items = String(v).replace(/[{}"]/g, '').split(/[,;\n|]+/).map((x) => x.trim()).filter(Boolean);
+  const out = new Set<string>();
+  for (const item of items) {
+    const code = ASSISTANCE_CODES.find(([re]) => re.test(item))?.[1];
+    out.add(code ?? item.toLowerCase());
+  }
+  return [...out];
+}
+
 /** Rwanda's bounding box (with a small margin). */
 export const RWANDA_BOUNDS = { minLat: -2.95, maxLat: -1.0, minLng: 28.8, maxLng: 30.95 };
 export const inRwanda = (lat: number, lng: number) =>
@@ -235,6 +344,8 @@ export const inRwanda = (lat: number, lng: number) =>
 
 export interface ParsedRow {
   row_number: number;
+  /** Worksheet the row came from (multi-sheet workbooks) */
+  sheet?: string;
   data: Partial<Record<SurveyField, any>>;
   raw: Record<string, any>;
   errors: string[];
@@ -312,8 +423,32 @@ export function parseRow(cells: unknown[], columns: ColumnMapping[], rowNumber: 
         if (typeof value === 'number') {
           warnings.push('national_id is stored as a number in Excel and may be truncated — format that column as Text');
         }
-        if (!/^\d{16}$/.test(asText)) warnings.push(`national_id "${asText}" is not 16 digits`);
-        data[f] = asText;
+        // Only a real 16-digit ID is used for matching: placeholders like "0"
+        // would otherwise merge unrelated farmers into one account.
+        if (!/^\d{16}$/.test(asText)) warnings.push(`national_id "${asText}" is not 16 digits — ignored`);
+        else data[f] = asText;
+        break;
+      }
+      case 'upi': {
+        const upis = extractUpis(value);
+        if (!upis.length) warnings.push(`UPI "${String(value).trim().slice(0, 60)}" is not a valid UPI (province/district/sector/cell/parcel)`);
+        else {
+          data.upi = upis[0];
+          if (upis.length > 1) data.extra_upis = upis.slice(1);
+        }
+        break;
+      }
+      case 'assistance': {
+        const items = parseAssistance(value);
+        if (items.length) data[f] = [...new Set([...(data[f] ?? []), ...items])];
+        break;
+      }
+      case 'age_or_dob': {
+        // "age" holds an age in some sheets and a date of birth in others.
+        if (typeof value === 'number' && value > 0 && value < 120) { data.farmer_age = Math.round(value); break; }
+        const d = parseDate(value);
+        if (d) data.date_of_birth = d;
+        else bad('an age or date of birth');
         break;
       }
       case 'lat':
@@ -347,12 +482,35 @@ export function parseRow(cells: unknown[], columns: ColumnMapping[], rowNumber: 
     }
   }
 
+  // First + last name columns → owner name.
+  if (!data.owner_name && (data.first_name || data.last_name)) {
+    data.owner_name = [data.first_name, data.last_name].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // 1970-01-01 is what an empty date becomes in some exports; dates that make
+  // the farmer a child are placeholders too (e.g. the interview date typed again).
+  if (data.date_of_birth) {
+    const dob = data.date_of_birth as Date;
+    const age = new Date().getUTCFullYear() - dob.getUTCFullYear();
+    if (dob.getTime() === 0 || age < 12 || age > 110) delete data.date_of_birth;
+  }
+
   // Administrative names → canonical spelling.
+  for (const key of ['home_province'] as const) {
+    if (data[key]) data[key] = canonicalProvince(data[key]) ?? data[key];
+  }
+  if (data.home_district) {
+    const d = canonicalDistrict(data.home_district);
+    if (d) {
+      data.home_district = d.name;
+      if (!data.home_province) data.home_province = d.province;
+    }
+  }
   for (const key of ['province', 'survey_province'] as const) {
     if (data[key]) {
       const p = canonicalProvince(data[key]);
       if (p) data[key] = p;
-      else warnings.push(`Unknown province "${data[key]}"`);
+      else if (!canonicalDistrict(key === 'province' ? data.district : data.survey_district)) warnings.push(`Unknown province "${data[key]}"`);
     }
   }
   for (const key of ['district', 'survey_district'] as const) {
@@ -360,9 +518,16 @@ export function parseRow(cells: unknown[], columns: ColumnMapping[], rowNumber: 
       const d = canonicalDistrict(data[key]);
       if (d) {
         data[key] = d.name;
-        if (key === 'district' && !data.province) data.province = d.province;
+        // The district is the more specific answer: its province wins.
+        if (key === 'district') data.province = d.province;
+        if (key === 'survey_district') data.survey_province = d.province;
       } else warnings.push(`Unknown district "${data[key]}" (expected one of Rwanda's 30 districts)`);
     }
+  }
+  // Member register rows with no farm location: the farm is assumed to be where the farmer lives.
+  if (!data.district && data.home_district) {
+    for (const k of LOCATION_KEYS) if (!data[k] && data[`home_${k}` as SurveyField]) data[k] = data[`home_${k}` as SurveyField];
+    warnings.push('No farm location given — using where the farmer lives');
   }
   if (!data.province && data.survey_province) data.province = data.survey_province;
   if (!data.district && data.survey_district) data.district = data.survey_district;
@@ -376,10 +541,17 @@ export function parseRow(cells: unknown[], columns: ColumnMapping[], rowNumber: 
   if (data.physical_tree_count === undefined && (data.hass_trees || data.fuerte_trees)) {
     data.physical_tree_count = (data.hass_trees ?? 0) + (data.fuerte_trees ?? 0);
   }
-  const varieties = new Set<string>(data.varieties ?? []);
+  const varieties = new Set<string>(normalizeVarieties(data.varieties ?? []));
   if (data.hass_trees) varieties.add('Hass');
   if (data.fuerte_trees) varieties.add('Fuerte');
   if (varieties.size) data.varieties = [...varieties];
+
+  if (data.upi) {
+    const upiDistrict = parseUpi(data.upi)?.district;
+    if (upiDistrict && data.district && upiDistrict !== data.district) {
+      warnings.push(`UPI ${data.upi} is in ${upiDistrict} but the farm is recorded in ${data.district}`);
+    }
+  }
 
   // Hard errors → row is skipped on commit.
   if (data.consent === false) errors.push('Respondent did not consent — row will not be imported');
@@ -390,7 +562,11 @@ export function parseRow(cells: unknown[], columns: ColumnMapping[], rowNumber: 
 }
 
 /** Name used for the farmer account (owner preferred over respondent). */
-export const farmerNameOf = (d: ParsedRow['data']) => (d.owner_name || d.respondent_name || '').trim();
+export const farmerNameOf = (d: ParsedRow['data']) =>
+  String(d.owner_name || d.respondent_name || '').replace(/\s+/g, ' ').trim();
+
+/** Lower-case name with spacing/punctuation removed, for comparing people. */
+export const nameKey = (name: string) => name.toLowerCase().normalize('NFD').replace(/[^a-z ]/g, '').split(/\s+/).filter(Boolean).sort().join(' ');
 
 /** Phone of the farmer: their own contact, else the respondent's when the respondent is the owner. */
 export const farmerPhoneOf = (d: ParsedRow['data']) => {

@@ -12,7 +12,7 @@
     "start:prod": "NODE_ENV=production node dist/src/server.js",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "mocha -r ts-node/register \"test/simpleAuth.test.ts\" \"test/surveyParser.test.ts\" --timeout 5000 --exit",
-    "test:integration": "mocha -r ts-node/register \"test/registration.test.ts\" \"test/serviceRequests.test.ts\" \"test/marketAndHarvest.test.ts\" \"test/surveysLandMap.test.ts\" \"test/commerce.test.ts\" \"test/nearbyAndOpportunities.test.ts\" \"test/weather.test.ts\" \"test/vbaMembershipFarms.test.ts\" --timeout 60000 --exit",
+    "test:integration": "mocha -r ts-node/register \"test/registration.test.ts\" \"test/serviceRequests.test.ts\" \"test/marketAndHarvest.test.ts\" \"test/surveysLandMap.test.ts\" \"test/commerce.test.ts\" \"test/nearbyAndOpportunities.test.ts\" \"test/weather.test.ts\" \"test/vbaMembershipFarms.test.ts\" \"test/farmerImport.test.ts\" --timeout 60000 --exit",
     "test:e2e": "mocha -r ts-node/register \"test/api.test.ts\" --timeout 10000 --exit",
     "test:watch": "nodemon --exec \"npm test\"",
     "db:generate": "prisma generate",

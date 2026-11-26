@@ -13,6 +13,7 @@ import { env } from './config/environment';
 import { ensureBucketReady, checkStorageHealth } from './config/storage';
 import { prisma } from './lib/prisma';
 import { startEscalationJob } from './jobs/escalationJob';
+import { resumeInterruptedImports } from './services/farmerImport';
 import logger from './config/logger';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler';
 import { sendSuccess } from './utils/responses';
@@ -58,6 +59,7 @@ import smsRoutes from './routes/sms';
 import filesRoutes from './routes/files';
 import marketPricesRoutes from './routes/marketPrices';
 import harvestLotsRoutes, { traceabilityRouter } from './routes/harvestLots';
+import activationRoutes from './routes/activation';
 import surveysRoutes from './routes/surveys';
 import landRoutes from './routes/land';
 import mapRoutes from './routes/map';
@@ -223,6 +225,7 @@ app.use('/api/map', mapRoutes);
 app.use('/api/facilities', facilitiesRoutes);
 app.use('/api/opportunities', opportunitiesRoutes);
 app.use('/api/membership', membershipRoutes);
+app.use('/api/activation', activationRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {
@@ -264,6 +267,8 @@ const startServer = async (): Promise<void> => {
     }
 
     startEscalationJob();
+    // Farmer imports that were running when the server last stopped carry on.
+    resumeInterruptedImports().catch((e) => logger.error(`Could not resume imports: ${e?.message}`));
 
     const server = app.listen(env.PORT, () => {
       logger.info(`🚀 Server running on port ${env.PORT}`);

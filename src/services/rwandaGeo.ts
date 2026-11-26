@@ -13,10 +13,10 @@ export interface DistrictInfo { province_code: number; code: number; name: strin
 
 export const RWANDA_PROVINCES: ProvinceInfo[] = [
   { code: 1, name: 'Kigali City', aliases: ['kigali', 'kigalicity', 'umujyiwakigali', 'cityofkigali', 'kigaliprovince'] },
-  { code: 2, name: 'Southern Province', aliases: ['south', 'southern', 'southernprovince', 'amajyepfo', 'intaradyamajyepfo'] },
-  { code: 3, name: 'Western Province', aliases: ['west', 'western', 'westernprovince', 'iburengerazuba', 'intarayiburengerazuba'] },
-  { code: 4, name: 'Northern Province', aliases: ['north', 'northern', 'northernprovince', 'amajyaruguru', 'intarayamajyaruguru'] },
-  { code: 5, name: 'Eastern Province', aliases: ['east', 'eastern', 'easternprovince', 'iburasirazuba', 'intarayiburasirazuba'] },
+  { code: 2, name: 'Southern Province', aliases: ['south', 'southern', 'southernprovince', 'southen', 'southenprovince', 'amajyepfo', 'intaradyamajyepfo'] },
+  { code: 3, name: 'Western Province', aliases: ['west', 'western', 'westernprovince', 'westen', 'westenprovince', 'iburengerazuba', 'intarayiburengerazuba'] },
+  { code: 4, name: 'Northern Province', aliases: ['north', 'northern', 'northernprovince', 'nothern', 'nothernprovince', 'northen', 'northenprovince', 'amajyaruguru', 'intarayamajyaruguru'] },
+  { code: 5, name: 'Eastern Province', aliases: ['east', 'eastern', 'easternprovince', 'estern', 'esternprovince', 'iburasirazuba', 'intarayiburasirazuba'] },
 ];
 
 const D = (province_code: number, names: string[]): DistrictInfo[] =>
@@ -107,4 +107,66 @@ export function ringCentroid(ring: number[][]): { lat: number; lng: number } {
   const lng = pts.reduce((s, p) => s + p[0], 0) / pts.length;
   const lat = pts.reduce((s, p) => s + p[1], 0) / pts.length;
   return { lat, lng };
+}
+
+/** Ray casting: is [lng, lat] inside the ring ([[lng, lat], …])? */
+export function pointInRing(pt: number[], ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Local metres around a reference latitude (accurate enough at farm scale). */
+const toMetres = (p: number[], lat0: number) => [p[0] * 111320 * Math.cos((lat0 * Math.PI) / 180), p[1] * 110540];
+
+/** Distance in metres from [lng, lat] to the nearest edge of the ring (0 when inside). */
+export function distanceToRingM(pt: number[], ring: number[][]): number {
+  if (pointInRing(pt, ring)) return 0;
+  const lat0 = pt[1];
+  const P = toMetres(pt, lat0);
+  let best = Infinity;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const A = toMetres(ring[i], lat0);
+    const B = toMetres(ring[i + 1], lat0);
+    const dx = B[0] - A[0];
+    const dy = B[1] - A[1];
+    const len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.max(0, Math.min(1, ((P[0] - A[0]) * dx + (P[1] - A[1]) * dy) / len2)) : 0;
+    best = Math.min(best, Math.hypot(P[0] - (A[0] + t * dx), P[1] - (A[1] + t * dy)));
+  }
+  return best;
+}
+
+/**
+ * Share of ring `a`'s area that lies inside ring `b` (0–1), estimated on a
+ * grid. Neighbouring parcels drawn by hand always overlap a little along the
+ * shared edge, so callers compare this against a threshold rather than zero.
+ */
+export function overlapFraction(a: number[][], b: number[][], grid = 30): number {
+  const xs = a.map((p) => p[0]);
+  const ys = a.map((p) => p[1]);
+  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const bx = b.map((p) => p[0]);
+  const by = b.map((p) => p[1]);
+  if (Math.max(...bx) < minX || Math.min(...bx) > maxX || Math.max(...by) < minY || Math.min(...by) > maxY) return 0;
+  let inA = 0;
+  let inBoth = 0;
+  for (let i = 0; i < grid; i++) {
+    for (let j = 0; j < grid; j++) {
+      const p = [minX + ((i + 0.5) / grid) * (maxX - minX), minY + ((j + 0.5) / grid) * (maxY - minY)];
+      if (!pointInRing(p, a)) continue;
+      inA++;
+      if (pointInRing(p, b)) inBoth++;
+    }
+  }
+  return inA ? inBoth / inA : 0;
+}
+
+/** Do two parcels overlap by more than `minShare` of either one's area? */
+export function ringsOverlap(a: number[][], b: number[][], minShare = 0.05): boolean {
+  return overlapFraction(a, b) > minShare || overlapFraction(b, a) > minShare;
 }

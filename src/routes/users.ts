@@ -15,6 +15,7 @@ import { AuthenticatedRequest } from '../types/auth';
 import { farmerScope } from '../utils/agentScope';
 import { env } from '../config/environment';
 import { createFarmerProfileForUser, createAgentProfileForUser, createFarmForUser } from '../utils/profileCreation';
+import { normalizePhoneForStorage } from '../utils/phone';
 
 const router = Router();
 
@@ -93,7 +94,7 @@ router.post('/', authenticate, adminOnly, asyncHandler(async (req: Authenticated
   const hashed = await bcrypt.hash(defaultPassword, env.BCRYPT_ROUNDS);
 
   const user = await prisma.user.create({
-    data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: targetRole, status: 'active' },
+    data: { email: email.toLowerCase(), password: hashed, full_name, phone: normalizePhoneForStorage(phone), role: targetRole, status: 'active' },
     select: userSelect,
   });
 
@@ -141,7 +142,7 @@ router.post('/farmers', authenticate, authorize('admin', 'agent'), validateFarme
 
   const farmer = await prisma.$transaction(async (tx) => {
     const created = await tx.user.create({
-      data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: 'farmer', status: 'active' },
+      data: { email: email.toLowerCase(), password: hashed, full_name, phone: normalizePhoneForStorage(phone), role: 'farmer', status: 'active' },
       select: userSelect,
     });
 
@@ -195,7 +196,7 @@ router.post('/agents', authenticate, adminOnly, asyncHandler(async (req: Authent
 
   const agent = await prisma.$transaction(async (tx) => {
     const created = await tx.user.create({
-      data: { email: email.toLowerCase(), password: hashed, full_name, phone, role: 'agent', status: 'active' },
+      data: { email: email.toLowerCase(), password: hashed, full_name, phone: normalizePhoneForStorage(phone), role: 'agent', status: 'active' },
       select: userSelect,
     });
 
@@ -247,7 +248,7 @@ router.put('/me', authenticate, validateFarmerProfile, asyncHandler(async (req: 
 
   const data: any = {};
   if (updateData.full_name) data.full_name = updateData.full_name.trim();
-  if (updateData.phone) data.phone = updateData.phone.trim();
+  if (updateData.phone) data.phone = normalizePhoneForStorage(updateData.phone);
 
   if (req.user?.role === 'farmer') {
     // Merge only the keys actually sent — updating just a name/phone must not wipe the rest.
@@ -292,16 +293,20 @@ router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asy
     return;
   }
 
-  if (req.user?.role !== 'admin') {
-    delete updateData.role;
-    delete updateData.status;
-  }
-
-  delete updateData.password;
+  // Only these fields can be changed here — never credentials, tokens or
+  // activation state. Role/status have their own admin endpoints too.
+  const isAdmin = req.user?.role === 'admin';
+  const data: Record<string, any> = {};
+  if (typeof updateData.full_name === 'string' && updateData.full_name.trim()) data.full_name = updateData.full_name.trim();
+  if (updateData.phone !== undefined) data.phone = normalizePhoneForStorage(updateData.phone);
+  if (updateData.profile !== undefined && typeof updateData.profile === 'object') data.profile = updateData.profile;
+  if (isAdmin && typeof updateData.email === 'string' && updateData.email.trim()) data.email = updateData.email.trim().toLowerCase();
+  if (isAdmin && ['admin', 'agent', 'farmer', 'shop_manager'].includes(updateData.role)) data.role = updateData.role;
+  if (isAdmin && ['active', 'inactive'].includes(updateData.status)) data.status = updateData.status;
 
   const user = await prisma.user.update({
     where: { id: userId },
-    data: updateData,
+    data,
     select: userSelect,
   }).catch(() => null);
 

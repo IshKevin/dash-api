@@ -104,3 +104,66 @@ describe('Rwanda geo helpers (unit)', () => {
     expect(area).to.be.within(9500, 10500);
   });
 });
+
+describe('Member register parsing + geometry helpers (unit)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const sp = require('../src/services/surveyParser');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const geo = require('../src/services/rwandaGeo');
+
+  it('extracts every valid UPI from free text', () => {
+    expect(sp.extractUpis('UPI 5/07/13/02/2010; UPI 5/07/13/02/2535')).to.deep.equal(['5/07/13/02/2010', '5/07/13/02/2535']);
+    expect(sp.extractUpis('5/1/10/1/1567')).to.deep.equal(['5/01/10/01/1567']);
+    expect(sp.extractUpis('Ntayo')).to.deep.equal([]);
+    expect(sp.extractUpis('0786552036')).to.deep.equal([]);
+    expect(sp.extractUpis('9/99/01/01/1')).to.deep.equal([]); // province 9 does not exist
+  });
+
+  it('maps Kinyarwanda answers to assistance codes and varieties', () => {
+    expect(sp.parseAssistance('{"Imihingire","Ubujyanama","Inguzanyo"}')).to.deep.equal(['training', 'advisory', 'credit']);
+    expect(sp.normalizeVarieties(['bivanze'])).to.deep.equal(['Hass', 'Fuerte']);
+    expect(sp.normalizeVarieties(['Hass Fuerte'])).to.deep.equal(['Hass', 'Fuerte']);
+    expect(sp.normalizeVarieties(['hass'])).to.deep.equal(['Hass']);
+  });
+
+  it('reads the register layout: names, farm_* as the farm, home location, ID validity', () => {
+    const header = ['firstname', 'lastname', 'telephone', 'age', 'idnumber', 'province', 'district', 'farm_province', 'farm_district', 'farmsize', 'tree-count', 'upi-number'];
+    const m = sp.mapHeaders(header);
+    expect(m.unknown).to.deep.equal([]);
+    const r = sp.parseRow([' Jean ', 'Bosco', '0788123456', '1970-01-01', '0', 'Kigali', 'Gasabo', 'East', 'Ngoma', 2, 300, '5/05/10/01/77'], m.columns, 5);
+    expect(r.errors).to.deep.equal([]);
+    expect(r.data.owner_name).to.equal('Jean Bosco');
+    expect(r.data.farmer_contact).to.equal('+250788123456');
+    expect(r.data.national_id).to.equal(undefined); // "0" is not an ID
+    expect(r.data.date_of_birth).to.equal(undefined); // 1970-01-01 placeholder
+    expect(r.data.district).to.equal('Ngoma');
+    expect(r.data.home_district).to.equal('Gasabo');
+    expect(r.data.upi).to.equal('5/05/10/01/77');
+  });
+
+  it('rejects impossible dates instead of storing them', () => {
+    expect(sp.parseDate('20224')).to.equal(null);
+    expect(sp.parseDate(new Date('1500-01-01'))).to.equal(null);
+    expect(sp.parseDate('2019')!.getUTCFullYear()).to.equal(2019);
+  });
+
+  it('accepts misspelt provinces and lets the district decide the province', () => {
+    expect(geo.canonicalProvince('Nothern Province')).to.equal('Northern Province');
+    const m = sp.mapHeaders(['owner of the farm', 'province', 'district']);
+    const r = sp.parseRow(['A B', 'southern Province', 'Kamonyi'], m.columns, 2);
+    expect(r.data.province).to.equal('Southern Province');
+    const wrong = sp.parseRow(['A B', 'Nothern Province', 'Kamonyi'], m.columns, 3);
+    expect(wrong.data.province).to.equal('Southern Province');
+  });
+
+  it('point-in-polygon, distance and overlap', () => {
+    const sq = (x: number, y: number, d: number) => [[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]];
+    const a = sq(30, -2, 0.001);
+    expect(geo.pointInRing([30.0005, -1.9995], a)).to.equal(true);
+    expect(geo.distanceToRingM([30.0005, -1.9995], a)).to.equal(0);
+    expect(geo.distanceToRingM([30.002, -1.9995], a)).to.be.within(100, 125);
+    expect(geo.ringsOverlap(a, sq(30.0005, -2, 0.001))).to.equal(true);
+    expect(geo.ringsOverlap(a, sq(30.001, -2, 0.001))).to.equal(false); // shares an edge only
+    expect(geo.ringsOverlap(a, sq(30.01, -2, 0.001))).to.equal(false);
+  });
+});

@@ -1,7 +1,5 @@
 import { Router, Response } from 'express';
 import multer from 'multer';
-import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
 import * as XLSX from 'xlsx';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -10,23 +8,18 @@ import { authenticate, authorize } from '../middleware/auth';
 import { validateIdParam } from '../middleware/validation';
 import { sendSuccess, sendCreated, sendError, sendNotFound, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { generateQRToken } from '../utils/accessKey';
 import logger from '../config/logger';
+import { mapHeaders, parseRow, ParsedRow } from '../services/surveyParser';
 import {
-  mapHeaders,
-  parseRow,
-  ParsedRow,
-  farmerNameOf,
-  farmerPhoneOf,
-  farmAreaHectares,
-} from '../services/surveyParser';
+  StoredRow, ImportKind, prepareRows, previewCounts, summarizeRow, emptyResult, commitBatch, isCommitRunning, SYNC_COMMIT_MAX_ROWS,
+} from '../services/farmerImport';
 
 const router = Router();
 
-const MAX_ROWS = 5000;
+const MAX_ROWS = 25000;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ok = /\.(xlsx|xls|csv)$/i.test(file.originalname);
     if (ok) cb(null, true);
@@ -34,23 +27,30 @@ const upload = multer({
   },
 });
 
-type Match = { type: 'national_id' | 'phone'; farmer_id: string; farmer_name: string } | null;
-type StoredRow = ParsedRow & { match: Match };
+/** A sheet's header row: the first of its top 15 rows with at least 3 known columns. */
+function findHeader(rows: unknown[][]) {
+  return rows.slice(0, 15).findIndex((r) => mapHeaders(r as unknown[]).columns.filter((c) => c.field).length >= 3);
+}
 
-/** Hydrate dates that were serialised to strings when the batch was stored as JSON. */
-const DATE_FIELDS = ['interview_date', 'date_of_birth', 'planting_date'] as const;
-function reviveDates(data: Record<string, any>) {
-  for (const f of DATE_FIELDS) if (typeof data[f] === 'string') data[f] = new Date(data[f]);
-  return data;
+/** Do a header-less sheet's first rows parse as data under `header` (a known district in most rows)? */
+function looksLikeDataFor(header: unknown[], rows: unknown[][]) {
+  const sample = rows.slice(0, 20);
+  if (!sample.length || Math.abs(sample[0].length - header.length) > 3) return false;
+  const { columns } = mapHeaders(header);
+  const ok = sample.filter((r) => parseRow(r, columns, 0).data.district).length;
+  return ok >= Math.ceil(sample.length * 0.6);
 }
 
 // ── Import: preview ──────────────────────────────────────────────────────────
 
 /**
  * @route POST /api/surveys/import/preview
- * @desc  Upload the survey spreadsheet. Parses + validates every row, matches
- *        existing farmers (national ID, then phone) and stores a preview batch.
- *        Nothing is written to farmer/farm tables yet.
+ * @desc  Upload a farmer spreadsheet — the field survey (one sheet per district
+ *        is fine) or the ASR member register (firstname, lastname, telephone,
+ *        idnumber, farm_*, upi-number …). Every sheet with a recognisable header
+ *        is read (or only `sheet` when given). Rows are validated, duplicates
+ *        merged, and farmers already in the system matched (national ID, then
+ *        phone + name). Nothing is written to farmer/farm tables yet.
  * @access Admin, Agent
  */
 router.post(
@@ -61,81 +61,76 @@ router.post(
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.file) return sendError(res, 'No file uploaded (field name: "file")', 400);
 
-    let sheetRows: unknown[][];
-    let sheetName: string;
+    let wb: ReturnType<typeof XLSX.read>;
     try {
-      const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-      sheetName = (req.body?.sheet && wb.SheetNames.includes(req.body.sheet)) ? req.body.sheet : wb.SheetNames[0];
-      sheetRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: true, defval: null, blankrows: false });
+      wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
     } catch {
       return sendError(res, 'Could not read the file — is it a valid Excel/CSV file?', 400);
     }
-    if (sheetRows.length < 2) return sendError(res, 'The sheet has no data rows', 400);
+    const only = typeof req.body?.sheet === 'string' && wb.SheetNames.includes(req.body.sheet) ? req.body.sheet : null;
+    const sheetNames = only ? [only] : wb.SheetNames;
+    const multi = sheetNames.length > 1;
 
-    // The header row is the first row containing a recognisable column.
-    const headerIdx = sheetRows.slice(0, 10).findIndex((r) => mapHeaders(r as unknown[]).columns.some((c) => c.field));
-    if (headerIdx === -1) return sendError(res, 'Could not find the header row (expected columns like District, owner of the farm, national_id)', 400);
+    const parsed: ParsedRow[] = [];
+    const sheets: { name: string; rows: number; skipped_reason?: string; note?: string }[] = [];
+    const recognized = new Map<string, string>();
+    const unrecognized = new Set<string>();
+    const missing = new Set<string>();
+    const fields = new Set<string>();
 
-    const { columns, unknown, missingCore } = mapHeaders(sheetRows[headerIdx] as unknown[]);
-    const dataRows = sheetRows.slice(headerIdx + 1).filter((r) => (r as unknown[]).some((c) => c !== null && String(c).trim() !== ''));
-    if (dataRows.length === 0) return sendError(res, 'The sheet has no data rows', 400);
-    if (dataRows.length > MAX_ROWS) return sendError(res, `Too many rows (${dataRows.length}). Split the file into parts of at most ${MAX_ROWS}.`, 400);
-
-    const parsed = dataRows.map((r, i) => parseRow(r as unknown[], columns, headerIdx + i + 2));
-
-    // Duplicates inside the file.
-    const firstByNid = new Map<string, number>();
-    for (const row of parsed) {
-      const nid = row.data.national_id;
-      if (!nid || !/^\d{16}$/.test(nid)) continue;
-      const prev = firstByNid.get(nid);
-      if (prev) row.errors.push(`Duplicate national_id — same as row ${prev}`);
-      else firstByNid.set(nid, row.row_number);
+    // Header of the last sheet that had one: district workbooks often have
+    // sheets pasted without their header row, in the same column layout.
+    let lastHeader: unknown[] | null = null;
+    for (const name of sheetNames) {
+      const sheetRows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: false }) as unknown[][];
+      let headerIdx = findHeader(sheetRows);
+      let header = headerIdx >= 0 ? sheetRows[headerIdx] : null;
+      if (!header && lastHeader && looksLikeDataFor(lastHeader, sheetRows)) {
+        header = lastHeader;
+        headerIdx = -1; // data starts on the first row
+      }
+      if (!header) {
+        sheets.push({ name, rows: 0, skipped_reason: 'No recognisable header row (e.g. District, owner of the farm / firstname, national_id)' });
+        continue;
+      }
+      lastHeader = header;
+      const { columns, unknown, missingCore } = mapHeaders(header);
+      columns.forEach((c) => { if (c.field) { recognized.set(c.header, c.field); fields.add(c.field); } });
+      unknown.forEach((u) => unrecognized.add(u));
+      missingCore.forEach((m) => missing.add(m));
+      let count = 0;
+      sheetRows.slice(headerIdx + 1).forEach((r, i) => {
+        if (!r.some((c) => c !== null && String(c).trim() !== '')) return;
+        const row = parseRow(r, columns, headerIdx + i + 2);
+        if (multi) row.sheet = name;
+        parsed.push(row);
+        count++;
+      });
+      sheets.push({ name, rows: count, ...(header !== sheetRows[headerIdx] ? { note: 'No header row — read with the previous sheet\'s columns' } : {}) });
     }
 
-    // Match existing farmers in bulk.
-    const nids = [...firstByNid.keys()];
-    const phones = [...new Set(parsed.map((r) => farmerPhoneOf(r.data)).filter(Boolean) as string[])];
-    const [profiles, users] = await Promise.all([
-      nids.length
-        ? prisma.farmerProfile.findMany({ where: { id_number: { in: nids } }, select: { id_number: true, user: { select: { id: true, full_name: true } } } })
-        : [],
-      phones.length
-        ? prisma.user.findMany({ where: { role: 'farmer', phone: { in: phones } }, select: { id: true, full_name: true, phone: true } })
-        : [],
-    ]);
-    const byNid = new Map(profiles.map((p) => [p.id_number!, p.user]));
-    const byPhone = new Map(users.map((u) => [u.phone!, u]));
+    if (!sheets.some((sh) => sh.rows > 0)) {
+      return sendError(res, 'No data rows found. Expected a header row with columns like District, owner of the farm / firstname, national_id, telephone.', 400);
+    }
+    if (parsed.length > MAX_ROWS) return sendError(res, `Too many rows (${parsed.length}). Split the file into parts of at most ${MAX_ROWS}.`, 400);
 
-    const rows: StoredRow[] = parsed.map((r) => {
-      const nidUser = r.data.national_id ? byNid.get(r.data.national_id) : undefined;
-      const phone = farmerPhoneOf(r.data);
-      const phoneUser = phone ? byPhone.get(phone) : undefined;
-      let match: Match = null;
-      if (nidUser) match = { type: 'national_id', farmer_id: nidUser.id, farmer_name: nidUser.full_name };
-      else if (phoneUser) {
-        match = { type: 'phone', farmer_id: phoneUser.id, farmer_name: phoneUser.full_name };
-        const name = farmerNameOf(r.data).toLowerCase();
-        if (name && !phoneUser.full_name.toLowerCase().includes(name.split(' ')[0])) {
-          r.warnings.push(`Phone matches existing farmer "${phoneUser.full_name}" but the name differs — check before importing`);
-        }
-      }
-      if (!farmerPhoneOf(r.data) && !r.data.national_id) {
-        r.warnings.push('No valid phone or national ID — the farmer can only be found by name later');
-      }
-      return { ...r, match };
-    });
+    // A field survey has interview columns; the member register does not.
+    const kind: ImportKind = fields.has('enumerator_name') || fields.has('interview_date') || fields.has('consent') ? 'survey' : 'register';
+    const rows = await prepareRows(parsed, kind);
+    const counts = previewCounts(rows);
 
-    const errorRows = rows.filter((r) => r.errors.length).length;
     const batch = await prisma.surveyImportBatch.create({
       data: {
         file_name: req.file.originalname,
-        total_rows: rows.length,
-        valid_rows: rows.length - errorRows,
-        error_rows: errorRows,
+        kind,
+        sheets: sheets as unknown as Prisma.InputJsonValue,
+        total_rows: counts.total_rows,
+        valid_rows: counts.valid_rows,
+        error_rows: counts.error_rows,
         rows: rows as unknown as Prisma.InputJsonValue,
         created_by: req.user!.id,
       },
+      select: { id: true, file_name: true },
     });
 
     return sendCreated(
@@ -143,18 +138,14 @@ router.post(
       {
         batch_id: batch.id,
         file_name: batch.file_name,
-        sheet: sheetName,
-        total_rows: rows.length,
-        valid_rows: rows.length - errorRows,
-        error_rows: errorRows,
-        warning_rows: rows.filter((r) => r.warnings.length).length,
-        matched_existing: rows.filter((r) => r.match && !r.errors.length).length,
-        new_farmers: rows.filter((r) => !r.match && !r.errors.length).length,
-        with_location: rows.filter((r) => r.data.latitude !== undefined).length,
+        kind,
+        sheet: sheetNames.length === 1 ? sheetNames[0] : null,
+        sheets,
+        ...counts,
         columns: {
-          recognized: columns.filter((c) => c.field).map((c) => ({ header: c.header, field: c.field })),
-          unrecognized: unknown,
-          missing_core: missingCore,
+          recognized: [...recognized].map(([header, field]) => ({ header, field })),
+          unrecognized: [...unrecognized],
+          missing_core: [...missing].filter((m) => !fields.has(m)),
         },
         rows: rows.slice(0, 200).map(summarizeRow),
       },
@@ -162,22 +153,6 @@ router.post(
     );
   })
 );
-
-function summarizeRow(r: StoredRow) {
-  return {
-    row_number: r.row_number,
-    farmer_name: farmerNameOf(r.data) || null,
-    national_id: r.data.national_id ?? null,
-    phone: farmerPhoneOf(r.data) ?? null,
-    district: r.data.district ?? null,
-    sector: r.data.sector ?? null,
-    trees: r.data.physical_tree_count ?? null,
-    has_location: r.data.latitude !== undefined,
-    match: r.match,
-    errors: r.errors,
-    warnings: r.warnings,
-  };
-}
 
 /**
  * @route GET /api/surveys/import/batches
@@ -192,17 +167,19 @@ router.get(
       orderBy: { created_at: 'desc' },
       take: 50,
       select: {
-        id: true, file_name: true, status: true, total_rows: true, valid_rows: true, error_rows: true,
+        id: true, file_name: true, kind: true, status: true, total_rows: true, valid_rows: true, error_rows: true, progress: true,
         result: true, created_at: true, committed_at: true, creator: { select: { full_name: true } },
       },
     });
-    return sendSuccess(res, batches, 'Import batches retrieved');
+    // The account list can be long; the table only needs the counters.
+    return sendSuccess(res, batches.map((b) => ({ ...b, result: b.result ? { ...(b.result as any), new_accounts: undefined } : null })), 'Import batches retrieved');
   })
 );
 
 /**
  * @route GET /api/surveys/import/batches/:id
- * @desc  Batch detail with rows (filter=errors|warnings|all, paginated)
+ * @desc  Batch detail: counters, commit progress/result and rows
+ *        (filter=errors|warnings|duplicates|all, paginated)
  * @access Admin, Agent
  */
 router.get(
@@ -214,14 +191,19 @@ router.get(
     const batch = await prisma.surveyImportBatch.findUnique({ where: { id: req.params.id } });
     if (!batch) return sendNotFound(res, 'Import batch not found');
     const filter = String(req.query.filter || 'all');
-    let rows = (batch.rows as unknown as StoredRow[]);
+    const all = batch.rows as unknown as StoredRow[];
+    let rows = all;
     if (filter === 'errors') rows = rows.filter((r) => r.errors.length);
     if (filter === 'warnings') rows = rows.filter((r) => r.warnings.length);
+    if (filter === 'duplicates') rows = rows.filter((r) => r.skip);
     const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit), 10) || 50));
     const { rows: _all, ...meta } = batch;
     return sendSuccess(res, {
       ...meta,
+      batch_id: batch.id,
+      ...previewCounts(all),
+      running: isCommitRunning(batch.id),
       filter,
       total_filtered: rows.length,
       page,
@@ -230,13 +212,37 @@ router.get(
   })
 );
 
+/**
+ * @route GET /api/surveys/import/batches/:id/status
+ * @desc  Commit progress only (cheap to poll): { status, progress, total_rows, result }
+ * @access Admin, Agent
+ */
+router.get(
+  '/import/batches/:id/status',
+  authenticate,
+  authorize('admin', 'agent'),
+  validateIdParam,
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const b = await prisma.surveyImportBatch.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, status: true, progress: true, total_rows: true, result: true, committed_at: true },
+    });
+    if (!b) return sendNotFound(res, 'Import batch not found');
+    const result = b.result ? { ...(b.result as any), new_accounts: undefined } : null;
+    return sendSuccess(res, { ...b, result, running: isCommitRunning(b.id) }, 'Import status');
+  })
+);
+
 // ── Import: commit ───────────────────────────────────────────────────────────
 
 /**
  * @route POST /api/surveys/import/batches/:id/commit
- * @desc  Import every valid row: link or create the farmer account (claimable
- *        later via POST /api/auth/verify-phone), create/update FarmerProfile and
- *        Farm (with GPS location), and store the full survey record.
+ * @desc  Import every valid row: link or create the farmer account (activated
+ *        later by the farmer with an SMS code), create/update FarmerProfile and
+ *        Farm (GPS point, UPI), and — for field surveys — store the survey record.
+ *        Small files finish in the request (200 + result). Bigger ones run in
+ *        the background (202): poll GET /import/batches/:id for `progress`.
+ *        An interrupted ('failed' part-way) batch can be committed again to resume.
  *        Body: { create_accounts?: boolean = true, update_profiles?: boolean = true }
  * @access Admin
  */
@@ -246,174 +252,40 @@ router.post(
   authorize('admin'),
   validateIdParam,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    const createAccounts = req.body?.create_accounts !== false;
-    const updateProfiles = req.body?.update_profiles !== false;
+    const options = { create_accounts: req.body?.create_accounts !== false, update_profiles: req.body?.update_profiles !== false };
 
     // Claim the batch atomically so a double-click can't import twice.
     const claimed = await prisma.surveyImportBatch.updateMany({
       where: { id: req.params.id, status: 'previewed' },
-      data: { status: 'committed', committed_at: new Date() },
+      data: { status: 'committing', committed_at: new Date(), result: emptyResult(options) as unknown as Prisma.InputJsonValue },
     });
     if (claimed.count === 0) {
-      const exists = await prisma.surveyImportBatch.findUnique({ where: { id: req.params.id }, select: { status: true } });
+      const exists = await prisma.surveyImportBatch.findUnique({ where: { id: req.params.id }, select: { status: true, progress: true, total_rows: true } });
       if (!exists) return sendNotFound(res, 'Import batch not found');
-      return sendError(res, `This batch was already ${exists.status}`, 409);
-    }
-    const batch = (await prisma.surveyImportBatch.findUnique({ where: { id: req.params.id } }))!;
-    const rows = batch.rows as unknown as StoredRow[];
-
-    const result = {
-      created_farmers: 0,
-      linked_farmers: 0,
-      skipped_no_account: 0,
-      created_farms: 0,
-      updated_farms: 0,
-      surveys: 0,
-      skipped_invalid: 0,
-      failed: [] as { row_number: number; error: string }[],
-      new_accounts: [] as { row_number: number; farmer_id: string; name: string; phone: string | null }[],
-    };
-
-    for (const row of rows) {
-      if (row.errors.length) {
-        result.skipped_invalid++;
-        continue;
-      }
-      const d = reviveDates({ ...row.data });
-      try {
-        await prisma.$transaction(async (tx) => {
-          // 1. Farmer account
-          let farmerId: string | null = row.match?.farmer_id ?? null;
-          // Re-check by national ID in case an earlier row in this commit created them.
-          if (!farmerId && d.national_id) {
-            const p = await tx.farmerProfile.findFirst({ where: { id_number: d.national_id }, select: { user_id: true } });
-            farmerId = p?.user_id ?? null;
-          }
-          const phone = farmerPhoneOf(d) ?? null;
-          const name = farmerNameOf(d);
-          const location = { province: d.province ?? null, district: d.district ?? null, sector: d.sector ?? null, cell: d.cell ?? null, village: d.village ?? null };
-          const area = farmAreaHectares(d.farm_area);
-          const gender = d.sex === 'male' ? 'Male' : d.sex === 'female' ? 'Female' : undefined;
-          const treeCount = d.physical_tree_count ?? 0;
-
-          if (farmerId) {
-            result.linked_farmers++;
-          } else if (createAccounts) {
-            const placeholderEmail = `farmer-${crypto.randomBytes(6).toString('hex')}@survey-import.local`;
-            const user = await tx.user.create({
-              data: {
-                email: placeholderEmail,
-                // Random, never shared: the farmer sets real credentials via /api/auth/verify-phone.
-                password: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 8),
-                full_name: name,
-                phone,
-                role: 'farmer',
-                status: 'active',
-                credentials_claimed: false,
-                qr_code_token: generateQRToken(),
-                profile: { ...location, source: 'survey_import', batch_id: batch.id } as Prisma.InputJsonValue,
-              },
-            });
-            farmerId = user.id;
-            result.created_farmers++;
-            result.new_accounts.push({ row_number: row.row_number, farmer_id: user.id, name, phone });
-          } else {
-            result.skipped_no_account++;
-          }
-
-          // 2. Farmer profile
-          if (farmerId) {
-            const existing = await tx.farmerProfile.findUnique({ where: { user_id: farmerId } });
-            const profileData: Record<string, any> = {
-              age: d.farmer_age, id_number: d.national_id, gender,
-              province: d.province, district: d.district, sector: d.sector, cell: d.cell, village: d.village,
-              farm_province: d.province, farm_district: d.district, farm_sector: d.sector, farm_cell: d.cell, farm_village: d.village,
-              farm_size: area?.hectares, tree_count: treeCount || undefined, avocado_type: d.varieties?.join(', '),
-              planted: d.planting_date ? String((d.planting_date as Date).getUTCFullYear()) : undefined,
-            };
-            Object.keys(profileData).forEach((k) => profileData[k] === undefined && delete profileData[k]);
-            if (!existing) {
-              await tx.farmerProfile.create({ data: { user_id: farmerId, ...profileData } as any });
-            } else if (updateProfiles) {
-              // Only fill gaps — never overwrite what the farmer/agent already entered.
-              const fill: Record<string, any> = {};
-              for (const [k, v] of Object.entries(profileData)) {
-                const cur = (existing as any)[k];
-                if (cur === null || cur === undefined || cur === '' || (k === 'tree_count' && cur === 0)) fill[k] = v;
-              }
-              if (Object.keys(fill).length) await tx.farmerProfile.update({ where: { user_id: farmerId }, data: fill });
-            }
-          }
-
-          // 3. Farm
-          let farmId: string | null = null;
-          if (farmerId) {
-            const farm = await tx.farm.findFirst({ where: { farmer_id: farmerId, archived_at: null }, orderBy: { created_at: 'asc' } });
-            if (farm) {
-              farmId = farm.id;
-              const fill: Prisma.FarmUpdateInput = {};
-              if (farm.latitude === null && d.latitude !== undefined) { fill.latitude = d.latitude; fill.longitude = d.longitude; }
-              if (!farm.tree_count && treeCount) fill.tree_count = treeCount;
-              if ((!farm.varieties || farm.varieties.length === 0) && d.varieties?.length) fill.varieties = d.varieties;
-              if (Object.keys(fill).length) { await tx.farm.update({ where: { id: farm.id }, data: fill }); result.updated_farms++; }
-            } else {
-              const created = await tx.farm.create({
-                data: {
-                  farmName: `${name.split(' ')[0] || 'Farmer'}'s avocado farm${d.village ? ` (${d.village})` : ''}`,
-                  farmerName: name,
-                  farmer_id: farmerId,
-                  location: { ...location, coordinates: d.latitude !== undefined ? { lat: d.latitude, lng: d.longitude } : null },
-                  farm_size: area?.hectares ?? 0,
-                  tree_count: treeCount,
-                  varieties: d.varieties ?? [],
-                  planting_date: d.planting_date ?? d.interview_date ?? new Date(),
-                  status: d.ever_harvested ? 'producing' : 'growing',
-                  latitude: d.latitude ?? null,
-                  longitude: d.longitude ?? null,
-                  notes: `Imported from field survey (${batch.file_name}, row ${row.row_number})`,
-                },
-              });
-              farmId = created.id;
-              result.created_farms++;
-            }
-          }
-
-          // 4. Survey record (always kept, even without an account)
-          const { survey_province, survey_district, ...rest } = d;
-          await tx.farmSurvey.create({
-            data: {
-              ...(rest as any),
-              survey_province: survey_province ?? null,
-              survey_district: survey_district ?? null,
-              seedling_sources: d.seedling_sources ?? [],
-              varieties: d.varieties ?? [],
-              fertilizer_types: d.fertilizer_types ?? [],
-              pesticide_types: d.pesticide_types ?? [],
-              input_access: d.input_access ?? [],
-              selling_channels: d.selling_channels ?? [],
-              production_info_access: d.production_info_access ?? [],
-              market_info_access: d.market_info_access ?? [],
-              credit_access: d.credit_access ?? [],
-              raw: row.raw as Prisma.InputJsonValue,
-              batch_id: batch.id,
-              row_number: row.row_number,
-              farmer_id: farmerId,
-              farm_id: farmId,
-            },
-          });
-          result.surveys++;
-        }, { timeout: 20000 });
-      } catch (error: any) {
-        logger.error(`Survey import row ${row.row_number} failed: ${error?.message}`);
-        result.failed.push({ row_number: row.row_number, error: error?.message?.split('\n').pop() || 'Unknown error' });
+      // Resume a batch that stopped part-way.
+      const resumable = exists.status === 'failed' && exists.progress < exists.total_rows;
+      const resumed = resumable && (await prisma.surveyImportBatch.updateMany({ where: { id: req.params.id, status: 'failed' }, data: { status: 'committing' } })).count > 0;
+      if (!resumed) {
+        if (exists.status === 'committing') return sendError(res, `This batch is already being imported (${exists.progress}/${exists.total_rows} rows)`, 409);
+        return sendError(res, `This batch was already ${exists.status}`, 409);
       }
     }
 
-    await prisma.surveyImportBatch.update({
-      where: { id: batch.id },
-      data: { result: result as unknown as Prisma.InputJsonValue, status: result.surveys === 0 && result.failed.length ? 'failed' : 'committed' },
+    const batch = (await prisma.surveyImportBatch.findUnique({ where: { id: req.params.id }, select: { id: true, total_rows: true, progress: true } }))!;
+    if (batch.total_rows - batch.progress <= SYNC_COMMIT_MAX_ROWS) {
+      const result = await commitBatch(batch.id);
+      if (!result) return sendError(res, 'This batch is already being imported', 409);
+      return sendSuccess(res, result, `Imported ${result.created_farmers} new and ${result.linked_farmers} existing farmers`);
+    }
+    commitBatch(batch.id).catch(async (error) => {
+      await prisma.surveyImportBatch.update({ where: { id: batch.id }, data: { status: 'failed' } }).catch(() => undefined);
+      logger.error(`Background import ${batch.id} failed: ${error?.message}`);
     });
-    return sendSuccess(res, result, `Imported ${result.surveys} survey records`);
+    return res.status(202).json({
+      success: true,
+      message: `Importing ${batch.total_rows} rows in the background — this page shows the progress`,
+      data: { batch_id: batch.id, status: 'committing', progress: batch.progress, total_rows: batch.total_rows },
+    });
   })
 );
 

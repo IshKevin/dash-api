@@ -59,6 +59,7 @@ function sendFarmerImportantNotice(to: string, message: string): Promise<SendRes
 }
 
 export const smsService = {
+  isConfigured: () => Boolean(env.AFRICASTALKING_USERNAME && env.AFRICASTALKING_API_KEY),
   send,
   sendRegistrationDocumentsNotice,
   sendFarmerApprovalCredentials,
