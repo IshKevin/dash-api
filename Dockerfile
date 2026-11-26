@@ -38,6 +38,8 @@ COPY prisma ./prisma
 RUN npx prisma generate
 
 COPY --from=builder /app/dist ./dist
+# Offline geography data (boundaries + official division names), read at runtime
+COPY --from=builder /app/src/data ./dist/src/data
 COPY entrypoint.sh ./entrypoint.sh
 
 # Create non-root user and give it ownership of the whole workdir

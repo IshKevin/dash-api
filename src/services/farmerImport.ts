@@ -20,6 +20,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import logger from '../config/logger';
 import { generateQRToken } from '../utils/accessKey';
+import { locate, sameArea } from './rwandaBoundaries';
 import { ParsedRow, farmerNameOf, farmerPhoneOf, farmAreaHectares, nameKey, NON_SURVEY_FIELDS } from './surveyParser';
 
 export type Match = { type: 'national_id' | 'phone'; farmer_id: string; farmer_name: string } | null;
@@ -73,6 +74,29 @@ function mergeInto(target: ParsedRow, source: ParsedRow) {
 
 export async function prepareRows(parsed: ParsedRow[], kind: ImportKind): Promise<StoredRow[]> {
   const rows: StoredRow[] = parsed.map((r) => ({ ...r, match: null, skip: null }));
+
+  // 0. GPS against the official boundaries: fill a missing district / sector /
+  //    cell, and flag rows whose point is somewhere else than the address given.
+  for (const row of rows) {
+    const d = row.data;
+    if (d.latitude === undefined || d.longitude === undefined) continue;
+    const at = locate(d.latitude, d.longitude);
+    if (!at.district) continue;
+    if (!d.district) {
+      Object.assign(d, { province: at.province, district: at.district });
+      if (at.sector && !d.sector) d.sector = at.sector;
+      if (at.cell && !d.cell) d.cell = at.cell;
+      row.errors = row.errors.filter((e) => e !== 'Missing district');
+      row.warnings.push(`District taken from the GPS point: ${at.sector ? `${at.sector}, ` : ''}${at.district}`);
+    } else if (!sameArea(d.district, at.district)) {
+      row.warnings.push(`GPS point is in ${at.sector ? `${at.sector} sector, ` : ''}${at.district} district, but the farm is recorded in ${d.district} — check the location`);
+    } else if (d.sector && at.sector && !sameArea(d.sector, at.sector)) {
+      row.warnings.push(`GPS point is in ${at.sector} sector, but the farm is recorded in ${d.sector} sector`);
+    } else {
+      if (!d.sector && at.sector) d.sector = at.sector;
+      if (!d.cell && at.cell && (!d.sector || sameArea(d.sector, at.sector))) d.cell = at.cell;
+    }
+  }
 
   // 1. Same national ID more than once in the file. In the member register it is
   //    the same member listed again (e.g. on a later month's sheet): merge. In a
@@ -399,6 +423,13 @@ export async function commitBatch(batchId: string): Promise<ImportResult | null>
     const passwordHash = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
     const ctx = { batchId, fileName: batch.file_name, kind, passwordHash, result };
 
+    // Rows already stored before a restart (resume only): one query, not one per row.
+    const done = new Set<string>();
+    if (kind === 'survey' && batch.progress > 0) {
+      const existing = await prisma.farmSurvey.findMany({ where: { batch_id: batchId }, select: { row_number: true, raw: true } });
+      existing.forEach((e) => done.add(`${(e.raw as any)?._sheet ?? ''}#${e.row_number}`));
+    }
+
     const checkpoint = (progress: number, status?: 'committed' | 'failed') =>
       prisma.surveyImportBatch.update({
         where: { id: batchId },
@@ -410,9 +441,7 @@ export async function commitBatch(batchId: string): Promise<ImportResult | null>
       if (row.errors.length) result.skipped_invalid++;
       else if (row.skip) result.skipped_duplicates++;
       else {
-        // A survey row already stored means this row was done before a restart.
-        const done = kind === 'survey' && (await prisma.farmSurvey.findFirst({ where: { batch_id: batchId, row_number: row.row_number, ...(row.sheet ? { raw: { path: ['_sheet'], equals: row.sheet } } : {}) }, select: { id: true } }));
-        if (!done) {
+        if (!done.has(`${row.sheet ?? ''}#${row.row_number}`)) {
           try {
             await prisma.$transaction((tx) => importRow(tx, row, ctx), { timeout: 20000 });
           } catch (error: any) {

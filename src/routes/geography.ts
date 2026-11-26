@@ -1,7 +1,9 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, adminOnly } from '../middleware/auth';
+import { authenticate, adminOnly, authorize } from '../middleware/auth';
+import { farmerScope } from '../utils/agentScope';
+import { boundaries, locate, divisions, sameArea, ADMIN_LEVELS, AdminLevel, BOUNDARY_ATTRIBUTION } from '../services/rwandaBoundaries';
 import { sendSuccess, sendCreated, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 
@@ -346,6 +348,130 @@ router.get('/full', authenticate, asyncHandler(async (_req: AuthenticatedRequest
   });
 
   sendSuccess(res, provinces, 'Full geography hierarchy retrieved successfully');
+}));
+
+// ── Official divisions, boundaries and per-area statistics ───────────────────
+
+/**
+ * @route POST /api/geography/sync
+ * @desc  Fill the province → village tables with Rwanda's official divisions
+ *        (5 / 30 / 416 / 2,148 / 14,837). Idempotent: existing rows are kept,
+ *        missing ones added.
+ * @access Admin
+ */
+router.post('/sync', authenticate, adminOnly, asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
+  const data = divisions();
+  const before = await Promise.all([prisma.province.count(), prisma.district.count(), prisma.sector.count(), prisma.cell.count(), prisma.village.count()]);
+  await prisma.province.createMany({ data: data.map((p) => ({ name: p.name })), skipDuplicates: true });
+  const provinces = new Map((await prisma.province.findMany()).map((p) => [p.name, p.id]));
+  await prisma.district.createMany({
+    data: data.flatMap((p) => p.districts.map((d) => ({ name: d.name, province_id: provinces.get(p.name)! }))),
+    skipDuplicates: true,
+  });
+  const districts = new Map((await prisma.district.findMany()).map((d) => [`${d.province_id}|${d.name}`, d.id]));
+  const districtId = (p: string, d: string) => districts.get(`${provinces.get(p)}|${d}`)!;
+  await prisma.sector.createMany({
+    data: data.flatMap((p) => p.districts.flatMap((d) => d.sectors.map((s) => ({ name: s.name, district_id: districtId(p.name, d.name) })))),
+    skipDuplicates: true,
+  });
+  const sectors = new Map((await prisma.sector.findMany()).map((s) => [`${s.district_id}|${s.name}`, s.id]));
+  const sectorId = (p: string, d: string, s: string) => sectors.get(`${districtId(p, d)}|${s}`)!;
+  await prisma.cell.createMany({
+    data: data.flatMap((p) => p.districts.flatMap((d) => d.sectors.flatMap((s) => s.cells.map((c) => ({ name: c.name, sector_id: sectorId(p.name, d.name, s.name) }))))),
+    skipDuplicates: true,
+  });
+  const cells = new Map((await prisma.cell.findMany()).map((c) => [`${c.sector_id}|${c.name}`, c.id]));
+  const villages = data.flatMap((p) => p.districts.flatMap((d) => d.sectors.flatMap((s) => s.cells.flatMap((c) => {
+    const cell_id = cells.get(`${sectorId(p.name, d.name, s.name)}|${c.name}`)!;
+    return [...new Set(c.villages)].map((v) => ({ name: v, cell_id }));
+  }))));
+  for (let i = 0; i < villages.length; i += 5000) {
+    await prisma.village.createMany({ data: villages.slice(i, i + 5000), skipDuplicates: true });
+  }
+  const after = await Promise.all([prisma.province.count(), prisma.district.count(), prisma.sector.count(), prisma.cell.count(), prisma.village.count()]);
+  const names = ['provinces', 'districts', 'sectors', 'cells', 'villages'];
+  sendSuccess(
+    res,
+    Object.fromEntries(names.map((n, i) => [n, { total: after[i], added: after[i] - before[i] }])),
+    `Official divisions loaded: ${after.map((n, i) => `${n} ${names[i]}`).join(', ')}`
+  );
+}));
+
+/**
+ * @route GET /api/geography/boundaries/:level?district=&sector=
+ * @desc  GeoJSON boundaries: province | district | sector | cell. Sectors and
+ *        cells can be limited to one district (and sector) to keep it small.
+ *        Attribution required: geoBoundaries (CC BY 4.0).
+ * @access Any authenticated user
+ */
+router.get('/boundaries/:level', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const level = req.params.level as AdminLevel;
+  if (!ADMIN_LEVELS.includes(level)) return sendError(res, `level must be one of ${ADMIN_LEVELS.join(', ')}`, 400);
+  const district = typeof req.query.district === 'string' ? req.query.district : undefined;
+  const sector = typeof req.query.sector === 'string' ? req.query.sector : undefined;
+  if (level === 'cell' && !district) return sendError(res, 'Cell boundaries need ?district= (there are 2,148 cells)', 400);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  return sendSuccess(res, boundaries(level, { district, sector }), 'Boundaries');
+}));
+
+/**
+ * @route GET /api/geography/locate?lat=&lng=
+ * @desc  Province, district, sector and cell of a GPS point
+ * @access Any authenticated user
+ */
+router.get('/locate', authenticate, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return sendError(res, 'lat and lng are required', 400);
+  const area = locate(lat, lng);
+  return sendSuccess(res, { ...area, inside_rwanda: Boolean(area.district) }, area.district ? 'Location found' : 'This point is not inside Rwanda');
+}));
+
+/**
+ * @route GET /api/geography/stats?level=district|sector&district=
+ * @desc  Farmers, farms, trees, hectares and mapping progress per district (or
+ *        per sector of one district), plus farms whose GPS point lies outside
+ *        the district/sector recorded for them. Agents see only their area.
+ * @access Admin, Agent
+ */
+router.get('/stats', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const level = req.query.level === 'sector' ? 'sector' : 'district';
+  const district = typeof req.query.district === 'string' ? req.query.district : undefined;
+  if (level === 'sector' && !district) return sendError(res, 'level=sector needs ?district=', 400);
+  const scope = await farmerScope(req);
+  const farms = await prisma.farm.findMany({
+    where: {
+      archived_at: null,
+      ...(scope ? { farmer: scope } : {}),
+      ...(district ? { location: { path: ['district'], equals: district } } : {}),
+    },
+    select: { farmer_id: true, location: true, tree_count: true, farm_size: true, latitude: true, longitude: true, parcel_boundary: true, farmer: { select: { credentials_claimed: true } } },
+  });
+  type Row = { area: string; farmers: Set<string>; activated: Set<string>; farms: number; trees: number; hectares: number; on_map: number; with_boundary: number; gps_elsewhere: number };
+  const rows = new Map<string, Row>();
+  let unassigned = 0;
+  for (const f of farms) {
+    const loc = (f.location as any) || {};
+    const area = level === 'district' ? loc.district : loc.sector;
+    if (!area) { unassigned++; continue; }
+    const r = rows.get(area) ?? { area, farmers: new Set(), activated: new Set(), farms: 0, trees: 0, hectares: 0, on_map: 0, with_boundary: 0, gps_elsewhere: 0 };
+    r.farmers.add(f.farmer_id);
+    if (f.farmer.credentials_claimed) r.activated.add(f.farmer_id);
+    r.farms++;
+    r.trees += f.tree_count || 0;
+    r.hectares += f.farm_size || 0;
+    if (f.parcel_boundary) r.with_boundary++;
+    if (f.latitude !== null && f.longitude !== null) {
+      r.on_map++;
+      const at = locate(f.latitude, f.longitude);
+      if (at.district && !sameArea(at[level], area)) r.gps_elsewhere++;
+    }
+    rows.set(area, r);
+  }
+  const items = [...rows.values()]
+    .map((r) => ({ ...r, farmers: r.farmers.size, activated: r.activated.size, hectares: Math.round(r.hectares * 100) / 100 }))
+    .sort((a, b) => b.farms - a.farms);
+  return sendSuccess(res, { level, district: district ?? null, items, farms_without_area: unassigned, attribution: BOUNDARY_ATTRIBUTION }, 'Area statistics');
 }));
 
 export default router;

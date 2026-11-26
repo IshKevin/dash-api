@@ -440,7 +440,7 @@ Agents only see and invite farmers inside their assigned territory. The SMS link
 | PUT | `/farms/:farmId` | Admin, Agent, Farmer (own) | Set `upi`, `latitude/longitude`, `parcel_boundary` (GeoJSON Polygon, must be in Rwanda; area computed), `land_use`, `land_tenure`. Clears verification |
 | POST | `/farms/:farmId/verify` | Admin, Agent | Stamp as verified after a field visit; fills gaps from the registry when connected |
 
-| GET | `/issues` | Admin, Agent | Farms whose land data needs work, with counts per issue: `upi_without_boundary`, `not_on_map`, `point_outside_boundary` (GPS point >100 m outside the boundary), `area_mismatch` (boundary area vs declared farm size off by 2×), `far_from_district` (>40 km from the UPI's or address's district) |
+| GET | `/issues` | Admin, Agent | Farms whose land data needs work, with counts per issue: `upi_without_boundary`, `not_on_map`, `point_outside_boundary` (GPS point >100 m outside the boundary), `area_mismatch` (boundary area vs declared farm size off by 2×), `outside_recorded_area` (map location is in another district/sector than recorded, checked against the official boundaries), `upi_elsewhere` (UPI district ≠ map location), `outside_rwanda` |
 
 Saving land data (`PUT /farms/:id`) returns these checks as `warnings`, plus overlaps with other farms' boundaries (more than 5% of the area).
 

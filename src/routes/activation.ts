@@ -14,7 +14,9 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { farmerScope } from '../utils/agentScope';
+import { farmerScope, canServeFarmer, OUTSIDE_TERRITORY } from '../utils/agentScope';
+import { toRwandaPhone } from '../utils/phone';
+import { canonicalDistrict } from '../services/rwandaGeo';
 import { smsService } from '../services/smsService';
 import logger from '../config/logger';
 
@@ -124,6 +126,120 @@ router.get(
       sms_configured: smsService.isConfigured(),
       invite_job: inviteJob ? { ...inviteJob } : null,
     }, 'Activation summary');
+  })
+);
+
+// ── Staff fix missing details ────────────────────────────────────────────────
+
+const farmerDetailSelect = {
+  id: true, full_name: true, phone: true, email: true, credentials_claimed: true, activation_invited_at: true,
+  farmer_profile: {
+    select: {
+      id_number: true, gender: true, age: true, province: true, district: true, sector: true, cell: true, village: true,
+      farm_province: true, farm_district: true, farm_sector: true, farm_cell: true, farm_village: true,
+    },
+  },
+} satisfies Prisma.UserSelect;
+
+/**
+ * @route GET /api/activation/farmers/:id
+ * @desc  One farmer's account + profile fields that staff can complete
+ * @access Admin, Agent (own territory)
+ */
+router.get(
+  '/farmers/:id',
+  authenticate,
+  authorize('admin', 'agent'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    if (!(await canServeFarmer(req, req.params.id))) return sendError(res, OUTSIDE_TERRITORY, 403);
+    const u = await prisma.user.findFirst({ where: { id: req.params.id, role: 'farmer' }, select: farmerDetailSelect });
+    if (!u) return sendError(res, 'Farmer not found', 404);
+    return sendSuccess(res, { ...u, email: hasRealEmail(u.email) ? u.email : null }, 'Farmer retrieved');
+  })
+);
+
+/**
+ * @route PATCH /api/activation/farmers/:id
+ * @desc  Staff complete a farmer's missing details so they can activate:
+ *        { full_name?, phone?, national_id?, gender?, age?, province?, district?, sector?, cell?, village?,
+ *          farm_district?, farm_sector?, farm_cell?, farm_village? }
+ *        A phone or national ID may belong to only one account. Not allowed
+ *        once the farmer has activated (they edit their own profile then),
+ *        except adding a missing value.
+ * @access Admin, Agent (own territory)
+ */
+router.patch(
+  '/farmers/:id',
+  authenticate,
+  authorize('admin', 'agent'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    if (!(await canServeFarmer(req, req.params.id))) return sendError(res, OUTSIDE_TERRITORY, 403);
+    const user = await prisma.user.findFirst({ where: { id: req.params.id, role: 'farmer' }, select: farmerDetailSelect });
+    if (!user) return sendError(res, 'Farmer not found', 404);
+    const b = req.body || {};
+    const userData: Prisma.UserUpdateInput = {};
+    const profile: Record<string, any> = {};
+    const current: Record<string, any> = { ...(user.farmer_profile ?? {}), phone: user.phone, full_name: user.full_name };
+    // After activation the farmer owns their data: staff may only fill gaps.
+    const locked = (field: string) => user.credentials_claimed && current[field] !== null && current[field] !== undefined && current[field] !== '';
+
+    if (b.full_name !== undefined) {
+      const name = String(b.full_name).replace(/\s+/g, ' ').trim();
+      if (name.length < 2) return sendError(res, 'Enter the farmer\'s full name', 400);
+      if (locked('full_name') && name !== user.full_name) return sendError(res, 'This farmer has activated their account — they change their name themselves', 409);
+      userData.full_name = name;
+    }
+    if (b.phone !== undefined) {
+      const phone = toRwandaPhone(b.phone);
+      if (!phone) return sendError(res, 'Enter a Rwandan mobile number, e.g. 0788 123 456', 400);
+      if (locked('phone') && phone !== user.phone) return sendError(res, 'This farmer has activated their account — they change their phone themselves', 409);
+      const owner = await prisma.user.findFirst({ where: { phone, id: { not: user.id } }, select: { id: true } });
+      if (owner) return sendError(res, 'This phone number already belongs to another account. Each farmer needs their own number to receive the activation code.', 409);
+      userData.phone = phone;
+    }
+    if (b.national_id !== undefined && b.national_id !== null && b.national_id !== '') {
+      const nid = String(b.national_id).replace(/\s/g, '');
+      if (!/^\d{16}$/.test(nid)) return sendError(res, 'The national ID has 16 digits', 400);
+      if (locked('id_number') && nid !== current.id_number) return sendError(res, 'This farmer has activated their account — the national ID can only be changed by an admin', 409);
+      const owner = await prisma.farmerProfile.findFirst({ where: { id_number: nid, user_id: { not: user.id } }, select: { id: true } });
+      if (owner) return sendError(res, 'This national ID is already registered to another farmer', 409);
+      profile.id_number = nid;
+    }
+    if (b.gender !== undefined && b.gender !== '') {
+      if (!['Male', 'Female', 'Other'].includes(b.gender)) return sendError(res, 'gender must be Male, Female or Other', 400);
+      profile.gender = b.gender;
+    }
+    if (b.age !== undefined && b.age !== '' && b.age !== null) {
+      const age = Number(b.age);
+      if (!Number.isInteger(age) || age < 12 || age > 110) return sendError(res, 'age must be a whole number between 12 and 110', 400);
+      profile.age = age;
+    }
+    for (const prefix of ['', 'farm_'] as const) {
+      if (b[`${prefix}district`] !== undefined && b[`${prefix}district`] !== '') {
+        const d = canonicalDistrict(b[`${prefix}district`]);
+        if (!d) return sendError(res, `${prefix}district must be one of Rwanda's 30 districts`, 400);
+        profile[`${prefix}district`] = d.name;
+        profile[`${prefix}province`] = d.province;
+      }
+      for (const lvl of ['sector', 'cell', 'village']) {
+        const v = b[`${prefix}${lvl}`];
+        if (v !== undefined) profile[`${prefix}${lvl}`] = v === null || v === '' ? null : String(v).trim().slice(0, 100);
+      }
+    }
+    for (const k of Object.keys(profile)) {
+      if (k !== 'id_number' && locked(k) && profile[k] !== current[k]) delete profile[k]; // keep the farmer's own answers
+    }
+    if (!Object.keys(userData).length && !Object.keys(profile).length) return sendError(res, 'Nothing to update', 400);
+
+    await prisma.$transaction(async (tx) => {
+      if (Object.keys(userData).length) await tx.user.update({ where: { id: user.id }, data: userData });
+      if (Object.keys(profile).length) {
+        await tx.farmerProfile.upsert({ where: { user_id: user.id }, update: profile, create: { user_id: user.id, ...profile } });
+      }
+    });
+    logger.info(`Farmer ${user.id} details updated by ${req.user!.role} ${req.user!.id}: ${[...Object.keys(userData), ...Object.keys(profile)].join(', ')}`);
+    const updated = await prisma.user.findUnique({ where: { id: user.id }, select: farmerDetailSelect });
+    return sendSuccess(res, { ...updated!, email: hasRealEmail(updated!.email) ? updated!.email : null }, 'Farmer details saved');
   })
 );
 

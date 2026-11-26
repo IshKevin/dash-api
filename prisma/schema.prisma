@@ -911,6 +911,7 @@ model FarmerProfile {
   membership_valid_until DateTime?
 
   @@index([province])
+  @@index([id_number])
   @@index([district])
 }
 
@@ -1566,6 +1567,7 @@ model FarmSurvey {
 
   @@index([district])
   @@index([national_id])
+  @@index([batch_id, row_number])
   @@index([farmer_id])
   @@index([interview_date])
 }
@@ -1620,6 +1622,10 @@ model Facility {
   contact_phone String?
   opening_hours String?
   active      Boolean      @default(true)
+  /// 'manual' | 'osm' (imported from OpenStreetMap, ODbL — attribution required)
+  source      String       @default("manual")
+  /// e.g. 'osm:node/123456' — prevents importing the same place twice
+  external_id String?      @unique
   created_by  String?
   created_at  DateTime     @default(now())
   updated_at  DateTime     @updatedAt

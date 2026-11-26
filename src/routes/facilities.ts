@@ -8,6 +8,8 @@ import { sendSuccess, sendCreated, sendError, sendNotFound, sendPaginatedRespons
 import { AuthenticatedRequest } from '../types/auth';
 import { canonicalDistrict, canonicalProvince } from '../services/rwandaGeo';
 import { LatLng, districtCentre, haversineKm, isInRwanda, parseLatLng, roundKm } from '../services/proximity';
+import { searchOsmFacilities, OSM_SEARCHABLE_TYPES, OSM_ATTRIBUTION } from '../services/osmFacilities';
+import { locate } from '../services/rwandaBoundaries';
 
 const router = Router();
 
@@ -262,6 +264,85 @@ router.get(
       facilities: byType,
       facility_types: TYPES,
     }, 'Nearby services retrieved successfully');
+  })
+);
+
+// ── Import from OpenStreetMap ────────────────────────────────────────────────
+
+/**
+ * @route POST /api/facilities/osm/search
+ * @desc  Find markets, banks/SACCOs, airfields, agro-input shops, government
+ *        offices… on OpenStreetMap, in one district or all of Rwanda. Each
+ *        result says whether it is already in the directory (same OSM place,
+ *        or same type within 150 m). Nothing is saved.
+ *        Body: { types: string[], district? }
+ * @access Admin
+ */
+router.post(
+  '/osm/search',
+  authenticate,
+  authorize('admin'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const types: string[] = Array.isArray(req.body?.types) && req.body.types.length ? req.body.types.map(String) : OSM_SEARCHABLE_TYPES;
+    const bad = types.filter((t) => !OSM_SEARCHABLE_TYPES.includes(t));
+    if (bad.length) return sendError(res, `Unknown types: ${bad.join(', ')} (use ${OSM_SEARCHABLE_TYPES.join(', ')})`, 400);
+    let district: string | undefined;
+    if (req.body?.district) {
+      district = canonicalDistrict(req.body.district)?.name;
+      if (!district) return sendError(res, 'district must be a valid Rwanda district', 400);
+    }
+    let found;
+    try {
+      found = await searchOsmFacilities(types, district);
+    } catch (e: any) {
+      return sendError(res, `OpenStreetMap search failed (${e?.response?.status || e?.code || e?.message}). Try again in a minute, or search one district.`, 502);
+    }
+    const existing = await prisma.facility.findMany({
+      where: district ? { district } : {},
+      select: { id: true, name: true, type: true, latitude: true, longitude: true, external_id: true },
+    });
+    const byExternal = new Map(existing.filter((e) => e.external_id).map((e) => [e.external_id!, e]));
+    const items = found.map((c) => {
+      const dup = byExternal.get(c.external_id) ??
+        existing.find((e) => e.type === c.type && haversineKm({ lat: e.latitude, lng: e.longitude }, { lat: c.latitude, lng: c.longitude }) < 0.15);
+      return { ...c, already_in_directory: dup ? { id: dup.id, name: dup.name } : null };
+    });
+    return sendSuccess(res, { items, total: items.length, new: items.filter((i) => !i.already_in_directory).length, attribution: OSM_ATTRIBUTION }, `${items.length} places found on OpenStreetMap`);
+  })
+);
+
+/**
+ * @route POST /api/facilities/osm/import
+ * @desc  Save selected search results to the facility directory.
+ *        Body: { items: [{ external_id, name, type, latitude, longitude, sector?, contact_phone?, opening_hours?, description? }] }
+ *        The district/province come from the official boundaries, not the client.
+ * @access Admin
+ */
+router.post(
+  '/osm/import',
+  authenticate,
+  authorize('admin'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length || items.length > 2000) return sendError(res, 'items must list 1–2000 places', 400);
+    let created = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+    for (const it of items) {
+      const ext = typeof it.external_id === 'string' && /^osm:(node|way|relation)\/\d+$/.test(it.external_id) ? it.external_id : null;
+      const lat = Number(it.latitude);
+      const lng = Number(it.longitude);
+      const at = Number.isFinite(lat) && Number.isFinite(lng) ? locate(lat, lng) : null;
+      if (!ext || !at?.district) { errors.push(`${it.name ?? '?'}: invalid place`); continue; }
+      const [data, err] = buildFacilityData({ ...it, district: at.district, sector: it.sector ?? at.sector }, false);
+      if (err) { errors.push(`${it.name ?? '?'}: ${err}`); continue; }
+      const r = await prisma.facility.createMany({
+        data: [{ ...(data as any), source: 'osm', external_id: ext, created_by: req.user!.id }],
+        skipDuplicates: true,
+      });
+      if (r.count) created++; else skipped++;
+    }
+    return sendCreated(res, { created, skipped_already_imported: skipped, errors, attribution: OSM_ATTRIBUTION }, `${created} facilities imported`);
   })
 );
 

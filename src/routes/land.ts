@@ -7,7 +7,7 @@ import { sendSuccess, sendError, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
 import { canAccessFarmer } from '../utils/agentScope';
 import { parseUpi, ringAreaSqm, ringCentroid, canonicalDistrict, distanceToRingM, ringsOverlap } from '../services/rwandaGeo';
-import { districtCentre, haversineKm } from '../services/proximity';
+import { locate, sameArea } from '../services/rwandaBoundaries';
 import { farmerScope } from '../utils/agentScope';
 import { inRwanda } from '../services/surveyParser';
 import { isRegistryEnabled, lookupParcel } from '../services/landRegistry';
@@ -99,12 +99,22 @@ export function basicLandChecks(farm: FarmLand): { code: string; message: string
   }
   const centre = ring ? ringCentroid(ring) : farm.latitude !== null && farm.longitude !== null ? { lat: farm.latitude, lng: farm.longitude } : null;
   if (centre) {
+    // Exact check against the official boundaries: where is the map location really?
+    const at = locate(centre.lat, centre.lng);
+    const loc = (farm.location as any) || {};
+    const recorded = canonicalDistrict(loc.district)?.name ?? null;
     const upiDistrict = farm.upi ? parseUpi(farm.upi)?.district ?? null : null;
-    const recorded = canonicalDistrict((farm.location as any)?.district)?.name ?? null;
-    for (const [district, what] of [[upiDistrict, 'the UPI'], [recorded !== upiDistrict ? recorded : null, 'the farm address']] as const) {
-      const c = district ? districtCentre(district) : null;
-      if (c && haversineKm(c, centre) > 40) {
-        out.push({ code: 'far_from_district', message: `The map location is ${Math.round(haversineKm(c, centre))} km from ${district} district (from ${what}) — the location or the district is wrong` });
+    if (!at.district) {
+      out.push({ code: 'outside_rwanda', message: 'The map location is outside Rwanda' });
+    } else {
+      const place = [at.cell && `${at.cell} cell`, at.sector && `${at.sector} sector`, `${at.district} district`].filter(Boolean).join(', ');
+      if (recorded && recorded !== at.district) {
+        out.push({ code: 'outside_recorded_area', message: `The map location is in ${place}, but the farm is recorded in ${recorded} district — fix the location or the address` });
+      } else if (recorded && loc.sector && at.sector && !sameArea(loc.sector, at.sector)) {
+        out.push({ code: 'outside_recorded_area', message: `The map location is in ${place}, but the farm is recorded in ${loc.sector} sector` });
+      }
+      if (upiDistrict && upiDistrict !== at.district) {
+        out.push({ code: 'upi_elsewhere', message: `The UPI belongs to ${upiDistrict} district, but the map location is in ${at.district} — check the UPI or the map` });
       }
     }
   }
@@ -343,7 +353,7 @@ router.post(
 /**
  * @route GET /api/land/issues
  * @desc  Farms whose land data looks wrong or incomplete, for staff to fix.
- *        Filters: code (point_outside_boundary | area_mismatch | far_from_district |
+ *        Filters: code (point_outside_boundary | area_mismatch | outside_recorded_area | upi_elsewhere |
  *        upi_without_boundary | not_on_map), district; page, limit. Also returns
  *        counts per code. (Overlaps are checked per farm on the land page.)
  * @access Admin, Agent (own territory)
