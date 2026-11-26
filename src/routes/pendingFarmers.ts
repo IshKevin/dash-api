@@ -36,7 +36,8 @@ const validatePendingFarmerCreation = [
 router.get('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const status = (req.query.status as string) || 'pending';
   const pendingFarmers = await prisma.pendingFarmer.findMany({
-    where: { status: status as any },
+    // Pending farmers have no location yet: a VBA sees the ones they registered.
+    where: { status: status as any, ...(req.user!.role === 'agent' ? { created_by: req.user!.id } : {}) },
     orderBy: { created_at: 'desc' },
   });
   sendSuccess(res, pendingFarmers, 'Pending farmers retrieved successfully');

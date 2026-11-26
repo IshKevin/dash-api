@@ -4,7 +4,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize, adminOnly } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { canAccessFarmer } from '../utils/agentScope';
+import { canAccessFarmer, farmerScope } from '../utils/agentScope';
 
 const router = Router();
 
@@ -157,6 +157,8 @@ router.get(
     if (status) where.status = status;
     if (severity) where.severity = severity;
     if (farm_id) where.farm_id = farm_id;
+    const scope = await farmerScope(req); // VBAs: only cases on farms in their area
+    if (scope) where.farm = { farmer: scope };
 
     const [cases, total] = await Promise.all([
       prisma.diseaseCase.findMany({

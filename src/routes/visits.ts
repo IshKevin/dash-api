@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { canAccessFarmer, OUTSIDE_TERRITORY } from '../utils/agentScope';
 
 const router = Router();
 
@@ -49,8 +50,14 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
   if (!farm) {
     return sendNotFound(res, 'Farm not found');
   }
+  // A VBA books visits for themself, on farms inside their area.
+  if (req.user!.role === 'agent') {
+    if (agent_id && agent_id !== req.user!.id) return sendError(res, 'You can only schedule your own visits', 403 as any);
+    if (!(await canAccessFarmer(req, farm.farmer_id))) return sendError(res, OUTSIDE_TERRITORY, 403 as any);
+  }
+  const visitAgentId = req.user!.role === 'agent' ? req.user!.id : agent_id;
 
-  const agentUser = await prisma.user.findUnique({ where: { id: agent_id } });
+  const agentUser = await prisma.user.findUnique({ where: { id: visitAgentId } });
   if (!agentUser || agentUser.role !== 'agent') {
     return sendError(res, 'Agent not found or user is not an agent', 400 as any);
   }
@@ -61,7 +68,7 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
     data: {
       visit_number,
       farm_id,
-      agent_id,
+      agent_id: visitAgentId,
       scheduled_at: new Date(scheduled_at),
       purpose: purpose || null,
       status: 'scheduled',
@@ -78,6 +85,9 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
 // GET /api/visits/farm/:farmId  — must be before /:id to avoid conflict
 router.get('/farm/:farmId', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { farmId } = req.params;
+  const farm = await prisma.farm.findUnique({ where: { id: farmId }, select: { farmer_id: true } });
+  if (!farm) return sendNotFound(res, 'Farm not found');
+  if (!(await canAccessFarmer(req, farm.farmer_id))) return sendError(res, OUTSIDE_TERRITORY, 403 as any);
 
   const visits = await prisma.farmVisit.findMany({
     where: { farm_id: farmId },

@@ -122,3 +122,21 @@ export async function canAccessFarmer(req: AuthenticatedRequest, farmerId: strin
   if (role === 'agent') return canServeFarmer(req, farmerId);
   return false;
 }
+
+/**
+ * Extra filter on FarmSurvey rows for the caller (null for admins): a VBA sees a
+ * survey when its own location is inside their territory, or when it is linked
+ * to a farmer they serve. No territory → nothing.
+ */
+export async function surveyScope(req: AuthenticatedRequest): Promise<Prisma.FarmSurveyWhereInput | null> {
+  if (req.user?.role !== 'agent') return null;
+  const areas = await getTerritory(req.user.id);
+  if (!areas.length) return { id: { in: [] } };
+  const byLocation: Prisma.FarmSurveyWhereInput[] = areas.map((a) => {
+    const w: Record<string, unknown> = {};
+    for (const l of LEVELS) if (a[l]) w[l] = ci(a[l]!);
+    return w as Prisma.FarmSurveyWhereInput;
+  });
+  const farmers = await farmerScope(req);
+  return { OR: [...byLocation, ...(farmers ? [{ farmer: farmers }] : [])] };
+}

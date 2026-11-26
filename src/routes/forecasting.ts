@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize, adminOnly } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { farmerScope, canAccessFarmer, OUTSIDE_TERRITORY } from '../utils/agentScope';
 
 const router = Router();
 
@@ -24,6 +25,9 @@ router.get(
     if (province) where.province = province;
     if (district) where.district = district;
     if (forecast_year) where.forecast_year = parseInt(forecast_year, 10);
+    // VBAs: regional forecasts, plus farm forecasts only for farms in their area.
+    const scope = await farmerScope(req);
+    if (scope) where.OR = [{ farm_id: null }, { farm: { farmer: scope } }];
 
     const [forecasts, total] = await Promise.all([
       prisma.harvestForecast.findMany({
@@ -216,6 +220,9 @@ router.get(
 
     if (!forecast) {
       return sendNotFound(res, 'Forecast not found');
+    }
+    if (forecast.farm && !(await canAccessFarmer(req, forecast.farm.farmer_id))) {
+      return sendError(res, OUTSIDE_TERRITORY, 403);
     }
 
     return sendSuccess(res, forecast, 'Forecast retrieved successfully');

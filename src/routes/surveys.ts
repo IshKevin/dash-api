@@ -8,6 +8,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { validateIdParam } from '../middleware/validation';
 import { sendSuccess, sendCreated, sendError, sendNotFound, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { surveyScope } from '../utils/agentScope';
 import logger from '../config/logger';
 import { mapHeaders, parseRow, ParsedRow } from '../services/surveyParser';
 import {
@@ -162,8 +163,10 @@ router.get(
   '/import/batches',
   authenticate,
   authorize('admin', 'agent'),
-  asyncHandler(async (_req: AuthenticatedRequest, res: Response) => {
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const batches = await prisma.surveyImportBatch.findMany({
+      // A batch holds every row of the uploaded file: VBAs only see their own uploads.
+      where: req.user!.role === 'agent' ? { created_by: req.user!.id } : {},
       orderBy: { created_at: 'desc' },
       take: 50,
       select: {
@@ -189,7 +192,7 @@ router.get(
   validateIdParam,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const batch = await prisma.surveyImportBatch.findUnique({ where: { id: req.params.id } });
-    if (!batch) return sendNotFound(res, 'Import batch not found');
+    if (!batch || (req.user!.role === 'agent' && batch.created_by !== req.user!.id)) return sendNotFound(res, 'Import batch not found');
     const filter = String(req.query.filter || 'all');
     const all = batch.rows as unknown as StoredRow[];
     let rows = all;
@@ -225,9 +228,9 @@ router.get(
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const b = await prisma.surveyImportBatch.findUnique({
       where: { id: req.params.id },
-      select: { id: true, status: true, progress: true, total_rows: true, result: true, committed_at: true },
+      select: { id: true, status: true, progress: true, total_rows: true, result: true, committed_at: true, created_by: true },
     });
-    if (!b) return sendNotFound(res, 'Import batch not found');
+    if (!b || (req.user!.role === 'agent' && b.created_by !== req.user!.id)) return sendNotFound(res, 'Import batch not found');
     const result = b.result ? { ...(b.result as any), new_accounts: undefined } : null;
     return sendSuccess(res, { ...b, result, running: isCommitRunning(b.id) }, 'Import status');
   })
@@ -328,6 +331,13 @@ router.get(
 
 // ── Query ────────────────────────────────────────────────────────────────────
 
+/** Filters from the query, limited to the caller's territory for VBAs. */
+async function scopedSurveyWhere(req: AuthenticatedRequest, q: Record<string, string>): Promise<Prisma.FarmSurveyWhereInput> {
+  const scope = await surveyScope(req);
+  const where = surveyWhere(q);
+  return scope ? { AND: [where, scope] } : where;
+}
+
 function surveyWhere(q: Record<string, string>): Prisma.FarmSurveyWhereInput {
   const where: Prisma.FarmSurveyWhereInput = {};
   if (q.province) where.province = q.province;
@@ -362,7 +372,7 @@ router.get(
   authorize('admin', 'agent'),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const q = req.query as Record<string, string>;
-    const where = surveyWhere(q);
+    const where = await scopedSurveyWhere(req, q);
     const page = Math.max(1, parseInt(q.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(q.limit, 10) || 20));
     const [items, total] = await Promise.all([
@@ -413,7 +423,7 @@ router.get(
   authenticate,
   authorize('admin', 'agent'),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    const where = surveyWhere(req.query as Record<string, string>);
+    const where = await scopedSurveyWhere(req, req.query as Record<string, string>);
     const rows = await prisma.farmSurvey.findMany({
       where,
       select: {
@@ -508,7 +518,7 @@ router.get(
   authenticate,
   authorize('admin', 'agent'),
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    const rows = await prisma.farmSurvey.findMany({ where: surveyWhere(req.query as Record<string, string>), orderBy: [{ district: 'asc' }, { owner_name: 'asc' }], take: 20000 });
+    const rows = await prisma.farmSurvey.findMany({ where: await scopedSurveyWhere(req, req.query as Record<string, string>), orderBy: [{ district: 'asc' }, { owner_name: 'asc' }], take: 20000 });
     const fmtDate = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : '');
     const yn = (b: boolean | null) => (b === null ? '' : b ? 'y' : 'n');
     const list = (a: string[]) => a.join(', ');
@@ -545,8 +555,9 @@ router.get(
   authorize('admin', 'agent'),
   validateIdParam,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-    const survey = await prisma.farmSurvey.findUnique({
-      where: { id: req.params.id },
+    const scope = await surveyScope(req);
+    const survey = await prisma.farmSurvey.findFirst({
+      where: scope ? { AND: [{ id: req.params.id }, scope] } : { id: req.params.id },
       include: {
         farmer: { select: { id: true, full_name: true, phone: true, credentials_claimed: true } },
         farm: { select: { id: true, farmName: true, upi: true } },
