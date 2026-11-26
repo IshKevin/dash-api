@@ -342,6 +342,8 @@ model User {
   harvest_lots_verified      HarvestLot[]          @relation("HarvestLotVerifier")
   survey_imports             SurveyImportBatch[]   @relation("SurveyImportCreator")
   surveys                    FarmSurvey[]          @relation("SurveyFarmer")
+  opportunities_created      Opportunity[]         @relation("OpportunityCreator")
+  opportunity_interests      OpportunityInterest[] @relation("OpportunityInterestFarmer")
 
   @@index([role, status])
   @@index([created_at])
@@ -1555,4 +1557,111 @@ model PhoneVerificationCode {
   created_at  DateTime  @default(now())
 
   @@index([phone, created_at])
+}
+
+// ── Facilities (nearby infrastructure for farmers) ────────────────────────────
+// Places a farmer may need around harvest time: markets, collection centres,
+// cold rooms, pack houses, airports, nurseries, SACCOs… Kept by admins/agents
+// with exact GPS so the farmer app can list what is closest to the farm.
+
+enum FacilityType {
+  market
+  collection_center
+  cold_storage
+  packhouse
+  processing_plant
+  airport
+  nursery
+  demo_farm
+  input_supplier
+  sacco_bank
+  government_office
+  other
+}
+
+model Facility {
+  id          String       @id @default(uuid())
+  name        String
+  type        FacilityType
+  description String?
+  province    String
+  district    String
+  sector      String?
+  latitude    Float
+  longitude   Float
+  contact_name  String?
+  contact_phone String?
+  opening_hours String?
+  active      Boolean      @default(true)
+  created_by  String?
+  created_at  DateTime     @default(now())
+  updated_at  DateTime     @updatedAt
+
+  @@index([type, active])
+  @@index([district])
+}
+
+// ── Opportunities (shown on the farmer dashboard) ─────────────────────────────
+// Buyer demand, export contracts, grants/loans, subsidised inputs, trainings…
+// Posted by admins/agents; farmers in the target area see the open ones and
+// can say they are interested, which notifies the poster.
+
+enum OpportunityType {
+  buyer_demand
+  export_contract
+  grant_funding
+  loan_credit
+  input_subsidy
+  training
+  certification
+  job
+  tender
+  other
+}
+
+enum OpportunityStatus {
+  open
+  closed
+}
+
+model Opportunity {
+  id              String            @id @default(uuid())
+  title           String
+  type            OpportunityType
+  description     String
+  organization    String?
+  /// null = nationwide
+  province        String?
+  district        String?
+  quantity_kg     Float?
+  price_per_kg    Float?
+  min_grade       ProduceGrade?
+  deadline        DateTime?
+  contact_name    String?
+  contact_phone   String?
+  contact_email   String?
+  link            String?
+  status          OpportunityStatus @default(open)
+  created_by      String
+  creator         User              @relation("OpportunityCreator", fields: [created_by], references: [id])
+  interests       OpportunityInterest[]
+  created_at      DateTime          @default(now())
+  updated_at      DateTime          @updatedAt
+
+  @@index([status, deadline])
+  @@index([district])
+}
+
+model OpportunityInterest {
+  id             String      @id @default(uuid())
+  opportunity_id String
+  opportunity    Opportunity @relation(fields: [opportunity_id], references: [id], onDelete: Cascade)
+  farmer_id      String
+  farmer         User        @relation("OpportunityInterestFarmer", fields: [farmer_id], references: [id])
+  message        String?
+  quantity_kg    Float?
+  created_at     DateTime    @default(now())
+
+  @@unique([opportunity_id, farmer_id])
+  @@index([farmer_id])
 }

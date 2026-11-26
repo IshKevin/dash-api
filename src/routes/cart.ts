@@ -198,11 +198,33 @@ router.post('/checkout', authenticate, asyncHandler(async (req: AuthenticatedReq
   const user_id = req.user!.id;
   const { payment_method, shipping_address, billing_address, notes } = req.body;
 
-  if (!shipping_address) {
+  if (!shipping_address || (typeof shipping_address === 'string' && !shipping_address.trim())) {
     return sendError(res, 'shipping_address is required', 400 as any);
   }
 
   const buyer = await resolveBuyer(req, req.body);
+
+  // Orders store the address as {full_name, phone, street_address, …}, which
+  // is what shops read. A plain-text address (the farmer cart sends one) is
+  // wrapped with the recipient's name, phone and district so shops can deliver.
+  let shippingAddress = shipping_address;
+  if (typeof shipping_address === 'string') {
+    const recipientId = req.user!.role !== 'farmer' && typeof req.body.farmer_id === 'string' ? req.body.farmer_id : user_id;
+    const recipient = await prisma.user.findUnique({
+      where: { id: recipientId },
+      select: { full_name: true, phone: true, farmer_profile: { select: { province: true, district: true, sector: true } } },
+    });
+    const p = recipient?.farmer_profile;
+    shippingAddress = {
+      full_name: recipient?.full_name ?? '',
+      phone: recipient?.phone ?? '',
+      street_address: shipping_address.trim(),
+      city: p?.sector || p?.district || '',
+      district: p?.district ?? '',
+      province: p?.province ?? '',
+      country: 'Rwanda',
+    };
+  }
 
   const cart = await prisma.cart.findUnique({
     where: { user_id },
@@ -218,8 +240,8 @@ router.post('/checkout', authenticate, asyncHandler(async (req: AuthenticatedReq
     const created = await placeOrderTx(tx, {
       buyer,
       lines: cart.items.map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
-      shipping_address,
-      billing_address,
+      shipping_address: shippingAddress,
+      billing_address: billing_address ?? shippingAddress,
       payment_method,
       notes: notes || null,
       taxRate: 0,

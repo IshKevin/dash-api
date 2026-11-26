@@ -212,7 +212,15 @@ router.put(
 
     if (Object.keys(data).length === 0) return sendError(res, 'Nothing to update', 400);
     if (!data.land_source && (data.upi !== undefined || data.parcel_area_sqm !== undefined)) data.land_source = 'manual';
-    data.land_verified_at = null;
+    // An agent's verification stamp only stands for the land it checked: drop
+    // it when the UPI, GPS point or boundary really changes, not on every save.
+    const newBoundary = data.parcel_boundary === Prisma.DbNull ? null : data.parcel_boundary;
+    const landChanged =
+      (data.upi !== undefined && data.upi !== farm.upi) ||
+      (data.latitude !== undefined && data.latitude !== farm.latitude) ||
+      (data.longitude !== undefined && data.longitude !== farm.longitude) ||
+      (data.parcel_boundary !== undefined && JSON.stringify(newBoundary ?? null) !== JSON.stringify(farm.parcel_boundary ?? null));
+    if (landChanged) data.land_verified_at = null;
 
     const updated = await prisma.farm.update({ where: { id: farm.id }, data });
     return sendSuccess(res, { ...landView(updated), warnings }, 'Land details saved');

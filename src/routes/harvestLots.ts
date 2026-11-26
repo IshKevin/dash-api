@@ -131,9 +131,55 @@ router.get(
   })
 );
 
+/** One month of the monthly breakdown — same figures as the overall totals. */
+interface MonthRow { month: string; lots: number; total_kg: number; sold_kg: number; revenue: number; rejected_kg: number }
+
+/**
+ * Per-month lots / kg / sold kg / revenue / rejected kg for [from, to), keyed
+ * YYYY-MM by harvest date (UTC). Months with no harvest are filled with zeros.
+ */
+async function monthlyBreakdown(from: Date, to: Date, farmerId?: string) {
+  const rows = await prisma.$queryRaw<
+    { month: string; lots: number; total_kg: number | null; sold_kg: number | null; revenue: number | null; rejected_kg: number | null }[]
+  >(Prisma.sql`
+    SELECT to_char(date_trunc('month', "harvest_date"), 'YYYY-MM') AS month,
+           COUNT(*)::int AS lots,
+           SUM("quantity_kg") AS total_kg,
+           SUM("quantity_kg") FILTER (WHERE "status" IN ('sold', 'delivered')) AS sold_kg,
+           SUM("total_value") FILTER (WHERE "status" IN ('sold', 'delivered')) AS revenue,
+           SUM("quantity_kg") FILTER (WHERE "status" = 'rejected') AS rejected_kg
+      FROM "HarvestLot"
+     WHERE "harvest_date" >= ${from} AND "harvest_date" < ${to}
+       ${farmerId ? Prisma.sql`AND "farmer_id" = ${farmerId}` : Prisma.empty}
+     GROUP BY 1`);
+
+  const byKey = new Map(rows.map((r) => [r.month, r]));
+  const months: (MonthRow & { average_price_per_kg: number | null })[] = [];
+  for (let d = new Date(from); d < to; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) {
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const r = byKey.get(key);
+    const soldKg = Number(r?.sold_kg ?? 0);
+    const revenue = Number(r?.revenue ?? 0);
+    months.push({
+      month: key,
+      lots: Number(r?.lots ?? 0),
+      total_kg: round(Number(r?.total_kg ?? 0)),
+      sold_kg: round(soldKg),
+      revenue: round(revenue),
+      rejected_kg: round(Number(r?.rejected_kg ?? 0)),
+      average_price_per_kg: soldKg > 0 ? round(revenue / soldKg) : null,
+    });
+  }
+  return months;
+}
+
 /**
  * @route GET /api/harvest-lots/summary
- * @desc  Totals by status/grade, total kg, sold kg, revenue and average price (scoped like the list)
+ * @desc  Totals by status/grade, total kg, sold kg, revenue and average price (scoped like the list),
+ *        plus `by_month`: the same figures for each month.
+ *        ?year=YYYY → totals for that year, by_month = its 12 months.
+ *        ?year=YYYY&month=1..12 → totals for that month (by_month still the whole year).
+ *        Neither → all-time totals, by_month = the last 12 months.
  * @access Admin, Agent, Farmer
  */
 router.get(
@@ -144,19 +190,39 @@ router.get(
     const q = req.query as Record<string, string>;
     const base: Prisma.HarvestLotWhereInput = {};
     if (q.farmer_id) base.farmer_id = q.farmer_id;
-    if (q.year) {
-      const y = parseInt(q.year, 10);
-      if (!Number.isNaN(y)) base.harvest_date = { gte: new Date(Date.UTC(y, 0, 1)), lt: new Date(Date.UTC(y + 1, 0, 1)) };
+
+    const now = new Date();
+    let year: number | null = null;
+    let month: number | null = null;
+    if (q.year !== undefined && q.year !== '') {
+      year = parseInt(q.year, 10);
+      if (!Number.isInteger(year) || year < 2000 || year > 2100) return sendError(res, 'year must be between 2000 and 2100', 400);
+    }
+    if (q.month !== undefined && q.month !== '') {
+      month = parseInt(q.month, 10);
+      if (!Number.isInteger(month) || month < 1 || month > 12) return sendError(res, 'month must be between 1 and 12', 400);
+      if (year === null) year = now.getUTCFullYear();
+    }
+    if (year !== null && month !== null) {
+      base.harvest_date = { gte: new Date(Date.UTC(year, month - 1, 1)), lt: new Date(Date.UTC(year, month, 1)) };
+    } else if (year !== null) {
+      base.harvest_date = { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) };
     }
     const where = scopeWhere(req, base);
 
-    const [byStatus, byGrade, sold] = await Promise.all([
+    const [monthsFrom, monthsTo] = year !== null
+      ? [new Date(Date.UTC(year, 0, 1)), new Date(Date.UTC(year + 1, 0, 1))]
+      : [new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1)), new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))];
+    const monthlyFarmer = req.user!.role === 'farmer' ? req.user!.id : q.farmer_id || undefined;
+
+    const [byStatus, byGrade, sold, byMonth] = await Promise.all([
       prisma.harvestLot.groupBy({ by: ['status'], where, _count: { _all: true }, _sum: { quantity_kg: true } }),
       prisma.harvestLot.groupBy({ by: ['grade'], where, _count: { _all: true }, _sum: { quantity_kg: true } }),
       prisma.harvestLot.aggregate({
         where: { ...where, status: { in: ['sold', 'delivered'] } },
         _sum: { quantity_kg: true, total_value: true },
       }),
+      monthlyBreakdown(monthsFrom, monthsTo, monthlyFarmer),
     ]);
 
     const totalKg = byStatus.reduce((s, r) => s + (r._sum.quantity_kg ?? 0), 0);
@@ -167,6 +233,7 @@ router.get(
     return sendSuccess(
       res,
       {
+        period: { year, month },
         total_lots: totalLots,
         total_kg: round(totalKg),
         sold_kg: round(soldKg),
@@ -180,6 +247,7 @@ router.get(
           const r = byGrade.find((b) => b.grade === g);
           return { grade: g, lots: r?._count._all ?? 0, quantity_kg: round(r?._sum.quantity_kg ?? 0) };
         }),
+        by_month: byMonth,
       },
       'Harvest lot summary retrieved successfully'
     );

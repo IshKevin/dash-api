@@ -415,7 +415,8 @@ router.post('/ipm-routine', authenticate, authorize('farmer', 'agent'), validate
       description: `IPM routine for ${farmSize} hectares targeting ${Array.isArray(pestType) ? pestType.join(', ') : pestType}`,
       request_number: generateRequestNumber('IPM'),
       status: 'pending',
-      priority: (priority || severity || 'medium') as any,
+      // Severity 'critical' has no ServicePriority equivalent; it means 'urgent'.
+      priority: ((p) => (['low', 'medium', 'high', 'urgent'].includes(p) ? p : p === 'critical' ? 'urgent' : 'medium'))(priority || severity || 'medium') as any,
       requested_date: new Date(),
       location,
       ipm_routine_details: {

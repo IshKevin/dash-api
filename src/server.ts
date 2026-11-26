@@ -61,6 +61,8 @@ import harvestLotsRoutes, { traceabilityRouter } from './routes/harvestLots';
 import surveysRoutes from './routes/surveys';
 import landRoutes from './routes/land';
 import mapRoutes from './routes/map';
+import facilitiesRoutes from './routes/facilities';
+import opportunitiesRoutes from './routes/opportunities';
 
 dotenv.config();
 
@@ -217,6 +219,8 @@ app.use('/api/traceability', traceabilityRouter);
 app.use('/api/surveys', surveysRoutes);
 app.use('/api/land', landRoutes);
 app.use('/api/map', mapRoutes);
+app.use('/api/facilities', facilitiesRoutes);
+app.use('/api/opportunities', opportunitiesRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

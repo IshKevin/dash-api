@@ -150,7 +150,7 @@ router.post('/', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandl
       user_id: farmerId,
       age, id_number, gender, marital_status, education_level,
       province, district, sector, cell, village,
-      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number,
+      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count: tree_count ?? undefined, upi_number,
       farm_province, farm_district, farm_sector, farm_cell, farm_village,
       assistance: assistance || [],
       image,
@@ -158,7 +158,7 @@ router.post('/', authenticate, authorize('admin', 'agent', 'farmer'), asyncHandl
     update: {
       age, id_number, gender, marital_status, education_level,
       province, district, sector, cell, village,
-      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count, upi_number,
+      farm_age, planted, avocado_type, mixed_percentage, farm_size, tree_count: tree_count ?? undefined, upi_number,
       farm_province, farm_district, farm_sector, farm_cell, farm_village,
       assistance: assistance || [],
       image,
@@ -178,6 +178,7 @@ router.put('/me', authenticate, authorize('farmer'), asyncHandler(async (req: Au
   ];
   const updateData: Record<string, any> = {};
   for (const k of EDITABLE) if (req.body?.[k] !== undefined) updateData[k] = req.body[k];
+  if (updateData.tree_count === null || updateData.tree_count === '') updateData.tree_count = 0;
   for (const k of ['age', 'farm_age', 'tree_count'] as const) {
     if (updateData[k] !== undefined && updateData[k] !== null) {
       const n = Number(updateData[k]);
@@ -220,6 +221,7 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
   ];
   const updateData: Record<string, any> = {};
   for (const k of EDITABLE) if (req.body?.[k] !== undefined) updateData[k] = req.body[k];
+  if (updateData.tree_count === null || updateData.tree_count === '') updateData.tree_count = 0;
   for (const k of ['age', 'farm_age', 'tree_count'] as const) {
     if (updateData[k] !== undefined && updateData[k] !== null) {
       const n = Number(updateData[k]);

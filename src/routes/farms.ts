@@ -1,4 +1,6 @@
 import { Router, Response } from 'express';
+import { FarmStatus } from '@prisma/client';
+import { parseLatLng } from '../services/proximity';
 import { prisma } from '../lib/prisma';
 import { validateIdParam, validatePagination } from '../middleware/validation';
 import { asyncHandler } from '../middleware/errorHandler';
@@ -203,8 +205,22 @@ router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
   if (farm_size !== undefined) updateData.farm_size = farm_size;
   if (planting_date) updateData.planting_date = new Date(planting_date);
   if (expected_harvest) updateData.expected_harvest = new Date(expected_harvest);
-  if (latitude !== undefined) updateData.latitude = latitude;
-  if (longitude !== undefined) updateData.longitude = longitude;
+  if (updateData.status !== undefined && !(Object.values(FarmStatus) as string[]).includes(updateData.status)) {
+    sendError(res, `status must be one of: ${Object.values(FarmStatus).join(', ')}`, 400); return;
+  }
+  if (latitude !== undefined || longitude !== undefined) {
+    if (latitude === null && longitude === null) {
+      updateData.latitude = null;
+      updateData.longitude = null;
+    } else {
+      const p = parseLatLng(latitude, longitude);
+      if (!p) { sendError(res, 'latitude and longitude must both be given and lie inside Rwanda', 400); return; }
+      updateData.latitude = p.lat;
+      updateData.longitude = p.lng;
+    }
+    // Moving the farm invalidates an agent's land verification (same rule as /api/land).
+    if (updateData.latitude !== existing.latitude || updateData.longitude !== existing.longitude) updateData.land_verified_at = null;
+  }
 
   const farm = await prisma.farm.update({
     where: { id: req.params.id },
@@ -244,7 +260,8 @@ router.get('/:id/history', authenticate, authorize('admin', 'agent', 'farmer'), 
 
   const [serviceRequests, reports, visits] = await Promise.all([
     prisma.serviceRequest.findMany({
-      where: { location: { path: ['farm_name'], string_contains: farm.farmName } },
+      // Same farmer only — a farm-name match alone would show other farmers' requests.
+      where: { farmer_id: farm.farmer_id, location: { path: ['farm_name'], string_contains: farm.farmName } },
       select: { id: true, title: true, service_type: true, status: true, created_at: true },
       orderBy: { created_at: 'desc' },
       take: 20,
