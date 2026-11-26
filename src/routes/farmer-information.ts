@@ -5,6 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { canAccessFarmer, farmerScope, OUTSIDE_TERRITORY } from '../utils/agentScope';
 
 const router = Router();
 
@@ -50,7 +51,8 @@ router.get('/', authenticate, authorize('admin', 'agent'), validatePagination, a
 
   const userWhere: any = { role: 'farmer' };
   if (req.query.status) userWhere.status = req.query.status as any;
-  profileWhere.user = { ...profileWhere.user, ...userWhere };
+  const scope = await farmerScope(req); // VBAs: only farmers in their assigned area
+  profileWhere.user = scope ? { AND: [{ ...profileWhere.user, ...userWhere }, scope] } : { ...profileWhere.user, ...userWhere };
 
   const [profiles, total] = await Promise.all([
     prisma.farmerProfile.findMany({
@@ -93,8 +95,8 @@ router.get('/me', authenticate, authorize('farmer'), asyncHandler(async (req: Au
 
 // GET /api/farmer-information/:id
 router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  if (req.user?.role === 'farmer' && req.user.id !== req.params.id) {
-    sendError(res, 'Access denied', 403);
+  if (!(await canAccessFarmer(req, req.params.id))) {
+    sendError(res, req.user?.role === 'agent' ? OUTSIDE_TERRITORY : 'Access denied', 403);
     return;
   }
 
@@ -208,8 +210,8 @@ router.put('/me', authenticate, authorize('farmer'), asyncHandler(async (req: Au
 router.put('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const farmerId = req.params.id;
 
-  if (req.user?.role === 'farmer' && req.user.id !== farmerId) {
-    sendError(res, 'Access denied', 403);
+  if (!(await canAccessFarmer(req, farmerId))) {
+    sendError(res, req.user?.role === 'agent' ? OUTSIDE_TERRITORY : 'Access denied', 403);
     return;
   }
 

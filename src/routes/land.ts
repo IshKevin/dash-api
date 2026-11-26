@@ -5,6 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { canAccessFarmer } from '../utils/agentScope';
 import { parseUpi, ringAreaSqm, ringCentroid, canonicalDistrict } from '../services/rwandaGeo';
 import { inRwanda } from '../services/surveyParser';
 import { isRegistryEnabled, lookupParcel } from '../services/landRegistry';
@@ -39,7 +40,7 @@ async function loadFarm(req: AuthenticatedRequest, res: Response) {
     sendNotFound(res, 'Farm not found');
     return null;
   }
-  if (req.user!.role === 'farmer' && farm.farmer_id !== req.user!.id) {
+  if (!(await canAccessFarmer(req, farm.farmer_id))) {
     sendError(res, 'Access denied', 403);
     return null;
   }

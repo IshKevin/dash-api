@@ -344,6 +344,7 @@ model User {
   surveys                    FarmSurvey[]          @relation("SurveyFarmer")
   opportunities_created      Opportunity[]         @relation("OpportunityCreator")
   opportunity_interests      OpportunityInterest[] @relation("OpportunityInterestFarmer")
+  service_requests_made_on_behalf ServiceRequest[] @relation("RequestsMadeOnBehalf")
 
   @@index([role, status])
   @@index([created_at])
@@ -594,6 +595,7 @@ model Farm {
   forecasts        HarvestForecast[]
   harvest_lots     HarvestLot[]
   surveys          FarmSurvey[]
+  service_requests ServiceRequest[]
 
   // Land parcel (Rwanda land registry). UPI = Unique Parcel Identifier,
   // e.g. 5/01/02/03/1234 (province/district/sector/cell/parcel).
@@ -618,6 +620,12 @@ model Farm {
 model ServiceRequest {
   id                      String          @id @default(uuid())
   farmer_id               String
+  /// Who submitted it when not the farmer themself (another farmer or a VBA asking on their behalf)
+  requested_by            String?
+  requester               User?           @relation("RequestsMadeOnBehalf", fields: [requested_by], references: [id])
+  /// The farm the request is about (location / trees come from it)
+  farm_id                 String?
+  farm                    Farm?           @relation(fields: [farm_id], references: [id])
   agent_id                String?
   service_type            ServiceType
   title                   String
@@ -673,6 +681,9 @@ model ServiceRequest {
   @@index([service_type, status])
   @@index([created_at])
   @@index([is_escalated, due_date])
+
+  @@index([requested_by])
+  @@index([farm_id])
 }
 
 enum DocumentType {
@@ -890,6 +901,11 @@ model FarmerProfile {
 
   user             User            @relation(fields: [user_id], references: [id])
   verification_status FarmerVerificationStatus @default(pending)
+
+  /// Membership card: printed as ASR-000123. Valid for one year; renewed by an admin or the farmer's VBA.
+  member_no              Int       @unique @default(autoincrement())
+  membership_valid_from  DateTime?
+  membership_valid_until DateTime?
 
   @@index([province])
   @@index([district])

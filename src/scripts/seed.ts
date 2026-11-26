@@ -51,7 +51,8 @@ async function seed() {
         data: {
           user_id: agent.id,
           agentId: agent.id,
-          territory: ['Kigali', 'Eastern Province'],
+          // Areas this VBA serves (assigned by an admin): whole provinces here.
+          territory: [{ province: 'Kigali City' }, { province: 'Eastern Province' }],
           province: 'Kigali',
           district: 'Gasabo',
           sector: 'Kimironko',

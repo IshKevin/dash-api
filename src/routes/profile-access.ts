@@ -1,9 +1,11 @@
 import { Router, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { asyncHandler } from '../middleware/errorHandler';
-import { authenticate, authorize, adminOnly } from '../middleware/auth';
+import { authenticate, authorize, adminOnly, optionalAuth } from '../middleware/auth';
 import { sendSuccess, sendError, sendNotFound, sendPaginatedResponse } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { canServeFarmer, OUTSIDE_TERRITORY } from '../utils/agentScope';
+import { publicCardByToken } from './membership';
 import QRCode from 'qrcode';
 import { generateAccessKey, generateQRToken, isValidAccessKeyFormat } from '../utils/accessKey';
 import multer from 'multer';
@@ -28,6 +30,7 @@ const agentTargetsFarmersOnly = asyncHandler(async (req: AuthenticatedRequest, r
   const target = await prisma.user.findUnique({ where: { id: req.params.userId }, select: { role: true } });
   if (!target) { sendNotFound(res, 'User not found'); return; }
   if (target.role !== 'farmer') { sendError(res, 'Agents can only manage farmer QR codes', 403); return; }
+  if (!(await canServeFarmer(req, req.params.userId))) { sendError(res, OUTSIDE_TERRITORY, 403); return; }
   next();
 });
 
@@ -64,8 +67,21 @@ router.get('/qr/:userId', authenticate, authorize('agent', 'admin'), agentTarget
  * @desc    Get user info by scanning QR token
  * @access  Public
  */
-router.get('/scan/:token', asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+router.get('/scan/:token', optionalAuth, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const { token } = req.params;
+
+  // The token is printed on the membership card, so anyone may hold it. Only
+  // staff allowed to serve this farmer get the full record; everyone else gets
+  // the same minimal view as the public card-verification page.
+  const owner = await prisma.user.findUnique({ where: { qr_code_token: token }, select: { id: true, role: true } });
+  const staff = req.user && (req.user.role === 'admin' || (req.user.role === 'agent' && owner?.role === 'farmer' && (await canServeFarmer(req, owner.id))));
+  if (!staff) {
+    const card = owner?.role === 'farmer' ? await publicCardByToken(token) : null;
+    if (!card) { sendError(res, 'Invalid QR code or user not found', 404); return; }
+    const { user_id: _uid, ...publicCard } = card;
+    sendSuccess(res, { card: publicCard }, 'Card verified');
+    return;
+  }
 
   const user = await prisma.user.findUnique({
     where: { qr_code_token: token },

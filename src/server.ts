@@ -63,6 +63,7 @@ import landRoutes from './routes/land';
 import mapRoutes from './routes/map';
 import facilitiesRoutes from './routes/facilities';
 import opportunitiesRoutes from './routes/opportunities';
+import membershipRoutes from './routes/membership';
 
 dotenv.config();
 
@@ -221,6 +222,7 @@ app.use('/api/land', landRoutes);
 app.use('/api/map', mapRoutes);
 app.use('/api/facilities', facilitiesRoutes);
 app.use('/api/opportunities', opportunitiesRoutes);
+app.use('/api/membership', membershipRoutes);
 
 // Root endpoint
 app.get('/', (_req: Request, res: Response) => {

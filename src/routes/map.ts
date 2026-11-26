@@ -5,6 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { farmerScope } from '../utils/agentScope';
 
 const router = Router();
 
@@ -25,6 +26,8 @@ router.get(
     const q = req.query as Record<string, string>;
     const where: Prisma.FarmWhereInput = { archived_at: null };
     if (req.user!.role === 'farmer') where.farmer_id = req.user!.id;
+    const scope = await farmerScope(req); // VBAs: only their area
+    if (scope) where.farmer = scope;
     const and: Prisma.FarmWhereInput[] = [];
     if (q.province) and.push({ location: { path: ['province'], equals: q.province } });
     if (q.district) and.push({ location: { path: ['district'], equals: q.district } });

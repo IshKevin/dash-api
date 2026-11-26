@@ -5,6 +5,8 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { createNotification } from '../utils/notificationService';
+import { farmerScope, getTerritory, normalizeArea, TerritoryArea } from '../utils/agentScope';
 
 const router = Router();
 
@@ -110,14 +112,14 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
     return;
   }
 
-  const { territory, statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
+  const { statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
 
   const profile = await prisma.agentProfile.upsert({
     where: { user_id: agentId },
     create: {
       user_id: agentId,
       agentId: agentId,
-      territory: territory || [],
+      territory: [],
       statistics: statistics || {},
       province,
       district,
@@ -129,8 +131,7 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
       certification,
     },
     update: {
-      territory: territory || [],
-      statistics: statistics || {},
+      statistics: statistics !== undefined ? statistics : undefined,
       province,
       district,
       sector,
@@ -145,7 +146,7 @@ router.post('/', authenticate, authorize('admin', 'agent'), asyncHandler(async (
 
 // PUT /api/agent-information/me
 router.put('/me', authenticate, authorize('agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { territory, statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
+  const { statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
   const agentId = req.user!.id;
 
   const profile = await prisma.agentProfile.upsert({
@@ -153,7 +154,7 @@ router.put('/me', authenticate, authorize('agent'), asyncHandler(async (req: Aut
     create: {
       user_id: agentId,
       agentId: agentId,
-      territory: territory || [],
+      territory: [],
       statistics: statistics || {},
       province,
       district,
@@ -163,7 +164,6 @@ router.put('/me', authenticate, authorize('agent'), asyncHandler(async (req: Aut
       certification,
     },
     update: {
-      territory: territory !== undefined ? territory : undefined,
       statistics: statistics !== undefined ? statistics : undefined,
       province: province !== undefined ? province : undefined,
       district: district !== undefined ? district : undefined,
@@ -188,14 +188,14 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
     return;
   }
 
-  const { territory, statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
+  const { statistics, province, district, sector, cell, village, specialization, experience, certification } = req.body;
 
   const profile = await prisma.agentProfile.upsert({
     where: { user_id: agentId },
     create: {
       user_id: agentId,
       agentId: agentId,
-      territory: territory || [],
+      territory: [],
       statistics: statistics || {},
       province,
       district,
@@ -207,7 +207,6 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
       certification,
     },
     update: {
-      territory: territory !== undefined ? territory : undefined,
       statistics: statistics !== undefined ? statistics : undefined,
       province: province !== undefined ? province : undefined,
       district: district !== undefined ? district : undefined,
@@ -222,6 +221,60 @@ router.put('/:id', authenticate, authorize('admin', 'agent'), validateIdParam, a
 
   sendSuccess(res, profile, 'Agent profile updated successfully');
 }));
+
+// Territory = the area(s) an admin assigns to a VBA. A VBA only serves farmers there.
+// It is never changed through the general profile updates above.
+
+// GET /api/agent-information/:id/territory — the areas a VBA serves and how many farmers that covers
+router.get('/:id/territory', authenticate, authorize('admin', 'agent'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  if (req.user!.role === 'agent' && req.user!.id !== req.params.id) { sendError(res, 'Access denied', 403); return; }
+  const agent = await prisma.user.findUnique({ where: { id: req.params.id }, select: { role: true } });
+  if (!agent || agent.role !== 'agent') { sendNotFound(res, 'Agent not found'); return; }
+  const territory = await getTerritory(req.params.id);
+  sendSuccess(res, { territory, farmers_covered: await countCovered(req.params.id, territory.length) }, 'Territory retrieved');
+}));
+
+// PUT /api/agent-information/:id/territory — admin assigns the areas a VBA serves.
+// Body: { territory: [{ province?, district?, sector?, cell?, village? }, …] } (empty array = no area)
+router.put('/:id/territory', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const agent = await prisma.user.findUnique({ where: { id: req.params.id }, select: { id: true, role: true } });
+  if (!agent || agent.role !== 'agent') { sendNotFound(res, 'Agent not found'); return; }
+  const raw = req.body?.territory;
+  if (!Array.isArray(raw)) { sendError(res, 'territory must be an array of areas', 400); return; }
+  if (raw.length > 50) { sendError(res, 'At most 50 areas per agent', 400); return; }
+  const areas: TerritoryArea[] = [];
+  for (const [i, a] of raw.entries()) {
+    const [area, err] = normalizeArea(a);
+    if (err) { sendError(res, `Area ${i + 1}: ${err}`, 400); return; }
+    if (!areas.some((x) => JSON.stringify(x) === JSON.stringify(area))) areas.push(area!);
+  }
+  // Keep the profile's home district in step with the first area, for display.
+  const first = areas[0];
+  const home = first ? { province: first.province ?? null, district: first.district ?? null, sector: first.sector ?? null } : {};
+  await prisma.agentProfile.upsert({
+    where: { user_id: agent.id },
+    create: { user_id: agent.id, agentId: agent.id, territory: areas as any, ...home },
+    update: { territory: areas as any, ...home },
+  });
+  const farmers = await countCovered(agent.id, areas.length);
+  await createNotification(
+    agent.id, 'info', 'Your area was updated',
+    areas.length
+      ? `You now serve ${farmers} farmer${farmers === 1 ? '' : 's'} in ${areas.map(describeArea).join('; ')}.`
+      : 'You have no area assigned at the moment, so no farmers are shown to you.',
+    undefined, 'system'
+  );
+  sendSuccess(res, { territory: areas, farmers_covered: farmers }, 'Territory updated');
+}));
+
+async function countCovered(agentId: string, areaCount: number): Promise<number> {
+  if (!areaCount) return 0;
+  const scope = await farmerScope({ user: { id: agentId, role: 'agent' } } as AuthenticatedRequest);
+  return prisma.user.count({ where: { AND: [{ role: 'farmer' }, scope!] } });
+}
+
+const describeArea = (a: TerritoryArea) =>
+  [a.village, a.cell, a.sector && `${a.sector} sector`, a.district, a.district ? undefined : a.province].filter(Boolean).join(', ');
 
 // PUT /api/agent-information/:id/performance
 router.put('/:id/performance', authenticate, authorize('admin'), validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {

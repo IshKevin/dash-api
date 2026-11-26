@@ -6,7 +6,9 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendCreated, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { notifyAllAdmins, notifyAgentAssignment, notifyFarmerServiceUpdate } from '../utils/notificationService';
+import { normalizeLocation } from '../services/rwandaLocation';
+import { canAccessFarmer, canServeFarmer, farmerScope, OUTSIDE_TERRITORY } from '../utils/agentScope';
+import { createNotification, notifyAllAdmins, notifyAgentAssignment, notifyFarmerServiceUpdate } from '../utils/notificationService';
 import { documentService } from '../services/documentService';
 import { putObject, PRIVATE_PREFIX } from '../config/storage';
 import logger from '../config/logger';
@@ -80,12 +82,13 @@ const validatePestManagement = [
   handleValidation,
 ];
 
+// Only the start date is always required: trees, workers, location and the
+// end date default from the chosen farm (see POST /harvest).
 const validateHarvest = [
-  body('workersNeeded').isInt({ min: 1 }).withMessage('Workers needed must be a positive integer'),
-  body('treesToHarvest').isInt({ min: 1 }).withMessage('Trees to harvest must be a positive integer'),
+  body('workersNeeded').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Workers needed must be a positive integer'),
+  body('treesToHarvest').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Trees to harvest must be a positive integer'),
   body('harvestDateFrom').isISO8601().withMessage('Harvest start date must be valid'),
-  body('harvestDateTo').isISO8601().withMessage('Harvest end date must be valid'),
-  body('location.province').notEmpty().withMessage('Province is required'),
+  body('harvestDateTo').optional({ values: 'falsy' }).isISO8601().withMessage('Harvest end date must be valid'),
   body('priority').optional().isIn(['low', 'medium', 'high', 'urgent']),
   handleValidation,
 ];
@@ -118,15 +121,17 @@ const LIST_INCLUDE = {
   agent: { select: { id: true, full_name: true, phone: true } },
 } as const;
 
-function buildRequestWhere(req: AuthenticatedRequest, serviceType?: string): any {
+async function buildRequestWhere(req: AuthenticatedRequest, serviceType?: string): Promise<any> {
   const where: any = {};
   if (serviceType) where.service_type = serviceType as any;
 
   if (req.user?.role === 'farmer') {
-    where.farmer_id = req.user.id;
+    // Their own requests, plus ones they made for another farmer.
+    where.OR = [{ farmer_id: req.user.id }, { requested_by: req.user.id }];
   } else if (req.user?.role === 'agent') {
-    // Agents see assigned + unassigned
-    where.OR = [{ agent_id: req.user.id }, { agent_id: null }];
+    // Assigned to them, plus unassigned ones from farmers in their area.
+    const scope = await farmerScope(req);
+    where.OR = [{ agent_id: req.user.id }, { agent_id: null, farmer: scope ?? {} }];
   }
 
   if (req.query.status) where.status = req.query.status as any;
@@ -285,52 +290,160 @@ router.put('/property-evaluation/:id', authenticate, authorize('farmer'), valida
   sendSuccess(res, updated, 'Property evaluation request updated successfully');
 }));
 
+// Rough crew size: one picker per ~40 trees, at least 2.
+const defaultWorkers = (trees: number) => Math.max(2, Math.ceil(trees / 40));
+const phoneTail = (p: unknown) => String(p ?? '').replace(/\D/g, '').slice(-9);
+const DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * GET /api/service-requests/farmer-lookup?phone=07…
+ * Find a registered farmer by phone so a farmer (or VBA) can request a harvest
+ * for them. Returns only what is needed to confirm it is the right person and
+ * pick a farm. VBAs only find farmers in their area.
+ */
+router.get('/farmer-lookup', authenticate, authorize('farmer', 'agent', 'admin'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const tail = phoneTail(req.query.phone);
+  if (tail.length !== 9) { sendError(res, 'Enter a full phone number, e.g. 0788 123 456', 400); return; }
+  const scope = await farmerScope(req);
+  const found = await prisma.user.findMany({
+    where: { AND: [{ role: 'farmer', status: 'active', phone: { endsWith: tail } }, ...(scope ? [scope] : [])] },
+    select: {
+      id: true, full_name: true,
+      farmer_profile: { select: { district: true, sector: true, farm_district: true, farm_sector: true } },
+      farms: { where: { archived_at: null }, select: { id: true, farmName: true, tree_count: true, location: true } },
+    },
+    take: 2,
+  });
+  const match = found.filter((u) => u.id !== req.user!.id);
+  if (!match.length) { sendNotFound(res, 'No registered farmer with this phone number. You can still enter their details yourself.'); return; }
+  const u = match[0];
+  const p = u.farmer_profile;
+  sendSuccess(res, {
+    id: u.id,
+    full_name: u.full_name,
+    district: p?.farm_district || p?.district || null,
+    sector: p?.farm_sector || p?.sector || null,
+    farms: u.farms.map((f) => ({ id: f.id, farmName: f.farmName, tree_count: f.tree_count, sector: (f.location as any)?.sector ?? null, district: (f.location as any)?.district ?? null })),
+  }, 'Farmer found');
+}));
+
 // POST /api/service-requests/harvest
+// Body (only harvestDateFrom is always required):
+//   farm_id            — the farm to harvest; location, tree count and crew size default from it
+//   harvestDateFrom, harvestDateTo (default +4 days), treesToHarvest, workersNeeded, equipmentNeeded, notes, priority, harvestImages
+//   for_farmer_id      — farmer asking for ANOTHER registered farmer (found via /farmer-lookup)
+//   other_farmer       — {name, phone, location:{district, sector?…}} for someone not registered yet
+//   farmer_id          — a VBA booking for a farmer in their area
 router.post('/harvest', authenticate, authorize('farmer', 'agent'), validateHarvest, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  const { workersNeeded, equipmentNeeded, treesToHarvest, harvestDateFrom, harvestDateTo, harvestImages, hassBreakdown, location, priority = 'medium', notes, farmer_id } = req.body;
-
+  const b = req.body || {};
+  const role = req.user!.role;
   let farmerId: string;
+  let requestedBy: string | null = null;
+  let farmerInfo: Record<string, unknown> | null = null;
 
-  if (req.user?.role === 'farmer') {
-    farmerId = req.user.id;
+  if (role === 'agent') {
+    if (!b.farmer_id) { sendError(res, 'farmer_id is required when agent creates a harvest request', 400); return; }
+    const farmer = await prisma.user.findUnique({ where: { id: b.farmer_id } });
+    if (!farmer || farmer.role !== 'farmer') { sendError(res, 'Invalid farmer_id provided', 400); return; }
+    if (!(await canServeFarmer(req, b.farmer_id))) { sendError(res, OUTSIDE_TERRITORY, 403); return; }
+    farmerId = b.farmer_id;
+  } else if (b.for_farmer_id && b.for_farmer_id !== req.user!.id) {
+    const other = await prisma.user.findUnique({ where: { id: b.for_farmer_id }, select: { id: true, role: true, status: true } });
+    if (!other || other.role !== 'farmer' || other.status !== 'active') { sendError(res, 'That farmer was not found', 400); return; }
+    farmerId = other.id;
+    requestedBy = req.user!.id;
+  } else if (b.other_farmer) {
+    // Someone not registered yet: the request stays on the requester's account
+    // and carries the other farmer's details for the agent.
+    const o = b.other_farmer;
+    const name = typeof o.name === 'string' ? o.name.trim() : '';
+    if (name.length < 2) { sendError(res, "Enter the other farmer's name", 400); return; }
+    if (phoneTail(o.phone).length !== 9) { sendError(res, "Enter the other farmer's phone number", 400); return; }
+    const [loc, locErr] = normalizeLocation(o.location || {});
+    if (locErr) { sendError(res, `Other farmer's location: ${locErr}`, 400); return; }
+    farmerId = req.user!.id;
+    requestedBy = req.user!.id;
+    farmerInfo = { name, phone: String(o.phone).trim(), location: loc, registered: false, on_behalf_of: true };
   } else {
-    if (!farmer_id) {
-      sendError(res, 'farmer_id is required when agent creates a harvest request', 400);
-      return;
-    }
-    const farmer = await prisma.user.findUnique({ where: { id: farmer_id } });
-    if (!farmer || farmer.role !== 'farmer') {
-      sendError(res, 'Invalid farmer_id provided', 400);
-      return;
-    }
-    farmerId = farmer_id;
+    farmerId = req.user!.id;
   }
+
+  // Farm: given, or the farmer's only farm.
+  let farm: { id: string; farmName: string; tree_count: number; location: any; farmer_id: string } | null = null;
+  if (!farmerInfo) {
+    const farms = await prisma.farm.findMany({
+      where: { farmer_id: farmerId, archived_at: null, ...(b.farm_id && { id: b.farm_id }) },
+      select: { id: true, farmName: true, tree_count: true, location: true, farmer_id: true },
+      take: 2,
+    });
+    if (b.farm_id && !farms.length) { sendError(res, 'That farm was not found for this farmer', 400); return; }
+    if (b.farm_id || farms.length === 1) farm = farms[0];
+  }
+
+  const trees = b.treesToHarvest ? parseInt(b.treesToHarvest, 10) : farm?.tree_count || 0;
+  if (!trees || trees < 1) { sendError(res, 'How many trees should be harvested? Add the number of trees.', 400); return; }
+  const workers = b.workersNeeded ? parseInt(b.workersNeeded, 10) : defaultWorkers(trees);
+  const from = new Date(b.harvestDateFrom);
+  const to = b.harvestDateTo ? new Date(b.harvestDateTo) : new Date(from.getTime() + 4 * DAY);
+  if (to < from) { sendError(res, 'The end date must be after the start date', 400); return; }
+
+  // Location: the farm's, else the (validated) location sent, else the profile.
+  let location: any = farmerInfo ? { ...(farmerInfo.location as object), farm_name: `${farmerInfo.name}'s farm` } : null;
+  if (!location && farm) location = { ...(farm.location || {}), farm_name: farm.farmName };
+  if (!location && b.location?.district) {
+    const [loc, locErr] = normalizeLocation(b.location);
+    if (locErr) { sendError(res, `Location: ${locErr}`, 400); return; }
+    location = loc;
+  }
+  if (!location) {
+    const fp = await prisma.farmerProfile.findUnique({ where: { user_id: farmerId } });
+    location = {
+      province: fp?.farm_province || fp?.province, district: fp?.farm_district || fp?.district,
+      sector: fp?.farm_sector || fp?.sector, cell: fp?.farm_cell || fp?.cell, village: fp?.farm_village || fp?.village,
+    };
+  }
+  if (!location?.province && !location?.district) { sendError(res, 'Choose a farm or add your farm location on your profile first', 400); return; }
+
+  const requester = requestedBy ? await prisma.user.findUnique({ where: { id: requestedBy }, select: { full_name: true, phone: true } }) : null;
+  const forWhom = farmerInfo ? String(farmerInfo.name) : null;
 
   const serviceRequest = await prisma.serviceRequest.create({
     data: {
       farmer_id: farmerId,
-      agent_id: req.user?.role === 'agent' ? req.user.id : null,
+      requested_by: requestedBy,
+      farm_id: farm?.id ?? null,
+      agent_id: role === 'agent' ? req.user!.id : null,
       service_type: 'harvest',
-      title: 'Harvest Request',
-      description: `Harvest request for ${treesToHarvest} trees requiring ${workersNeeded} workers`,
+      title: forWhom ? `Harvest request for ${forWhom}` : 'Harvest Request',
+      description: `Harvest request for ${trees} trees requiring ${workers} workers`
+        + (forWhom ? ` — requested by ${requester?.full_name ?? 'another farmer'} for ${forWhom} (${farmerInfo!.phone}, not registered)` : '')
+        + (requestedBy && !forWhom ? ` — requested by ${requester?.full_name ?? 'another farmer'}` : ''),
       request_number: generateRequestNumber('HRV'),
       status: 'pending',
-      priority: priority as any,
+      priority: (b.priority || 'medium') as any,
       requested_date: new Date(),
       location,
+      ...(farmerInfo && { farmer_info: farmerInfo as any }),
       harvest_details: {
-        workers_needed: parseInt(workersNeeded),
-        equipment_needed: equipmentNeeded || [],
-        trees_to_harvest: parseInt(treesToHarvest),
-        harvest_date_from: new Date(harvestDateFrom),
-        harvest_date_to: new Date(harvestDateTo),
-        harvest_images: harvestImages || [],
-        hass_breakdown: hassBreakdown || {},
+        workers_needed: workers,
+        equipment_needed: Array.isArray(b.equipmentNeeded) ? b.equipmentNeeded : [],
+        trees_to_harvest: trees,
+        harvest_date_from: from,
+        harvest_date_to: to,
+        harvest_images: Array.isArray(b.harvestImages) ? b.harvestImages : [],
+        hass_breakdown: b.hassBreakdown || {},
       },
-      notes: notes || '',
+      notes: typeof b.notes === 'string' ? b.notes : '',
     },
   });
 
+  if (requestedBy && !forWhom) {
+    await createNotification(
+      farmerId, 'info', 'Harvest requested for your farm',
+      `${requester?.full_name ?? 'Another farmer'} requested a harvest for ${farm?.farmName ?? 'your farm'} (${trees} trees, from ${from.toLocaleDateString('en-GB')}). Request ${serviceRequest.request_number}.`,
+      serviceRequest.id, 'service_request'
+    );
+  }
   await notifyAllAdmins('info', 'New Service Request', 'A new service request has been submitted: ' + serviceRequest.title, serviceRequest.id);
 
   sendCreated(res, serviceRequest, 'Harvest request submitted successfully');
@@ -354,6 +467,10 @@ router.post('/harvesting-plan', authenticate, authorize('farmer', 'agent'), vali
     const farmer = await prisma.user.findUnique({ where: { id: farmer_id } });
     if (!farmer || farmer.role !== 'farmer') {
       sendError(res, 'Invalid farmer_id provided', 400);
+      return;
+    }
+    if (!(await canServeFarmer(req, farmer_id))) {
+      sendError(res, OUTSIDE_TERRITORY, 403);
       return;
     }
     farmerId = farmer_id;
@@ -403,6 +520,10 @@ router.post('/ipm-routine', authenticate, authorize('farmer', 'agent'), validate
       sendError(res, 'Invalid farmer_id provided', 400);
       return;
     }
+    if (!(await canServeFarmer(req, farmer_id))) {
+      sendError(res, OUTSIDE_TERRITORY, 403);
+      return;
+    }
     farmerId = farmer_id;
   }
 
@@ -437,7 +558,7 @@ router.post('/ipm-routine', authenticate, authorize('farmer', 'agent'), validate
 router.get('/pest-management', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where = buildRequestWhere(req, 'pest_control');
+  const where = await buildRequestWhere(req, 'pest_control');
 
   const [requests, total] = await Promise.all([
     prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
@@ -451,7 +572,7 @@ router.get('/pest-management', authenticate, validatePagination, asyncHandler(as
 router.get('/property-evaluation', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where = buildRequestWhere(req, 'other');
+  const where = await buildRequestWhere(req, 'other');
 
   const [requests, total] = await Promise.all([
     prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
@@ -513,7 +634,7 @@ router.get('/ipm-routine/agent/me', authenticate, authorize('agent'), validatePa
 router.get('/harvest', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where = buildRequestWhere(req, 'harvest');
+  const where = await buildRequestWhere(req, 'harvest');
 
   const [requests, total] = await Promise.all([
     prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
@@ -527,7 +648,7 @@ router.get('/harvest', authenticate, validatePagination, asyncHandler(async (req
 router.get('/harvesting-plan', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where = buildRequestWhere(req, 'harvesting_plan');
+  const where = await buildRequestWhere(req, 'harvesting_plan');
 
   const [requests, total] = await Promise.all([
     prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
@@ -541,7 +662,7 @@ router.get('/harvesting-plan', authenticate, validatePagination, asyncHandler(as
 router.get('/ipm-routine', authenticate, validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where = buildRequestWhere(req, 'ipm_routine');
+  const where = await buildRequestWhere(req, 'ipm_routine');
 
   const [requests, total] = await Promise.all([
     prisma.serviceRequest.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' }, include: LIST_INCLUDE }),
@@ -980,14 +1101,17 @@ router.get('/property-evaluation/stats', authenticate, authorize('admin', 'agent
 
 // GET /api/service-requests/farmer/:farmerId
 router.get('/farmer/:farmerId', authenticate, authorize('admin', 'agent', 'farmer'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
-  if (req.user?.role === 'farmer' && req.user.id !== req.params.farmerId) {
-    sendError(res, 'Access denied', 403);
+  if (!(await canAccessFarmer(req, req.params.farmerId))) {
+    sendError(res, req.user?.role === 'agent' ? OUTSIDE_TERRITORY : 'Access denied', 403);
     return;
   }
 
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where: any = { farmer_id: req.params.farmerId };
+  // Farmers also see the requests they made on behalf of another farmer.
+  const where: any = req.user?.role === 'farmer'
+    ? { OR: [{ farmer_id: req.params.farmerId }, { requested_by: req.params.farmerId }] }
+    : { farmer_id: req.params.farmerId };
   if (req.query.status) where.status = req.query.status as any;
   if (req.query.service_type) where.service_type = req.query.service_type as any;
 
@@ -1067,11 +1191,11 @@ router.get('/:id', authenticate, authorize('admin', 'agent', 'farmer'), validate
   const role = req.user?.role;
   const userId = req.user?.id;
 
-  if (role === 'farmer' && request.farmer_id !== userId) {
+  if (role === 'farmer' && request.farmer_id !== userId && request.requested_by !== userId) {
     sendError(res, 'Access denied', 403);
     return;
   }
-  if (role === 'agent' && request.agent_id !== userId && request.agent_id !== null) {
+  if (role === 'agent' && request.agent_id !== userId && (request.agent_id !== null || !(await canServeFarmer(req, request.farmer_id)))) {
     sendError(res, 'Access denied', 403);
     return;
   }

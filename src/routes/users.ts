@@ -12,6 +12,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize, adminOnly } from '../middleware/auth';
 import { sendSuccess, sendPaginatedResponse, sendNotFound, sendError } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { farmerScope } from '../utils/agentScope';
 import { env } from '../config/environment';
 import { createFarmerProfileForUser, createAgentProfileForUser, createFarmForUser } from '../utils/profileCreation';
 
@@ -103,7 +104,9 @@ router.post('/', authenticate, adminOnly, asyncHandler(async (req: Authenticated
 router.get('/farmers', authenticate, authorize('admin', 'agent'), validatePagination, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 10;
-  const where = buildSearchWhere(req, { role: 'farmer' });
+  const scope = await farmerScope(req);
+  const base = buildSearchWhere(req, { role: 'farmer' });
+  const where = scope ? { AND: [base, scope] } : base;
 
   const [farmers, total] = await Promise.all([
     prisma.user.findMany({ where, select: { ...userSelect, farmer_profile: true }, skip: (page - 1) * limit, take: limit, orderBy: { created_at: 'desc' } }),

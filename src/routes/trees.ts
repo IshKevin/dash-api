@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendCreated, sendPaginatedResponse, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { canAccessFarmer } from '../utils/agentScope';
 
 const router = Router();
 
@@ -100,7 +101,7 @@ router.get(
     if (!farm) {
       return sendNotFound(res, 'Farm not found');
     }
-    if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+    if (!(await canAccessFarmer(req, farm.farmer_id))) {
       return sendError(res, 'Access denied: this farm does not belong to you', 403);
     }
 
@@ -192,7 +193,7 @@ router.get(
     if (!farm) {
       return sendNotFound(res, 'Farm not found');
     }
-    if (req.user?.role === 'farmer' && farm.farmer_id !== req.user.id) {
+    if (!(await canAccessFarmer(req, farm.farmer_id))) {
       return sendError(res, 'Access denied: this farm does not belong to you', 403);
     }
 

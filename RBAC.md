@@ -11,7 +11,7 @@ Every `User` has exactly one role: `admin`, `agent`, `farmer`, `shop_manager`. T
 | Role | Who they are | Broad shape of their access |
 |---|---|---|
 | `admin` | Platform staff | Full access everywhere; the only role that bypasses ownership checks |
-| `agent` | Field agronomists/advisors ("VBA") | Manage service requests, farms, trees/diseases, forecasts, training content; scoped to *assigned* records where an assignment concept exists (e.g. their own visits, their assigned service requests) — but broadly able to service *any* farmer (see "Agents serve any farmer" below) |
+| `agent` | Field agronomists/advisors ("VBA") | Manage service requests, farms, trees/diseases, forecasts, training content — **only for farmers inside the area an admin assigned them** (see "VBA territory" below); additionally scoped to *assigned* records where an assignment concept exists (their own visits, their assigned service requests) |
 | `farmer` | Registered growers | Read/write only their own farm, service requests, documents, tree/disease records |
 | `shop_manager` | Runs one input-supply shop | Read/write only their own shop's products, customers, orders, and wallet |
 
@@ -70,7 +70,9 @@ Defined in `src/middleware/auth.ts`:
 | Suppliers (`/api/suppliers`) | R/W all, delete, set status | — | — | R + create/update (new ones start `pending_approval`; shop-link suppliers hidden) |
 | Transactions (`/api/transactions`) | R/W all | R own (payer/payee) | R own (payer/payee) | R own (payer/payee) |
 | Notifications (`/api/notifications`) | R/W all, can create for anyone | R/W own | R/W own | R/W own |
-| Profile Access / QR (`/api/profile-access`) | full | full (see "Agents serve any farmer") | scan/verify own token (public-by-token) | — |
+| Profile Access / QR (`/api/profile-access`) | full | farmers in their territory | scan/verify own token (public-by-token, minimal view) | — |
+| Membership card (`/api/membership`) | print / renew any farmer's card | print / renew for farmers in their territory | own card (`/me`) | — (`/verify/:token` is public, minimal view) |
+| Facilities, Opportunities | full | create/edit (opportunities: own) | read (area-filtered), express interest | read facilities |
 | Pending Farmers (`/api/pending-farmers`) | full | list/create (not scoped to creator — see note) | — | — |
 | Analytics / Reports (`/api/analytics`) | full | regional/farmers only | — | dashboard/sales/products/orders |
 | Settings, Logs, Monitoring | admin only | — | — | — |
@@ -86,9 +88,25 @@ Defined in `src/middleware/auth.ts`:
 - **Shops own products through a linked supplier row**: every Shop has a Supplier with the same id (`is_shop_supplier`); products/inventory/procurement are scoped to the manager's shop.
 - **Order / Cart checkout**: `customer_id` is optional — the buyer's own customer record is found or created from their account; agents may pass `farmer_id` to order on a farmer's behalf (`Order.placed_by` = agent). Legacy note: `Customer` has no `user_id` FK (customers aren't necessarily registered users). `cart.ts /checkout` and `orders.ts POST /` verify the supplied `customer_id`'s `email` matches the requester's own account email for non-staff roles, since there's no direct FK to check against.
 
+## VBA territory
+
+An admin assigns each VBA one or more **areas** (`AgentProfile.territory`: a JSON array of `{province?, district?, sector?, cell?, village?}`; a whole province is allowed). Only admins change it, via `PUT /api/agent-information/:id/territory`; the general agent-profile updates (`POST /`, `PUT /me`, `PUT /:id`) ignore `territory`. Older string entries (`"Gasabo"`, `"Eastern Province"`) are still understood.
+
+`src/utils/agentScope.ts` is the single place the rule lives:
+
+- `farmerScope(req)` → extra Prisma filter on farmer `User`s for list endpoints (`null` for admins). A farmer is inside an area when every level the area names matches the farm address on their profile (home address when the farm address is empty) or the location of any of their farms.
+- `canAccessFarmer(req, farmerId)` → record-level check used wherever a route used to check only farmer ownership (farms, land, trees, diseases, harvest lots, farmer-information, membership, profile-access).
+- A VBA with **no area sees no farmers** (strict by design). Service requests: a VBA sees those assigned to them plus unassigned ones from farmers in their area.
+
+Locations are validated against the official list from the `rwanda` npm package (`src/services/rwandaLocation.ts`).
+
+## Membership card QR
+
+The QR code printed on a farmer's card encodes `<FRONTEND_URL>/verify/<qr_code_token>`. Because anyone may hold that token, both `GET /api/membership/verify/:token` and `GET /api/profile-access/scan/:token` return only a minimal public view (name, photo, member number, district/sector, validity, verification status) unless the caller is an admin or a VBA serving that farmer. Regenerating the token (lost card) invalidates the old card.
+
 ## Deliberate exceptions (not bugs)
 
-- **Agents serve any farmer.** `profile-access.ts` (QR/access-key generation) and `documents.ts POST /:id/notarize` intentionally let *any* active agent act on *any* farmer's records, not just farmers the agent is currently assigned to. Agents are field staff who may physically meet any farmer; scoping notarization or QR issuance to "your assigned farmers only" would break the common case of a registration document (profile card / contract) that has no service-request/agent assignment at all.
+- **Documents are not yet territory-scoped.** `documents.ts POST /:id/notarize` still lets any active agent notarize any farmer's document (registration documents have no assignment of their own). Everything else that reads or acts on farmer records is territory-scoped — see "VBA territory".
 - **Asymmetric service-request creation.** `harvest`, `harvesting-plan`, and `ipm-routine` requests can be filed by an agent on a farmer's behalf (`farmer_id` in the body); `pest-management` and `property-evaluation` can currently only be filed by the farmer themselves. This wasn't changed during the RBAC audit because it looks like a product decision (these two types may be intended as farmer-initiated-only), not an oversight — flag to product/eng if that's wrong.
 - **Pending-farmer list isn't creator-scoped.** Any agent can see pending farmers created by any other agent (`GET /api/pending-farmers` isn't filtered by `created_by`). Left as-is since it reads as a shared intake queue, not a per-agent one.
 

@@ -16,6 +16,7 @@ import {
 } from '../utils/responses';
 import { createNotification } from '../utils/notificationService';
 import { AuthenticatedRequest } from '../types/auth';
+import { canAccessFarmer, farmerScope } from '../utils/agentScope';
 
 const router = Router();
 export const traceabilityRouter = Router();
@@ -45,9 +46,10 @@ function frontendBase(): string {
 }
 
 /** Scope a where-clause to what the caller may see (farmers: own lots only). */
-function scopeWhere(req: AuthenticatedRequest, where: Prisma.HarvestLotWhereInput): Prisma.HarvestLotWhereInput {
+async function scopeWhere(req: AuthenticatedRequest, where: Prisma.HarvestLotWhereInput): Promise<Prisma.HarvestLotWhereInput> {
   if (req.user!.role === 'farmer') return { ...where, farmer_id: req.user!.id };
-  return where;
+  const scope = await farmerScope(req); // VBAs: only lots of farmers in their area
+  return scope ? { AND: [where, { farmer: scope }] } : where;
 }
 
 async function loadLotForUser(req: AuthenticatedRequest, res: Response) {
@@ -56,7 +58,7 @@ async function loadLotForUser(req: AuthenticatedRequest, res: Response) {
     sendNotFound(res, 'Harvest lot not found');
     return null;
   }
-  if (req.user!.role === 'farmer' && lot.farmer_id !== req.user!.id) {
+  if (!(await canAccessFarmer(req, lot.farmer_id))) {
     sendError(res, 'Access denied', 403);
     return null;
   }
@@ -115,7 +117,7 @@ router.get(
 
     const page = Math.max(1, parseInt(q.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(q.limit, 10) || 20));
-    const scoped = scopeWhere(req, where);
+    const scoped = await scopeWhere(req, where);
 
     const [lots, total] = await Promise.all([
       prisma.harvestLot.findMany({
@@ -138,7 +140,7 @@ interface MonthRow { month: string; lots: number; total_kg: number; sold_kg: num
  * Per-month lots / kg / sold kg / revenue / rejected kg for [from, to), keyed
  * YYYY-MM by harvest date (UTC). Months with no harvest are filled with zeros.
  */
-async function monthlyBreakdown(from: Date, to: Date, farmerId?: string) {
+async function monthlyBreakdown(from: Date, to: Date, farmerIds?: string[]) {
   const rows = await prisma.$queryRaw<
     { month: string; lots: number; total_kg: number | null; sold_kg: number | null; revenue: number | null; rejected_kg: number | null }[]
   >(Prisma.sql`
@@ -150,7 +152,7 @@ async function monthlyBreakdown(from: Date, to: Date, farmerId?: string) {
            SUM("quantity_kg") FILTER (WHERE "status" = 'rejected') AS rejected_kg
       FROM "HarvestLot"
      WHERE "harvest_date" >= ${from} AND "harvest_date" < ${to}
-       ${farmerId ? Prisma.sql`AND "farmer_id" = ${farmerId}` : Prisma.empty}
+       ${farmerIds ? Prisma.sql`AND "farmer_id" = ANY(${farmerIds})` : Prisma.empty}
      GROUP BY 1`);
 
   const byKey = new Map(rows.map((r) => [r.month, r]));
@@ -208,12 +210,20 @@ router.get(
     } else if (year !== null) {
       base.harvest_date = { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) };
     }
-    const where = scopeWhere(req, base);
+    const where = await scopeWhere(req, base);
 
     const [monthsFrom, monthsTo] = year !== null
       ? [new Date(Date.UTC(year, 0, 1)), new Date(Date.UTC(year + 1, 0, 1))]
       : [new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1)), new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))];
-    const monthlyFarmer = req.user!.role === 'farmer' ? req.user!.id : q.farmer_id || undefined;
+    let monthlyFarmers: string[] | undefined;
+    if (req.user!.role === 'farmer') monthlyFarmers = [req.user!.id];
+    else {
+      const scope = await farmerScope(req);
+      if (scope) {
+        const ids = (await prisma.user.findMany({ where: { AND: [{ role: 'farmer' }, scope] }, select: { id: true } })).map((u) => u.id);
+        monthlyFarmers = q.farmer_id ? ids.filter((id) => id === q.farmer_id) : ids;
+      } else if (q.farmer_id) monthlyFarmers = [q.farmer_id];
+    }
 
     const [byStatus, byGrade, sold, byMonth] = await Promise.all([
       prisma.harvestLot.groupBy({ by: ['status'], where, _count: { _all: true }, _sum: { quantity_kg: true } }),
@@ -222,7 +232,7 @@ router.get(
         where: { ...where, status: { in: ['sold', 'delivered'] } },
         _sum: { quantity_kg: true, total_value: true },
       }),
-      monthlyBreakdown(monthsFrom, monthsTo, monthlyFarmer),
+      monthlyBreakdown(monthsFrom, monthsTo, monthlyFarmers),
     ]);
 
     const totalKg = byStatus.reduce((s, r) => s + (r._sum.quantity_kg ?? 0), 0);
@@ -268,6 +278,10 @@ router.get(
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const where: Prisma.FarmWhereInput = { archived_at: null };
     if (req.user!.role === 'farmer') where.farmer_id = req.user!.id;
+    else {
+      const scope = await farmerScope(req);
+      if (scope) where.farmer = scope;
+    }
     if (search) {
       where.OR = [
         { farmName: { contains: search, mode: 'insensitive' } },
@@ -351,7 +365,7 @@ router.post(
 
     const farm = await prisma.farm.findUnique({ where: { id: String(b.farm_id) } });
     if (!farm || farm.archived_at) return sendNotFound(res, 'Farm not found');
-    if (req.user!.role === 'farmer' && farm.farmer_id !== req.user!.id) {
+    if (!(await canAccessFarmer(req, farm.farmer_id))) {
       return sendError(res, 'You can only record harvests for your own farms', 403);
     }
 
