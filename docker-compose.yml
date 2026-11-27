@@ -6,6 +6,11 @@
 #   docker compose logs -f api          # follow API logs
 #   docker compose down                 # stop (data kept in volumes)
 #   docker compose down -v              # stop and wipe DB + files
+#   docker compose exec postgres psql -U dashuser dashboard_avocado   # DB shell
+#
+# Only the API publishes a host port (127.0.0.1:5000, for the local frontend).
+# Postgres and SeaweedFS publish none, so nothing clashes with other apps on a
+# server (e.g. an existing Postgres on 5432).
 #
 # Coolify:
 #   Build Pack = Docker Compose, Docker Compose Location = /docker-compose.yml
@@ -31,10 +36,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-dashuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dashpass}
       POSTGRES_DB: ${POSTGRES_DB:-dashboard_avocado}
-    ports:
-      # Localhost only — the database must never be reachable from outside.
-      # On a server where 5432 is already taken, set POSTGRES_HOST_PORT.
-      - '127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -66,9 +67,6 @@ services:
         {"identities":[{"name":"dash-api","credentials":[{"accessKey":"$${S3_ACCESS_KEY}","secretKey":"$${S3_SECRET_KEY}"}],"actions":["Admin","Read","List","Tagging","Write"]}]}
         JSON
         exec /usr/bin/weed -logtostderr=true server -ip=avocado-backend-seaweedfs -ip.bind=0.0.0.0 -dir=/data -volume.max=0 -master.volumeSizeLimitMB=1024 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
-    ports:
-      # S3 API on localhost for debugging (aws cli / s3 browser).
-      - '127.0.0.1:${S3_HOST_PORT:-8333}:8333'
     volumes:
       - seaweedfs_data:/data
     healthcheck:
@@ -129,8 +127,10 @@ services:
       ALLOW_TEST_OTP: ${ALLOW_TEST_OTP:-true}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-200}
       RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-1000}
+    # Localhost-only, for the local frontend (http://localhost:5000/api).
+    # Coolify's proxy reaches 5000 over the network; if 5000 is taken on the
+    # server, set API_HOST_PORT to a free port.
     ports:
-      # Localhost-bound; on Coolify traffic arrives through its proxy instead.
       - '127.0.0.1:${API_HOST_PORT:-5000}:5000'
     # Image CMD (entrypoint.sh): migrate deploy -> seed demo accounts -> start server
     healthcheck:
