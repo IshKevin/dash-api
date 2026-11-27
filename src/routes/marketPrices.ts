@@ -12,6 +12,7 @@ import {
   sendPaginatedResponse,
 } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
+import { canonicalDistrict, canonicalProvince } from '../services/rwandaGeo';
 
 const router = Router();
 
@@ -20,6 +21,13 @@ const GRADES = Object.values(ProduceGrade) as string[];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const round = (n: number) => Math.round(n * 100) / 100;
+
+/** Known varieties keep one spelling ("hass", "HASS " -> "Hass") so filters match. */
+const VARIETIES = ['Hass', 'Fuerte', 'Ettinger', 'Local'];
+function canonicalVariety(value: unknown): string {
+  const v = String(value).trim().replace(/\s+/g, ' ');
+  return VARIETIES.find((x) => x.toLowerCase() === v.toLowerCase()) ?? v.charAt(0).toUpperCase() + v.slice(1);
+}
 
 function parseDate(value: unknown): Date | null {
   if (value === undefined || value === null || value === '') return null;
@@ -37,12 +45,19 @@ function buildPriceData(body: any, partial: boolean): [Record<string, any> | nul
     data.price_per_kg = price;
   } else if (!partial) return [null, 'price_per_kg is required'];
 
-  for (const field of ['province', 'district'] as const) {
-    if (body[field] !== undefined) {
-      if (typeof body[field] !== 'string' || !body[field].trim()) return [null, `${field} must be a non-empty string`];
-      data[field] = body[field].trim();
-    } else if (!partial) return [null, `${field} is required`];
-  }
+  // District is stored with its official spelling and its own province, so
+  // "rwamagana " and "Rwamagana" are one market and a district can't be filed
+  // under the wrong province.
+  if (body.district !== undefined) {
+    const d = canonicalDistrict(body.district);
+    if (!d) return [null, `"${body.district}" is not a Rwanda district`];
+    if (body.province !== undefined && canonicalProvince(body.province) !== d.province) {
+      return [null, `${d.name} is in ${d.province}, not ${body.province}`];
+    }
+    data.district = d.name;
+    data.province = d.province;
+  } else if (!partial) return [null, 'district is required'];
+  else if (body.province !== undefined) return [null, 'Change the district to change the province'];
 
   if (body.price_type !== undefined) {
     if (!PRICE_TYPES.includes(body.price_type)) return [null, `price_type must be one of: ${PRICE_TYPES.join(', ')}`];
@@ -58,18 +73,21 @@ function buildPriceData(body: any, partial: boolean): [Record<string, any> | nul
     if (d.getTime() > Date.now() + DAY_MS) return [null, 'price_date cannot be in the future'];
     data.price_date = d;
   }
-  for (const field of ['commodity', 'variety', 'market_name', 'source', 'notes', 'currency'] as const) {
+  for (const field of ['commodity', 'market_name', 'source', 'notes', 'currency'] as const) {
     if (body[field] !== undefined && body[field] !== null) data[field] = String(body[field]).trim();
   }
+  if (body.variety !== undefined && body.variety !== null && String(body.variety).trim()) data.variety = canonicalVariety(body.variety);
   return [data, null];
 }
 
 function buildWhere(query: Record<string, string>): [Prisma.MarketPriceWhereInput | null, string | null] {
   const where: Prisma.MarketPriceWhereInput = {};
   if (query.commodity) where.commodity = query.commodity;
-  if (query.variety) where.variety = query.variety;
-  if (query.province) where.province = query.province;
-  if (query.district) where.district = query.district;
+  // Case-insensitive, so older records typed differently still show up.
+  const ci = (v: string) => ({ equals: v.trim(), mode: 'insensitive' as const });
+  if (query.variety) where.variety = ci(query.variety);
+  if (query.province) where.province = ci(canonicalProvince(query.province) ?? query.province);
+  if (query.district) where.district = ci(canonicalDistrict(query.district)?.name ?? query.district);
   if (query.price_type) {
     if (!PRICE_TYPES.includes(query.price_type)) return [null, `price_type must be one of: ${PRICE_TYPES.join(', ')}`];
     where.price_type = query.price_type as MarketPriceType;
@@ -157,7 +175,7 @@ router.get(
     const currentFrom = new Date(now - days * DAY_MS);
     const previousFrom = new Date(now - 2 * days * DAY_MS);
 
-    const base: Prisma.MarketPriceWhereInput = { commodity: q.commodity || 'avocado', ...(variety && { variety }) };
+    const base: Prisma.MarketPriceWhereInput = { commodity: q.commodity || 'avocado', ...(variety && { variety: { equals: variety, mode: 'insensitive' as const } }) };
     const [current, previous] = await Promise.all([
       prisma.marketPrice.groupBy({
         by: ['price_type'],

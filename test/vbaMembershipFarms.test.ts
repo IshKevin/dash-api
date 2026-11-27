@@ -175,6 +175,31 @@ describe('Rwanda locations, VBA territory, membership card, farms & harvest on b
       const days = (new Date(res.body.data.valid_until).getTime() - Date.now()) / 864e5;
       expect(days).to.be.within(364, 367);
     });
+
+    it('a VBA gets a staff ID card; admins can print it; a deactivated agent fails the public check', async () => {
+      const own = await request(app).get('/api/membership/agent/me').set(auth(vba.token));
+      expect(own.status, JSON.stringify(own.body)).to.equal(200);
+      expect(own.body.data).to.include({ kind: 'agent', status: 'active', full_name: 'Test VBA' });
+      expect(own.body.data.member_code).to.match(/^VBA-\d{4,}$/);
+      expect(own.body.data.qr_code).to.match(/^data:image\/png;base64,/);
+
+      const byAdmin = await request(app).get(`/api/membership/${vba.id}/card`).set(auth(admin.token));
+      expect(byAdmin.status).to.equal(200);
+      expect(byAdmin.body.data.member_code).to.equal(own.body.data.member_code);
+      // Agents and farmers can't open someone's staff card.
+      expect((await request(app).get(`/api/membership/${vba.id}/card`).set(auth(vba.token))).status).to.equal(403);
+      expect((await request(app).get('/api/membership/agent/me').set(auth(east.token))).status).to.equal(403);
+
+      const agentToken = own.body.data.verify_url.split('/').pop();
+      const check = await request(app).get(`/api/membership/verify/${agentToken}`);
+      expect(check.body.data).to.include({ kind: 'agent', valid: true });
+      expect(check.body.data).to.not.have.any.keys('phone', 'email', 'user_id');
+
+      await prisma.user.update({ where: { id: vba.id }, data: { status: 'inactive' } });
+      const after = await request(app).get(`/api/membership/verify/${agentToken}`);
+      expect(after.body.data).to.include({ kind: 'agent', valid: false, status: 'suspended' });
+      await prisma.user.update({ where: { id: vba.id }, data: { status: 'active' } });
+    });
   });
 
   describe('Multiple farms', () => {

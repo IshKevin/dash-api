@@ -24,6 +24,40 @@ function generateTempPassword(): string {
   return `Avo@${crypto.randomBytes(5).toString('hex')}${crypto.randomInt(10, 99)}A`;
 }
 
+const ROLES = ['admin', 'agent', 'farmer', 'shop_manager'];
+const STATUSES = ['active', 'inactive'];
+
+/**
+ * Admin safety rules for changing another account's role/status (or deleting
+ * it). Returns an error message, or null when the change is allowed.
+ *  - an admin cannot demote, deactivate or delete themselves (no lock-out);
+ *  - the system always keeps at least one active admin.
+ */
+async function adminChangeError(actorId: string, targetId: string, change: { role?: string; status?: string; remove?: boolean }) {
+  const target = await prisma.user.findUnique({ where: { id: targetId }, select: { role: true, status: true } });
+  if (!target) return null; // handlers report "not found"
+  const demote = change.role !== undefined && change.role !== 'admin';
+  const deactivate = change.status !== undefined && change.status !== 'active';
+  if (actorId === targetId && (demote || deactivate || change.remove)) {
+    return 'You cannot remove your own admin access. Ask another admin to do it.';
+  }
+  if (target.role === 'admin' && target.status === 'active' && (demote || deactivate || change.remove)) {
+    const activeAdmins = await prisma.user.count({ where: { role: 'admin', status: 'active' } });
+    if (activeAdmins <= 1) return 'Cannot remove the last active admin. Make someone else an admin first.';
+  }
+  return null;
+}
+
+/** A user moved to the agent/farmer role needs the matching profile. */
+async function ensureRoleProfile(userId: string, role: string) {
+  if (role === 'agent' && !(await prisma.agentProfile.findUnique({ where: { user_id: userId }, select: { id: true } }))) {
+    await prisma.agentProfile.create({ data: { user_id: userId, agentId: userId } });
+  }
+  if (role === 'farmer' && !(await prisma.farmerProfile.findUnique({ where: { user_id: userId }, select: { id: true } }))) {
+    await prisma.farmerProfile.create({ data: { user_id: userId } });
+  }
+}
+
 const userSelect = {
   id: true, email: true, full_name: true, phone: true,
   role: true, status: true, profile: true,
@@ -44,8 +78,9 @@ function flattenProfile(user: any) {
 function buildSearchWhere(req: any, baseWhere: any = {}) {
   const where: any = { ...baseWhere };
 
-  if (req.query.role) where.role = req.query.role;
-  if (req.query.status) where.status = req.query.status;
+  // Unknown values match nobody instead of crashing the query.
+  if (req.query.role) where.role = ROLES.includes(req.query.role) ? req.query.role : { in: [] };
+  if (req.query.status) where.status = STATUSES.includes(req.query.status) ? req.query.status : { in: [] };
 
   if (req.query.search) {
     const s = req.query.search as string;
@@ -97,6 +132,7 @@ router.post('/', authenticate, adminOnly, asyncHandler(async (req: Authenticated
     data: { email: email.toLowerCase(), password: hashed, full_name, phone: normalizePhoneForStorage(phone), role: targetRole, status: 'active' },
     select: userSelect,
   });
+  await ensureRoleProfile(user.id, targetRole);
 
   sendSuccess(res, { ...user, default_password: defaultPassword }, 'User created successfully');
 }));
@@ -301,8 +337,16 @@ router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asy
   if (updateData.phone !== undefined) data.phone = normalizePhoneForStorage(updateData.phone);
   if (updateData.profile !== undefined && typeof updateData.profile === 'object') data.profile = updateData.profile;
   if (isAdmin && typeof updateData.email === 'string' && updateData.email.trim()) data.email = updateData.email.trim().toLowerCase();
-  if (isAdmin && ['admin', 'agent', 'farmer', 'shop_manager'].includes(updateData.role)) data.role = updateData.role;
-  if (isAdmin && ['active', 'inactive'].includes(updateData.status)) data.status = updateData.status;
+  if (isAdmin && ROLES.includes(updateData.role)) data.role = updateData.role;
+  if (isAdmin && STATUSES.includes(updateData.status)) data.status = updateData.status;
+  if (data.role !== undefined || data.status !== undefined) {
+    const blocked = await adminChangeError(req.user!.id, userId, { role: data.role, status: data.status });
+    if (blocked) { sendError(res, blocked, 400); return; }
+  }
+  if (data.email) {
+    const taken = await prisma.user.findFirst({ where: { email: data.email, id: { not: userId } }, select: { id: true } });
+    if (taken) { sendError(res, 'Another account already uses this email', 400); return; }
+  }
 
   const user = await prisma.user.update({
     where: { id: userId },
@@ -314,6 +358,7 @@ router.put('/:id', authenticate, validateIdParam, validateUserProfileUpdate, asy
     sendNotFound(res, 'User not found');
     return;
   }
+  if (data.role) await ensureRoleProfile(user.id, data.role);
 
   sendSuccess(res, user, 'User updated successfully');
 }));
@@ -323,10 +368,12 @@ router.put('/:id/status', authenticate, adminOnly, validateIdParam, asyncHandler
   const userId = req.params.id;
   const { status } = req.body;
 
-  if (!['active', 'inactive'].includes(status)) {
+  if (!STATUSES.includes(status)) {
     sendError(res, 'Invalid status value', 400);
     return;
   }
+  const blocked = await adminChangeError(req.user!.id, userId, { status });
+  if (blocked) { sendError(res, blocked, 400); return; }
 
   const user = await prisma.user.update({
     where: { id: userId },
@@ -347,22 +394,12 @@ router.put('/:id/role', authenticate, adminOnly, validateIdParam, asyncHandler(a
   const userId = req.params.id;
   const { role } = req.body;
 
-  const validRoles = ['admin', 'agent', 'farmer', 'shop_manager'];
-  if (!validRoles.includes(role)) {
+  if (!ROLES.includes(role)) {
     sendError(res, 'Invalid role value', 400);
     return;
   }
-
-  if (role !== 'admin') {
-    const existing = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
-    if (existing?.role === 'admin') {
-      const adminCount = await prisma.user.count({ where: { role: 'admin', status: 'active' } });
-      if (adminCount <= 1) {
-        sendError(res, 'Cannot remove the last admin user', 400);
-        return;
-      }
-    }
-  }
+  const blocked = await adminChangeError(req.user!.id, userId, { role });
+  if (blocked) { sendError(res, blocked, 400); return; }
 
   const user = await prisma.user.update({
     where: { id: userId },
@@ -375,6 +412,7 @@ router.put('/:id/role', authenticate, adminOnly, validateIdParam, asyncHandler(a
     return;
   }
 
+  await ensureRoleProfile(user.id, role);
   sendSuccess(res, user, `User role updated to ${role}`);
 }));
 
@@ -386,6 +424,8 @@ router.delete('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(asy
     sendError(res, 'Cannot delete your own account', 400);
     return;
   }
+  const blocked = await adminChangeError(req.user!.id, userId, { remove: true });
+  if (blocked) { sendError(res, blocked, 400); return; }
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -435,6 +475,29 @@ router.delete('/:id', authenticate, adminOnly, validateIdParam, asyncHandler(asy
   });
 
   sendSuccess(res, null, 'User deleted successfully');
+}));
+
+/**
+ * POST /api/users/:id/reset-password
+ * Admin sets a new one-time password for another account (e.g. a staff member
+ * who forgot theirs and has no email set up). Returned once; existing reset
+ * links stop working. Admins change their own password from their profile.
+ */
+router.post('/:id/reset-password', authenticate, adminOnly, validateIdParam, asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.params.id;
+  if (req.user!.id === userId) {
+    sendError(res, 'Use "Change password" on your profile to change your own password', 400);
+    return;
+  }
+  const exists = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+  if (!exists) { sendNotFound(res, 'User not found'); return; }
+
+  const temporary = generateTempPassword();
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: userId }, data: { password: await bcrypt.hash(temporary, env.BCRYPT_ROUNDS) } }),
+    prisma.passwordResetToken.deleteMany({ where: { user_id: userId } }),
+  ]);
+  sendSuccess(res, { default_password: temporary }, 'Password reset. Share the new password with the user privately.');
 }));
 
 export default router;

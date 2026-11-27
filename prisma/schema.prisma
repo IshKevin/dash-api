@@ -863,6 +863,8 @@ model AgentProfile {
   totalTransactions Int      @default(0)
   performance       String?
   profileImage      String?
+  /// Short staff number printed on the agent's ID card (VBA-0001).
+  staff_no          Int      @unique @default(autoincrement())
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
 

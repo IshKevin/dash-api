@@ -98,23 +98,54 @@ describe('Market prices, harvest lots & traceability, public files (in-process)'
       const res = await request(app)
         .post('/api/market-prices')
         .set('Authorization', `Bearer ${agent.token}`)
-        .send({ price_per_kg: 455, province: 'Eastern Province', district: 'TestDistrictX', price_type: 'wholesale', variety: 'Hass' });
+        .send({ price_per_kg: 455, province: 'Southern Province', district: 'Nyaruguru', price_type: 'wholesale', variety: 'Hass' });
       expect(res.status, JSON.stringify(res.body)).to.equal(201);
       expect(res.body.data.recorded_by).to.equal(agent.id);
       priceIds.push(res.body.data.id);
 
       const list = await request(app)
-        .get('/api/market-prices?district=TestDistrictX')
+        .get('/api/market-prices?district=Nyaruguru')
         .set('Authorization', `Bearer ${farmerA.token}`);
       expect(list.status).to.equal(200);
       expect(list.body.data).to.have.length(1);
       expect(list.body.data[0].price_per_kg).to.equal(455);
     });
 
+    it('stores the official district/province/variety spelling and rejects mismatches', async () => {
+      const ok = await request(app)
+        .post('/api/market-prices')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ price_per_kg: 470, district: ' nyaruguru ', price_type: 'retail', variety: 'hass' });
+      expect(ok.status, JSON.stringify(ok.body)).to.equal(201);
+      priceIds.push(ok.body.data.id);
+      expect(ok.body.data.district).to.equal('Nyaruguru');
+      expect(ok.body.data.province).to.equal('Southern Province');
+      expect(ok.body.data.variety).to.equal('Hass');
+
+      const wrongProvince = await request(app)
+        .post('/api/market-prices')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ price_per_kg: 470, province: 'Eastern Province', district: 'Huye' });
+      expect(wrongProvince.status).to.equal(400);
+      expect(wrongProvince.body.message).to.match(/Huye is in Southern Province/);
+
+      const unknown = await request(app)
+        .post('/api/market-prices')
+        .set('Authorization', `Bearer ${admin.token}`)
+        .send({ price_per_kg: 470, province: 'Eastern Province', district: 'Atlantis' });
+      expect(unknown.status).to.equal(400);
+
+      // Filters ignore case.
+      const list = await request(app)
+        .get('/api/market-prices?district=NYARUGURU&variety=HASS&price_type=retail')
+        .set('Authorization', `Bearer ${farmerA.token}`);
+      expect(list.body.data.map((p: any) => p.id)).to.include(ok.body.data.id);
+    });
+
     it('bulk import is admin-only and returns latest per district/type', async () => {
       const prices = [
-        { price_per_kg: 300, province: 'Eastern Province', district: 'TestDistrictX', price_type: 'farm_gate', price_date: new Date(Date.now() - 14 * 864e5).toISOString() },
-        { price_per_kg: 350, province: 'Eastern Province', district: 'TestDistrictX', price_type: 'farm_gate', price_date: new Date(Date.now() - 864e5).toISOString() },
+        { price_per_kg: 300, province: 'Southern Province', district: 'Nyaruguru', price_type: 'farm_gate', price_date: new Date(Date.now() - 14 * 864e5).toISOString() },
+        { price_per_kg: 350, province: 'Southern Province', district: 'Nyaruguru', price_type: 'farm_gate', price_date: new Date(Date.now() - 864e5).toISOString() },
       ];
       const denied = await request(app).post('/api/market-prices/bulk').set('Authorization', `Bearer ${agent.token}`).send({ prices });
       expect(denied.status).to.equal(403);
@@ -122,11 +153,11 @@ describe('Market prices, harvest lots & traceability, public files (in-process)'
       const ok = await request(app).post('/api/market-prices/bulk').set('Authorization', `Bearer ${admin.token}`).send({ prices });
       expect(ok.status, JSON.stringify(ok.body)).to.equal(201);
       expect(ok.body.data.created).to.equal(2);
-      const created = await prisma.marketPrice.findMany({ where: { district: 'TestDistrictX' }, select: { id: true } });
+      const created = await prisma.marketPrice.findMany({ where: { district: 'Nyaruguru' }, select: { id: true } });
       created.forEach((p) => priceIds.includes(p.id) || priceIds.push(p.id));
 
       const latest = await request(app)
-        .get('/api/market-prices/latest?district=TestDistrictX')
+        .get('/api/market-prices/latest?district=Nyaruguru')
         .set('Authorization', `Bearer ${farmerA.token}`);
       expect(latest.status).to.equal(200);
       const farmGate = latest.body.data.filter((p: any) => p.price_type === 'farm_gate');
@@ -140,7 +171,7 @@ describe('Market prices, harvest lots & traceability, public files (in-process)'
       expect(summary.body.data.summary.map((s: any) => s.price_type)).to.include.members(['farm_gate', 'wholesale', 'retail', 'export']);
 
       const trends = await request(app)
-        .get('/api/market-prices/trends?district=TestDistrictX&price_type=farm_gate&interval=week')
+        .get('/api/market-prices/trends?district=Nyaruguru&price_type=farm_gate&interval=week')
         .set('Authorization', `Bearer ${farmerA.token}`);
       expect(trends.status).to.equal(200);
       expect(trends.body.data.interval).to.equal('week');
@@ -149,7 +180,7 @@ describe('Market prices, harvest lots & traceability, public files (in-process)'
     });
 
     it('stops an agent editing a price they did not record; admin can delete', async () => {
-      const adminOwned = await prisma.marketPrice.findFirstOrThrow({ where: { district: 'TestDistrictX', recorded_by: admin.id } });
+      const adminOwned = await prisma.marketPrice.findFirstOrThrow({ where: { district: 'Nyaruguru', recorded_by: admin.id } });
       const res = await request(app)
         .put(`/api/market-prices/${adminOwned.id}`)
         .set('Authorization', `Bearer ${agent.token}`)

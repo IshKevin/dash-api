@@ -5,7 +5,7 @@ import { asyncHandler } from '../middleware/errorHandler';
 import { authenticate, authorize } from '../middleware/auth';
 import { sendSuccess, sendError, sendNotFound } from '../utils/responses';
 import { AuthenticatedRequest } from '../types/auth';
-import { canAccessFarmer, OUTSIDE_TERRITORY } from '../utils/agentScope';
+import { canAccessFarmer, OUTSIDE_TERRITORY, parseTerritory } from '../utils/agentScope';
 import { createNotification } from '../utils/notificationService';
 import { generateQRToken } from '../utils/accessKey';
 
@@ -16,6 +16,9 @@ import { generateQRToken } from '../utils/accessKey';
  * The QR code on the card opens a public verification page
  * (<FRONTEND_URL>/verify/<token>) that shows only what is needed to check
  * the card is genuine — never the phone number or national ID.
+ *
+ * Field agents (VBAs) get a staff ID card (VBA-0001) with the same QR check.
+ * It is valid while their account is active; there is no yearly renewal.
  */
 const router = Router();
 
@@ -23,6 +26,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const EXPIRING_DAYS = 30;
 
 export const memberCode = (n: number) => `ASR-${String(n).padStart(6, '0')}`;
+export const staffCode = (n: number) => `VBA-${String(n).padStart(4, '0')}`;
 
 const frontendBase = () => (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
 export const verifyUrl = (token: string) => `${frontendBase()}/verify/${token}`;
@@ -91,6 +95,7 @@ async function cardFor(user: NonNullable<Awaited<ReturnType<typeof ensureCard>>>
   const url = verifyUrl(user.qr_code_token!);
   const qr = await QRCode.toDataURL(url, { errorCorrectionLevel: 'Q', margin: 1, width: 360, color: { dark: '#0b3d2e', light: '#ffffff' } });
   return {
+    kind: 'farmer' as const,
     user_id: user.id,
     member_no: fp.member_no,
     member_code: memberCode(fp.member_no),
@@ -114,6 +119,70 @@ async function cardFor(user: NonNullable<Awaited<ReturnType<typeof ensureCard>>>
   };
 }
 
+const agentCardSelect = {
+  id: true, full_name: true, role: true, status: true, qr_code_token: true, created_at: true,
+  agent_profile: {
+    select: { staff_no: true, profileImage: true, province: true, district: true, sector: true, territory: true, specialization: true, created_at: true },
+  },
+} as const;
+
+/** Make sure the agent has a profile (staff number) and a QR token. */
+async function ensureAgentCard(userId: string) {
+  let user = await prisma.user.findUnique({ where: { id: userId }, select: agentCardSelect });
+  if (!user || user.role !== 'agent') return null;
+  const writes: Promise<unknown>[] = [];
+  if (!user.agent_profile) writes.push(prisma.agentProfile.create({ data: { user_id: userId, agentId: userId } }));
+  if (!user.qr_code_token) writes.push(prisma.user.update({ where: { id: userId }, data: { qr_code_token: generateQRToken() } }));
+  if (writes.length) {
+    await Promise.all(writes);
+    user = await prisma.user.findUnique({ where: { id: userId }, select: agentCardSelect });
+  }
+  return user!;
+}
+
+/** Districts (or provinces) the agent covers, for the card. */
+function agentAreas(ap: { territory: unknown; district: string | null; province: string | null }) {
+  const names = parseTerritory(ap.territory).map((a) => a.sector ? `${a.sector}, ${a.district}` : a.district || a.province || '');
+  const list = [...new Set(names.filter(Boolean))];
+  if (!list.length && (ap.district || ap.province)) list.push((ap.district || ap.province)!);
+  return list;
+}
+
+async function agentCardFor(user: NonNullable<Awaited<ReturnType<typeof ensureAgentCard>>>) {
+  const ap = user.agent_profile!;
+  const url = verifyUrl(user.qr_code_token!);
+  const qr = await QRCode.toDataURL(url, { errorCorrectionLevel: 'Q', margin: 1, width: 360, color: { dark: '#0b3d2e', light: '#ffffff' } });
+  return {
+    kind: 'agent' as const,
+    user_id: user.id,
+    member_no: ap.staff_no,
+    member_code: staffCode(ap.staff_no),
+    full_name: user.full_name,
+    photo: ap.profileImage,
+    role_title: 'Field Agent (VBA)',
+    specialization: ap.specialization,
+    province: ap.province,
+    district: ap.district,
+    sector: ap.sector,
+    areas: agentAreas(ap),
+    member_since: ap.created_at || user.created_at,
+    status: (user.status === 'active' ? 'active' : 'suspended') as MembershipStatus,
+    verify_url: url,
+    qr_code: qr,
+  };
+}
+
+/**
+ * @route GET /api/membership/agent/me
+ * @desc  The signed-in agent's staff ID card
+ * @access Agent
+ */
+router.get('/agent/me', authenticate, authorize('agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  const user = await ensureAgentCard(req.user!.id);
+  if (!user) return sendNotFound(res, 'Agent not found');
+  return sendSuccess(res, await agentCardFor(user), 'Agent card retrieved');
+}));
+
 /**
  * @route GET /api/membership/me
  * @desc  The farmer's own membership card (issued on first view if missing)
@@ -127,10 +196,15 @@ router.get('/me', authenticate, authorize('farmer'), asyncHandler(async (req: Au
 
 /**
  * @route GET /api/membership/:userId/card
- * @desc  A farmer's card, for printing by staff
+ * @desc  A farmer's card (or, for admins, an agent's staff card), for printing
  * @access Admin, Agent (farmers in their area)
  */
 router.get('/:userId/card', authenticate, authorize('admin', 'agent'), asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+  // Admins can also print an agent's staff card.
+  if (req.user!.role === 'admin') {
+    const agent = await ensureAgentCard(req.params.userId);
+    if (agent) return sendSuccess(res, await agentCardFor(agent), 'Agent card retrieved');
+  }
   if (!(await canAccessFarmer(req, req.params.userId))) return sendError(res, OUTSIDE_TERRITORY, 403);
   const user = await ensureCard(req.params.userId);
   if (!user) return sendNotFound(res, 'Farmer not found');
@@ -164,11 +238,33 @@ router.post('/:userId/renew', authenticate, authorize('admin', 'agent'), asyncHa
 /** Public, minimal view of a card — what a buyer or official needs to trust it. */
 export async function publicCardByToken(token: string) {
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(token)) return null;
-  const user = await prisma.user.findUnique({ where: { qr_code_token: token }, select: userCardSelect });
-  if (!user || user.role !== 'farmer' || !user.farmer_profile) return null;
+  const user = await prisma.user.findUnique({ where: { qr_code_token: token }, select: { ...userCardSelect, agent_profile: agentCardSelect.agent_profile } });
+  if (!user) return null;
+  if (user.role === 'agent' && user.agent_profile) {
+    const ap = user.agent_profile;
+    const active = user.status === 'active';
+    return {
+      kind: 'agent' as const,
+      valid: active,
+      status: (active ? 'active' : 'suspended') as MembershipStatus,
+      member_code: staffCode(ap.staff_no),
+      full_name: user.full_name,
+      photo: ap.profileImage,
+      role_title: 'Field Agent (VBA)',
+      areas: agentAreas(ap),
+      district: ap.district,
+      sector: ap.sector,
+      profile_verified: true,
+      valid_until: null,
+      member_since: ap.created_at || user.created_at,
+      user_id: user.id,
+    };
+  }
+  if (user.role !== 'farmer' || !user.farmer_profile) return null;
   const fp = user.farmer_profile;
   const status = statusOf(user.status, fp.membership_valid_until);
   return {
+    kind: 'farmer' as const,
     valid: status === 'active' || status === 'expiring',
     status,
     member_code: memberCode(fp.member_no),
