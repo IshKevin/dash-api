@@ -1,53 +1,76 @@
-# Backend stack: PostgreSQL + SeaweedFS (S3 object storage) + API.
+# Backend stack, all in one: PostgreSQL + SeaweedFS (S3 object storage) + API.
+# Same file for local Docker and for Coolify (Build Pack = Docker Compose).
 #
-# Runs on its own. The frontend (Dashboard-avocado) has its own compose file;
-# the two connect over HTTP (browser -> http://localhost:5000/api) and also
-# share the "avocado-net" Docker network so containers can reach each other by
-# name (e.g. http://dash-api:5000) when a reverse proxy is used.
-#
+# Local:
 #   docker compose up -d --build        # start everything
 #   docker compose logs -f api          # follow API logs
 #   docker compose down                 # stop (data kept in volumes)
 #   docker compose down -v              # stop and wipe DB + files
+#
+# Coolify:
+#   Build Pack = Docker Compose, Docker Compose Location = /docker-compose.yml
+#   Domain of the "api" service = https://api.rwandaavocados.rw:5000
+#   Set at least JWT_SECRET, POSTGRES_PASSWORD, S3_SECRET_KEY, CORS_ORIGIN,
+#   FRONTEND_URL, PUBLIC_API_URL in Environment Variables.
+#   Do NOT set DATABASE_URL / S3_ENDPOINT — they are built below from the
+#   service names (inside a container "localhost" is never the database).
+#
+# Optional (leave blank for now): RESEND_API_KEY (email) and
+# AFRICASTALKING_* (SMS). While blank, sends are skipped and logged, never fatal.
+#
+# The frontend (Dashboard-avocado) has its own compose file; both join the
+# "avocado-net" network so containers can reach the API as http://dash-api:5000.
 
 name: avocado-backend
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: dash-api-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dashuser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dashpass}
       POSTGRES_DB: ${POSTGRES_DB:-dashboard_avocado}
     ports:
-      # Bound to localhost only — the database must never be reachable from outside.
+      # Localhost only — the database must never be reachable from outside.
+      # On a server where 5432 is already taken, set POSTGRES_HOST_PORT.
       - '127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-dashuser} -d ${POSTGRES_DB:-dashboard_avocado}']
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 10s
       timeout: 5s
-      retries: 5
-    networks: [avocado-net]
+      retries: 10
+    # Internal network only, under a unique hostname: a plain "postgres" name
+    # could resolve to another stack's database on a shared network.
+    networks:
+      backend:
+        aliases: [avocado-backend-postgres]
 
   seaweedfs:
     image: chrislusf/seaweedfs:3.97
-    container_name: dash-api-seaweedfs
     restart: unless-stopped
-    entrypoint: ['/bin/sh', '/opt/seaweedfs/start.sh']
     environment:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-seaweedadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-seaweedadmin123}
-      SEAWEED_ADVERTISE_IP: seaweedfs
+    # All-in-one SeaweedFS (master + volume + filer + S3). Startup script is
+    # inlined (not bind-mounted) so it also works on Coolify. No anonymous
+    # identity: every object is private; public images go through the API.
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -e
+        mkdir -p /etc/seaweedfs /data
+        cat > /etc/seaweedfs/s3.json <<JSON
+        {"identities":[{"name":"dash-api","credentials":[{"accessKey":"$${S3_ACCESS_KEY}","secretKey":"$${S3_SECRET_KEY}"}],"actions":["Admin","Read","List","Tagging","Write"]}]}
+        JSON
+        exec /usr/bin/weed -logtostderr=true server -ip=avocado-backend-seaweedfs -ip.bind=0.0.0.0 -dir=/data -volume.max=0 -master.volumeSizeLimitMB=1024 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
-      # S3 API — exposed for local debugging (aws cli / s3 browser). Remove in production.
+      # S3 API on localhost for debugging (aws cli / s3 browser).
       - '127.0.0.1:${S3_HOST_PORT:-8333}:8333'
     volumes:
       - seaweedfs_data:/data
-      - ./docker/seaweedfs/start.sh:/opt/seaweedfs/start.sh:ro
     healthcheck:
       # The S3 gateway only answers once master, volume and filer are all up.
       test: ['CMD-SHELL', 'wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q "HTTP/1.1"']
@@ -55,14 +78,14 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 10
-    networks: [avocado-net]
+    networks:
+      backend:
+        aliases: [avocado-backend-seaweedfs]
 
   api:
     build:
       context: .
       target: production
-    image: avocado/dash-api:latest
-    container_name: dash-api
     restart: unless-stopped
     depends_on:
       postgres:
@@ -70,50 +93,61 @@ services:
       seaweedfs:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-dashuser}:${POSTGRES_PASSWORD:-dashpass}@postgres:5432/${POSTGRES_DB:-dashboard_avocado}
+      # Built from the service names — never set these to localhost.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dashuser}:${POSTGRES_PASSWORD:-dashpass}@avocado-backend-postgres:5432/${POSTGRES_DB:-dashboard_avocado}
+      S3_ENDPOINT: http://avocado-backend-seaweedfs:8333
       PORT: 5000
       NODE_ENV: ${NODE_ENV:-production}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required - copy .env.example to .env}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (openssl rand -hex 32)}
       JWT_EXPIRE: ${JWT_EXPIRE:-7d}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       CORS_PUBLIC: ${CORS_PUBLIC:-false}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      # Base URL browsers use to reach this API; public image URLs are built from it.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:5000}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
       APP_NAME: ${APP_NAME:-Dashboard Avocado Backend}
       APP_VERSION: ${APP_VERSION:-2.1.0}
-      S3_ENDPOINT: http://seaweedfs:8333
       S3_REGION: us-east-1
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-seaweedadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-seaweedadmin123}
       S3_BUCKET: ${S3_BUCKET:-avocado-dashboard}
-      # Base URL browsers use to reach this API; public image URLs are built from it.
-      PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:5000}
       DRY_MATTER_MIN_PCT: ${DRY_MATTER_MIN_PCT:-23}
       LAND_REGISTRY_API_URL: ${LAND_REGISTRY_API_URL:-}
       LAND_REGISTRY_API_KEY: ${LAND_REGISTRY_API_KEY:-}
+      # ── Optional for now: blank = feature skipped (logged, not fatal) ──
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       FROM_EMAIL: ${FROM_EMAIL:-noreply@avocadodashboard.com}
       AFRICASTALKING_USERNAME: ${AFRICASTALKING_USERNAME:-}
       AFRICASTALKING_API_KEY: ${AFRICASTALKING_API_KEY:-}
       AFRICASTALKING_SENDER_ID: ${AFRICASTALKING_SENDER_ID:-}
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      # Demo accounts with known passwords: on for local testing, set false for production.
+      # ── Testing switches: set false for real production ──
+      # Demo accounts with publicly known passwords (see README).
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
-      # Shows SMS activation codes on screen when no SMS provider is configured. Testing only!
-      ALLOW_TEST_OTP: ${ALLOW_TEST_OTP:-false}
-      TRUST_PROXY: ${TRUST_PROXY:-0}
+      # Shows SMS activation codes on screen while Africa's Talking is not configured.
+      ALLOW_TEST_OTP: ${ALLOW_TEST_OTP:-true}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-200}
       RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-1000}
     ports:
-      - '${API_HOST_PORT:-5000}:5000'
+      # Localhost-bound; on Coolify traffic arrives through its proxy instead.
+      - '127.0.0.1:${API_HOST_PORT:-5000}:5000'
     # Image CMD (entrypoint.sh): migrate deploy -> seed demo accounts -> start server
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://localhost:5000/health || exit 1']
       interval: 30s
       timeout: 10s
-      start_period: 40s
-      retries: 3
-    networks: [avocado-net]
+      start_period: 60s
+      retries: 5
+    networks:
+      backend: {}
+      avocado-net:
+        aliases: [dash-api]
 
 networks:
+  # Private: database + storage + API only.
+  backend: {}
+  # Shared with the frontend stack; only the API joins it.
   avocado-net:
     name: avocado-net
 

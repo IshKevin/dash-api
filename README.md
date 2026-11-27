@@ -14,8 +14,8 @@ object storage for images/documents) and the API. The frontend
 ```
  browser ──► dashboard-web :3000 (nginx, SPA)          ← Dashboard-avocado/docker-compose.yml
     │
-    └──────► dash-api :5000 ──► dash-api-postgres :5432  ← dash-api/docker-compose.yml
-                    └─────────► dash-api-seaweedfs :8333 (S3, private bucket)
+    └──────► dash-api :5000 ──► avocado-backend-postgres :5432  ← dash-api/docker-compose.yml
+                    └─────────► avocado-backend-seaweedfs :8333 (S3, private bucket)
 ```
 
 ### Prerequisites
@@ -531,7 +531,7 @@ docker compose down -v              # stop and DELETE database + stored files
 
 ### Object storage (SeaweedFS)
 
-- Image: `chrislusf/seaweedfs:3.97`, all-in-one `weed server -s3` (master + volume + filer + S3 gateway), started by `docker/seaweedfs/start.sh`, which writes the S3 credentials from `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
+- Image: `chrislusf/seaweedfs:3.97`, all-in-one `weed server -s3` (master + volume + filer + S3 gateway), started by the inline script in `docker-compose.yml` (`docker/seaweedfs/start.sh` for the test stack), which writes the S3 credentials from `S3_ACCESS_KEY` / `S3_SECRET_KEY`.
 - The bucket is **fully private** — there is no anonymous S3 identity. SeaweedFS doesn't support S3 bucket policies, so instead:
   - `public/…` objects (product/profile images) are streamed by the API at `GET /api/files/public/<key>` with long-lived cache headers and `Cross-Origin-Resource-Policy: cross-origin`, so the SPA on another origin can display them.
   - `private/…` objects (contracts, signatures) are only streamed by the authenticated documents endpoints after an ownership check.
