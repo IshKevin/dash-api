@@ -9,6 +9,8 @@ import { createNotification } from '../utils/notificationService';
 import { AuthenticatedRequest } from '../types/auth';
 import { canonicalDistrict, canonicalProvince } from '../services/rwandaGeo';
 import logger from '../config/logger';
+import { scoreMatch, loadFarmerSupply, farmGatePrices, nearbyDistricts, PRODUCE_TYPES } from '../services/opportunityMatching';
+import { canAccessFarmer, farmerScope, OUTSIDE_TERRITORY } from '../utils/agentScope';
 
 const router = Router();
 
@@ -60,6 +62,28 @@ async function farmerVisibleWhere(userId: string): Promise<Prisma.OpportunityWhe
     status: 'open',
     OR: [{ deadline: null }, { deadline: { gte: startOfToday() } }],
     AND: [{ OR: areaFilters }],
+  };
+}
+
+/**
+ * What the matching engine may offer a farmer: everything they can see, plus
+ * buyers / export / tenders posted for nearby districts (within NEARBY_KM) —
+ * a buyer 40 km away across a district border is still a real opportunity.
+ */
+async function farmerMatchableWhere(userId: string): Promise<Prisma.OpportunityWhereInput> {
+  const visible = await farmerVisibleWhere(userId);
+  const near = nearbyDistricts((await farmerArea(userId)).district);
+  if (!near.length) return visible;
+  return {
+    OR: [
+      visible,
+      {
+        status: 'open',
+        type: { in: PRODUCE_TYPES as OpportunityType[] },
+        district: { in: near },
+        OR: [{ deadline: null }, { deadline: { gte: startOfToday() } }],
+      },
+    ],
   };
 }
 
@@ -290,6 +314,43 @@ router.get(
 );
 
 /**
+ * @route GET /api/opportunities/matches
+ * @desc  Matching engine: the opportunities a farmer can see, ranked by fit
+ *        (location, supply vs quantity, price vs local farm-gate, grade,
+ *        deadline) with plain-language reasons.
+ * @access Farmer (own); Admin / Agent with ?farmer_id= (agents: farmers in their area)
+ */
+router.get(
+  '/matches',
+  authenticate,
+  authorize('admin', 'agent', 'farmer'),
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const isFarmer = req.user!.role === 'farmer';
+    const farmerId = isFarmer ? req.user!.id : String(req.query.farmer_id || '');
+    if (!farmerId) return sendError(res, 'farmer_id is required', 400);
+    if (!isFarmer && !(await canAccessFarmer(req, farmerId))) return sendError(res, OUTSIDE_TERRITORY, 403);
+
+    const [farmer] = await loadFarmerSupply({ id: farmerId }, 1);
+    if (!farmer) return sendNotFound(res, 'Farmer not found');
+
+    const [opps, prices, interests] = await Promise.all([
+      prisma.opportunity.findMany({ where: await farmerMatchableWhere(farmerId), take: 500 }),
+      farmGatePrices(),
+      prisma.opportunityInterest.findMany({ where: { farmer_id: farmerId }, select: { opportunity_id: true } }),
+    ]);
+    const interested = new Set(interests.map((i) => i.opportunity_id));
+    const local = (farmer.district && prices.byDistrict.get(farmer.district)) || prices.national;
+
+    const matches = opps
+      .map((o) => ({ opportunity: { ...o, type_label: TYPE_LABELS[o.type] ?? 'Opportunity' }, ...scoreMatch(o, farmer, local), interested: interested.has(o.id) }))
+      .sort((a, b) => b.score - a.score || (a.opportunity.deadline?.getTime() ?? Infinity) - (b.opportunity.deadline?.getTime() ?? Infinity));
+
+    const { phone: _p, ...profile } = farmer;
+    return sendSuccess(res, { farmer: { ...profile, local_farm_gate_price: local ? round(local) : null }, matches }, 'Opportunity matches retrieved successfully');
+  })
+);
+
+/**
  * @route GET /api/opportunities/:id
  * @access Any authenticated user (farmers: only ones visible to them)
  */
@@ -301,7 +362,7 @@ router.get(
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
     const farmer = req.user!.role === 'farmer';
     const where: Prisma.OpportunityWhereInput = farmer
-      ? { AND: [{ id: req.params.id }, await farmerVisibleWhere(req.user!.id)] }
+      ? { AND: [{ id: req.params.id }, await farmerMatchableWhere(req.user!.id)] }
       : { id: req.params.id };
     const o: any = await prisma.opportunity.findFirst({
       where,
@@ -427,8 +488,9 @@ router.post(
   authorize('farmer'),
   validateIdParam,
   asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    // Nearby buyers suggested by the matching engine are allowed too.
     const opp = await prisma.opportunity.findFirst({
-      where: { AND: [{ id: req.params.id }, await farmerVisibleWhere(req.user!.id)] },
+      where: { AND: [{ id: req.params.id }, await farmerMatchableWhere(req.user!.id)] },
     });
     if (!opp) return sendNotFound(res, 'Opportunity not found or no longer open');
 
@@ -476,6 +538,73 @@ router.delete(
     const { count } = await prisma.opportunityInterest.deleteMany({ where: { opportunity_id: req.params.id, farmer_id: req.user!.id } });
     if (!count) return sendNotFound(res, 'You had not expressed interest in this opportunity');
     return sendSuccess(res, null, 'Interest withdrawn');
+  })
+);
+
+/**
+ * @route GET /api/opportunities/:id/matching-farmers
+ * @desc  Matching engine, reverse: the best-fit farmers for one opportunity,
+ *        with how much of the requested quantity the top matches can cover.
+ *        Searches the opportunity's province and, for buyers, districts within
+ *        NEARBY_KM (so growers just across a border are found), or the whole
+ *        country if nationwide.
+ * @access Admin, Agent (only farmers in their area)
+ */
+router.get(
+  '/:id/matching-farmers',
+  authenticate,
+  authorize('admin', 'agent'),
+  validateIdParam,
+  asyncHandler(async (req: AuthenticatedRequest, res: Response) => {
+    const opp = await prisma.opportunity.findUnique({ where: { id: req.params.id } });
+    if (!opp) return sendNotFound(res, 'Opportunity not found');
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit), 10) || 25));
+
+    // Same province, plus (for produce buyers) districts within NEARBY_KM.
+    const districts = opp.district && PRODUCE_TYPES.includes(opp.type) ? [opp.district, ...nearbyDistricts(opp.district)] : [];
+    const area: Prisma.UserWhereInput = opp.province
+      ? {
+        farmer_profile: {
+          is: {
+            OR: [
+              { farm_province: opp.province }, { farm_province: null, province: opp.province },
+              ...(districts.length ? [{ farm_district: { in: districts } }, { farm_district: null, district: { in: districts } }] : []),
+            ],
+          },
+        },
+      }
+      : {};
+    const scope = await farmerScope(req); // null for admins
+    const candidates = await loadFarmerSupply(scope ? { AND: [area, scope] } : area);
+    const prices = await farmGatePrices();
+
+    const ranked = candidates
+      .map((f) => ({ farmer: f, ...scoreMatch(opp, f, (f.district && prices.byDistrict.get(f.district)) || prices.national) }))
+      .filter((m) => m.score >= 35)
+      .sort((a, b) => b.score - a.score || (b.supply_kg ?? 0) - (a.supply_kg ?? 0));
+
+    // How many of the best matches are needed to fill the order?
+    let covered = 0; let needed: number | null = null;
+    if (opp.quantity_kg) {
+      for (let i = 0; i < ranked.length; i++) {
+        covered += ranked[i].supply_kg ?? 0;
+        if (covered >= opp.quantity_kg) { needed = i + 1; break; }
+      }
+    }
+    const top = ranked.slice(0, limit);
+    return sendSuccess(res, {
+      opportunity_id: opp.id,
+      candidates: candidates.length,
+      matched: ranked.length,
+      quantity_kg: opp.quantity_kg,
+      total_supply_kg: Math.round(ranked.reduce((s, m) => s + (m.supply_kg ?? 0), 0)),
+      farmers_needed_to_fill: needed,
+      farmers: top.map(({ farmer, ...m }) => ({
+        user_id: farmer.user_id, full_name: farmer.full_name, phone: farmer.phone, district: farmer.district,
+        trees: farmer.trees, ready_kg: farmer.ready_kg, expected_kg: farmer.expected_kg, best_grade: farmer.best_grade, verified: farmer.verified,
+        ...m,
+      })),
+    }, 'Matching farmers retrieved successfully');
   })
 );
 
