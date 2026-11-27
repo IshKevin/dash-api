@@ -7,7 +7,9 @@ WORKDIR /app
 RUN apk add --no-cache openssl
 
 COPY package*.json ./
-RUN npm ci
+# --include=dev: build tools (tsc) are devDependencies, and hosts like Coolify
+# pass NODE_ENV=production into the build, which would otherwise skip them.
+RUN npm ci --include=dev
 
 COPY prisma ./prisma
 RUN npx prisma generate
